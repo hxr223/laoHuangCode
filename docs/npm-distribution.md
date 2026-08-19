@@ -7,7 +7,8 @@ Python 与 TypeScript 两套 Agent。npm 包只做三件事：
 
 1. 找到 Python 3.11+。
 2. 在用户缓存中创建与 npm 包版本绑定的虚拟环境。
-3. 安装同版本 `laohuangcode` 并把全部参数转发给 `python -m laohuangcode`。
+3. 安装 npm 包内置的同版本 `laohuangcode` wheel，并把全部参数转发给
+   `python -m laohuangcode`。
 
 ```mermaid
 flowchart LR
@@ -15,8 +16,8 @@ flowchart LR
     Node --> Detect{"LAOHUANG_PYTHON?"}
     Detect -->|是| Python["指定 Python"]
     Detect -->|否| Cache["版本化缓存 venv"]
-    Cache -->|首次运行| PyPI["安装 laohuangcode==同版本"]
-    PyPI --> Python
+    Cache -->|首次运行| Wheel["安装 npm/vendor 内置 wheel"]
+    Wheel --> Python
     Cache -->|已准备| Python
     Python --> Core["python -m laohuangcode"]
 ```
@@ -29,11 +30,12 @@ flowchart LR
 - `LAOHUANG_PYTHON`：跳过引导，直接使用指定 Python。
 - `LAOHUANG_BOOTSTRAP_PYTHON`：指定用于创建 venv 的 Python。
 
-开发和离线测试可设置 `LAOHUANG_PYTHON_PACKAGE`，让引导器从本地路径或私有索引
-安装 Python 包；它不是普通用户配置项。
+开发和离线测试可设置 `LAOHUANG_PYTHON_PACKAGE`，让引导器改用本地路径或私有
+索引；它不是普通用户配置项。内核自身不发布到 PyPI，但 `openai`、`rich`、
+`prompt-toolkit` 等第三方依赖仍由 pip 下载。
 
 ## 发布顺序
 
-同一个版本必须先发布 Python 包，再发布 npm 包。否则新 npm 版本第一次运行时找不到
-对应的 Python 内核。`scripts/check_versions.py` 会比较 `pyproject.toml`、Python
-`__version__` 与 `npm/package.json`。
+`scripts/build-python.sh` 先构建 wheel，再复制到 `npm/vendor/`。npm tarball 因此是
+唯一需要发布的制品。`scripts/check_versions.py` 会比较 `pyproject.toml`、Python
+`__version__` 与 `npm/package.json`，防止启动器和内核版本错配。

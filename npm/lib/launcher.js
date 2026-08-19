@@ -21,6 +21,15 @@ function venvPython(venvDirectory) {
   return path.join(venvDirectory, "bin", "python");
 }
 
+function bundledWheelPath(version = packageJson.version) {
+  return path.join(
+    __dirname,
+    "..",
+    "vendor",
+    `laohuangcode-${version}-py3-none-any.whl`,
+  );
+}
+
 function successful(result) {
   return !result.error && result.status === 0;
 }
@@ -74,8 +83,10 @@ function ensurePythonPackage({ env, spawnSync }) {
     );
   }
 
-  const packageSource =
-    env.LAOHUANG_PYTHON_PACKAGE || `laohuangcode==${packageJson.version}`;
+  const packageSource = env.LAOHUANG_PYTHON_PACKAGE || bundledWheelPath();
+  if (!env.LAOHUANG_PYTHON_PACKAGE && !fs.existsSync(packageSource)) {
+    throw new Error(`Bundled Python wheel is missing: ${packageSource}`);
+  }
   runChecked(
     spawnSync,
     python,
@@ -114,6 +125,7 @@ function run(
 }
 
 module.exports = {
+  bundledWheelPath,
   cacheDirectory,
   ensurePythonPackage,
   findHostPython,

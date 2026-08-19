@@ -23,8 +23,8 @@ laohuang
 不需要设置环境变量。配置完成后，进入任意项目目录直接运行 `laohuang`。
 
 npm 包只是一个很薄的启动器：第一次运行时，它会在用户缓存目录创建隔离的
-Python 环境，并安装版本完全一致的 `laohuangcode` Python 内核。Agent 本身没有
-Node.js 重复实现。
+Python 环境，并安装 npm 包内置的同版本 `laohuangcode` wheel。Agent 本身没有
+Node.js 重复实现，你也不需要 PyPI 账号。
 
 开发仓库也可以直接安装：
 
@@ -117,8 +117,8 @@ npm --prefix npm test
 scripts/release-check.sh
 ```
 
-`release-check.sh` 会检查 Python/npm 版本一致性、运行两套测试、检查 npm 包内容、
-构建 Python 分发包并在临时环境验证两个入口。发布设计见
+`release-check.sh` 会检查 Python/npm 版本一致性、运行两套测试、把 Python wheel
+打进 npm 包，并在临时环境验证直接 Python 入口和 npm-only 安装。发布设计见
 [npm 分发说明](docs/npm-distribution.md) 和 [发布流程](docs/publishing.md)。
 
 ## 安全边界

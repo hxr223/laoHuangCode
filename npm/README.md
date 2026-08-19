@@ -1,12 +1,13 @@
 # laohuang
 
 This npm package provides the `laohuang` command for
-[laoHuangCode](https://pypi.org/project/laohuangcode/).
+[laoHuangCode](https://github.com/hxr223/laoHuangCode).
 
 It is a small Node.js launcher, not a second implementation of the agent. On
 first run it creates an isolated Python environment in the user cache and
-installs the matching `laohuangcode` Python package. Python 3.11 or newer must
-already be available as `python3` or `python`.
+installs the bundled `laohuangcode` Python wheel. Python 3.11 or newer must
+already be available as `python3` or `python`. Third-party Python dependencies
+are downloaded by pip during this first launch.
 
 ```bash
 npm install --global laohuang

@@ -9,8 +9,14 @@ permissions:
   contents: read
 
 jobs:
-  build-python:
+  publish-npm:
     runs-on: ubuntu-latest
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/laohuang
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -23,40 +29,7 @@ jobs:
       - run: python -m unittest discover -s tests -v
         env:
           PYTHONPATH: src
-      - run: python -m build
-      - uses: actions/upload-artifact@v5
-        with:
-          name: python-package-distributions
-          path: dist/
-
-  publish-python:
-    needs: build-python
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/laohuangcode
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v6
-        with:
-          name: python-package-distributions
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
-  publish-npm:
-    needs: publish-python
-    runs-on: ubuntu-latest
-    environment:
-      name: npm
-      url: https://www.npmjs.com/package/laohuang
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
+      - run: scripts/build-python.sh
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
@@ -66,5 +39,16 @@ jobs:
         working-directory: npm
       - run: npm test
         working-directory: npm
-      - run: npm publish
+      - run: npm pack --dry-run
+        working-directory: npm
+      - id: registry
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "laohuang@$version" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.registry.outputs.published != 'true'
+        run: npm publish
         working-directory: npm

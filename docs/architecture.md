@@ -9,7 +9,7 @@
 laoHuangCode/
 ├── .github/workflows/
 │   ├── ci.yml                 # Python / Node 持续集成
-│   └── release.yml            # PyPI -> npm 顺序发布
+│   └── release.yml            # 构建内置 wheel 并发布 npm
 ├── docs/
 │   ├── architecture.md
 │   ├── configuration.md
@@ -19,6 +19,7 @@ laoHuangCode/
 ├── npm/
 │   ├── bin/laohuang.js        # 全局命令入口
 │   ├── lib/launcher.js        # Python 探测、缓存 venv、参数转发
+│   ├── vendor/                # 发布构建时写入 Python wheel
 │   ├── test/launcher.test.js
 │   └── package.json
 ├── scripts/
@@ -51,8 +52,8 @@ laoHuangCode/
 ```mermaid
 flowchart LR
     User([用户]) --> Entry["laohuang 命令"]
-    Entry -->|PyPI 安装| CLI["cli.py"]
-    Entry -->|npm 安装| Launcher["Node launcher"]
+    Entry -->|npm 安装| Launcher["Node launcher + bundled wheel"]
+    Launcher -->|首次运行安装 wheel| CLI["cli.py"]
     Launcher -->|python -m laohuangcode| CLI
 
     subgraph Core["Python Agent 内核"]

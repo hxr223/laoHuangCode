@@ -17,6 +17,7 @@
   "files": [
     "bin",
     "lib",
+    "vendor",
     "README.md"
   ],
   "engines": {

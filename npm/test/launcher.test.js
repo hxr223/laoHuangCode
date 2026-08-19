@@ -9,6 +9,21 @@ test("package exposes the laohuang executable", () => {
   assert.equal(packageJson.bin.laohuang, "bin/laohuang.js");
   assert.equal(packageJson.engines.node, ">=18");
   assert.equal(fs.existsSync(require.resolve("../LICENSE")), true);
+  assert.equal(packageJson.files.includes("vendor"), true);
+});
+
+test("launcher installs the Python core from the bundled wheel", () => {
+  const { bundledWheelPath } = require("../lib/launcher");
+
+  assert.equal(
+    bundledWheelPath("9.8.7"),
+    path.join(
+      __dirname,
+      "..",
+      "vendor",
+      "laohuangcode-9.8.7-py3-none-any.whl",
+    ),
+  );
 });
 
 test("an explicitly configured Python runs the module with all arguments", () => {
