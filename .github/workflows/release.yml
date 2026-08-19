@@ -59,8 +59,8 @@ jobs:
         run: python scripts/check_npm_unpublished.py
       - name: Run the complete release check
         run: scripts/release-check.sh
-      - name: Publish npm package with provenance
-        run: npm publish --access public --provenance
+      - name: Publish npm package with trusted publishing
+        run: npm publish --access public
         working-directory: npm
       - name: Verify the published version
         env:

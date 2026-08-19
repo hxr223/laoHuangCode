@@ -34,7 +34,9 @@ npm Trusted Publishing 需要 Node 22.14+ 和 npm 11.5.1+；工作流固定使�
 每个合并到 `main` 的 pull request 都代表一个 npm 发布，因此必须提升版本。CD 不会
 把“版本已存在”当作成功跳过，而会失败并要求提交新的版本。发布任务使用固定并发组，
 不会取消正在执行的发布；它还设置了超时、最小 GitHub token 权限，并要求 npm
-provenance。
+Trusted Publishing。当前 GitHub 仓库是 private，npm 不支持为 private repository
+生成 provenance；仓库公开后，Trusted Publishing 会自动生成 provenance，无需增加
+`--provenance` 参数。
 
 如果 `npm publish` 已经成功、但最后的 registry 验证因网络问题失败，不要直接修改
 版本或重复发布；先在 npm 确认该版本是否已经存在。npm 版本不可覆盖。
