@@ -2,12 +2,14 @@ import unittest
 
 from laohuangcode.events import EventFactory, EventKind, EventSource
 from laohuangcode.routing import (
+    DeadLetterQueue,
     EventRouter,
     PendingQueue,
     RouteDestination,
     RouteStrategy,
     RouteTiming,
     RoutedEvent,
+    Scheduler,
     TaskRegistry,
     TaskState,
 )
@@ -94,6 +96,29 @@ class RouterTests(unittest.TestCase):
         queue.put(router.route(user_event("first", strategy="steer")))
         with self.assertRaises(OverflowError):
             queue.put(router.route(user_event("second", strategy="steer")))
+
+    def test_pending_queue_enforces_estimated_token_budget(self):
+        queue = PendingQueue(max_items=10, max_estimated_tokens=2)
+        router = EventRouter(self.registry)
+
+        with self.assertRaisesRegex(OverflowError, "token budget"):
+            queue.put(
+                router.route(user_event("this message is too large", strategy="steer"))
+            )
+
+    def test_scheduler_sends_capacity_rejections_to_dead_letters(self):
+        pending = PendingQueue(max_items=1)
+        dead_letters = DeadLetterQueue()
+        scheduler = Scheduler(pending=pending, dead_letters=dead_letters)
+        router = EventRouter(self.registry)
+        scheduler.schedule(router.route(user_event("first", strategy="steer")))
+
+        result = scheduler.schedule(
+            router.route(user_event("second", strategy="steer"))
+        )
+
+        self.assertTrue(result.rejected)
+        self.assertEqual(len(dead_letters), 1)
 
 
 if __name__ == "__main__":

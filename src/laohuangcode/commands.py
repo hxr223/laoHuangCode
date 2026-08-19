@@ -314,7 +314,7 @@ class SessionCommands:
             self.output_fn("Usage: /queue [resume|clear]")
             return True
         if self.session is None:
-            self.output_fn("Pending: 0 · Held: 0")
+            self.output_fn("Pending: 0 · Held: 0 · Dead letters: 0")
             return True
         if arguments == ["clear"]:
             cleared = self.session.clear_queues()
@@ -326,7 +326,11 @@ class SessionCommands:
             return True
         status = self.session.queue_status()
         self.output_fn(
-            f"Pending: {status.get('pending', 0)} · Held: {status.get('held', 0)}"
+            f"Pending: {status.get('pending', 0)}"
+            f" ({status.get('pending_tokens', 0)} est. tokens)"
+            f" · Held: {status.get('held', 0)}"
+            f" ({status.get('held_tokens', 0)} est. tokens)"
+            f" · Dead letters: {status.get('dead_letters', 0)}"
         )
         return True
 

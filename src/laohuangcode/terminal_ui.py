@@ -7,7 +7,6 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from queue import Empty, Full, Queue
-import shutil
 import threading
 from typing import Any
 
@@ -37,7 +36,39 @@ def _input_bindings(
 
     @bindings.add("enter")
     def submit(event: Any) -> None:
-        event.current_buffer.validate_and_handle()
+        buffer = event.current_buffer
+        completion_state = getattr(buffer, "complete_state", None)
+        completion = getattr(completion_state, "current_completion", None)
+        if completion is None and completion_state is not None:
+            completions = getattr(completion_state, "completions", ())
+            completion = completions[0] if completions else None
+        if completion is not None:
+            buffer.apply_completion(completion)
+            return
+        buffer.validate_and_handle()
+
+    @bindings.add("/")
+    def insert_slash_and_complete(event: Any) -> None:
+        buffer = event.current_buffer
+        should_complete = not buffer.text and buffer.cursor_position == 0
+        buffer.insert_text("/")
+        if should_complete:
+            buffer.start_completion(select_first=False)
+
+    @bindings.add("tab")
+    def complete_command(event: Any) -> None:
+        buffer = event.current_buffer
+        completion_state = getattr(buffer, "complete_state", None)
+        completion = getattr(completion_state, "current_completion", None)
+        if completion is None and completion_state is not None:
+            completions = getattr(completion_state, "completions", ())
+            completion = completions[0] if completions else None
+        if completion is not None:
+            buffer.apply_completion(completion)
+        elif buffer.text.startswith("/"):
+            buffer.start_completion(select_first=True)
+        else:
+            buffer.insert_text("    ")
 
     @bindings.add("escape", "enter")
     def insert_newline(event: Any) -> None:
@@ -157,6 +188,11 @@ class PlainEventSink:
         payload = event.get("payload", {})
         if not isinstance(payload, dict):
             payload = {}
+        dropped = int(payload.get("_projection_dropped", 0) or 0)
+        if dropped:
+            self.output_fn(
+                f"[stream output omitted: {dropped} event(s); runtime continued]"
+            )
         correlation_id = str(event.get("correlation_id") or "")[-8:]
 
         if kind == "model.text_delta":
@@ -262,8 +298,8 @@ class TerminalUI:
         return self._session_factory(
             message=self._input_prompt,
             multiline=True,
+            show_frame=True,
             prompt_continuation=HTML("<input-padding>  </input-padding>"),
-            bottom_toolbar=self._input_bottom_border,
             history=InMemoryHistory(),
             enable_history_search=True,
             auto_suggest=AutoSuggestFromHistory(),
@@ -288,10 +324,9 @@ class TerminalUI:
             reserve_space_for_menu=6,
             style=Style.from_dict(
                 {
-                    "input-border": "#9b6aa0",
+                    "frame.border": "#9b6aa0",
                     "input-padding": "",
                     "prompt": "bold ansicyan",
-                    "bottom-toolbar": "noreverse",
                 }
             ),
         )
@@ -323,21 +358,8 @@ class TerminalUI:
         if self.cancel_callback is not None:
             self.cancel_callback()
 
-    @staticmethod
-    def _input_border() -> str:
-        columns = shutil.get_terminal_size(fallback=(80, 24)).columns
-        return "─" * max(8, columns - 2)
-
     def _input_prompt(self) -> HTML:
-        return HTML(
-            f"<input-border>{self._input_border()}</input-border>\n"
-            "<prompt>❯ </prompt>"
-        )
-
-    def _input_bottom_border(self) -> HTML:
-        return HTML(
-            f"<input-border>{self._input_border()}</input-border>"
-        )
+        return HTML("<prompt>❯ </prompt>")
 
     def start_event_renderer(self) -> None:
         if self._renderer_closed or self._event_thread is not None:
@@ -405,6 +427,23 @@ class TerminalUI:
                 self.console.print(Text(event.text, style=event.style))
             self._invalidate_prompt()
             return
+        payload = event.get("payload", {}) if isinstance(event, dict) else {}
+        dropped = (
+            int(payload.get("_projection_dropped", 0) or 0)
+            if isinstance(payload, dict)
+            else 0
+        )
+        if dropped:
+            with self._render_lock:
+                if self._streaming_response:
+                    self.console.print()
+                self.console.print(
+                    Text(
+                        f"… 省略了 {dropped} 个流式展示事件；Agent 仍继续运行。",
+                        style="yellow",
+                    )
+                )
+            self._streaming_response = False
         update = self.reducer.apply(event)
         if update is None:
             return

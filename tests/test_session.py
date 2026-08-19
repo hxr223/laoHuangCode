@@ -2,8 +2,8 @@ import threading
 import unittest
 
 from laohuangcode.cancellation import CancellationError
-from laohuangcode.events import EventKind
-from laohuangcode.routing import TaskState
+from laohuangcode.events import EventKind, EventSource
+from laohuangcode.routing import RouteDestination, TaskState
 from laohuangcode.session import AgentSession
 
 
@@ -202,6 +202,76 @@ class AgentSessionTests(unittest.TestCase):
         self.assertTrue(submission.control)
         self.assertIsNone(submission.task_id)
         self.assertIsNone(session.active_task)
+
+    def test_internal_model_callback_passes_through_router(self):
+        def runner(_content, context):
+            context.publish(
+                EventKind.MODEL_TEXT_DELTA,
+                source=EventSource.MODEL,
+                correlation_id="request-1",
+                payload={"request_id": "request-1", "text": "hello"},
+            )
+            return "done"
+
+        session = AgentSession(runner, session_id="session-1")
+        session.submit_input("start")
+        self.assertTrue(session.wait_for_idle(1))
+
+        events = session.event_bus.drain()
+        model_event = next(
+            event for event in events if event.kind is EventKind.MODEL_TEXT_DELTA
+        )
+        route_event = next(
+            event
+            for event in events
+            if event.kind is EventKind.ROUTING_DECIDED
+            and event.correlation_id == model_event.event_id
+        )
+        self.assertLess(route_event.sequence, model_event.sequence)
+
+    def test_input_classified_during_cancel_is_held_not_auto_started(self):
+        task_started = threading.Event()
+        classifier_entered = threading.Event()
+        release_classifier = threading.Event()
+        calls = []
+
+        def runner(content, context):
+            calls.append(content)
+            task_started.set()
+            context.cancel_token.wait(1)
+            context.cancel_token.throw_if_cancelled()
+            return "done"
+
+        def classifier(_event, _active):
+            classifier_entered.set()
+            self.assertTrue(release_classifier.wait(1))
+            return "follow_up"
+
+        session = AgentSession(
+            runner,
+            session_id="session-1",
+            semantic_classifier=classifier,
+        )
+        session.submit_input("first")
+        self.assertTrue(task_started.wait(1))
+        submissions = []
+        submitter = threading.Thread(
+            target=lambda: submissions.append(session.submit_input("second"))
+        )
+        submitter.start()
+        self.assertTrue(classifier_entered.wait(1))
+
+        self.assertTrue(session.request_cancel())
+        release_classifier.set()
+        submitter.join(1)
+        self.assertTrue(session.wait_for_idle(1))
+
+        self.assertEqual(calls, ["first"])
+        self.assertEqual(session.held_count, 1)
+        self.assertEqual(
+            submissions[0].routed.decision.destination,
+            RouteDestination.HELD,
+        )
 
 
 if __name__ == "__main__":

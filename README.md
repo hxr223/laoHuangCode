@@ -59,9 +59,9 @@ API key 使用隐藏输入，保存在独立的
 /login deepseek                     输入或覆盖 DeepSeek API key
 /logout openai                      删除保存的 OpenAI 凭据
 /cancel                             取消当前运行任务
-/queue                              查看 pending/held 消息数
+/queue                              查看 pending/held/dead-letter 与估算 token
 /queue resume                       恢复取消后保留的消息
-/queue clear                        清空 pending/held 消息
+/queue clear                        清空 pending/held/dead-letter
 /clear                              清空当前对话上下文
 ```
 
@@ -91,7 +91,8 @@ laohuang
 切换供应商或模型时会保留当前对话上下文。
 
 交互终端使用简洁的上下边框标识输入区域，不显示常驻状态或快捷键底栏。输入 `/` 会
-显示命令、说明和参数补全；`/model` 会按“供应商 → 模型”分层补全。终端还支持多行
+立即显示命令、说明和参数补全；`Tab`/`Enter` 可接受当前补全，`/model` 会按
+“供应商 → 模型”分层补全。终端还支持多行
 编辑和当前会话输入历史：
 
 - `Enter`：发送任务。

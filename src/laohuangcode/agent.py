@@ -543,7 +543,18 @@ class CodingAgent:
             task_id=getattr(context, "task_id", None),
             tool_call_id=tool_call_id,
             cancel_token=cancel_token,
-            event_sink=getattr(context, "event_bus", None),
+            event_sink=(
+                (
+                    lambda kind, payload: context.publish(
+                        kind,
+                        source="tool",
+                        correlation_id=tool_call_id,
+                        payload=payload,
+                    )
+                )
+                if callable(getattr(context, "publish", None))
+                else getattr(context, "event_bus", None)
+            ),
         )
 
     @staticmethod
@@ -611,8 +622,9 @@ class CodingAgent:
         self, event_type: str, payload: dict[str, Any]
     ) -> None:
         context = self._active_context
+        publisher = getattr(context, "publish", None)
         bus = getattr(context, "event_bus", None)
-        if bus is None:
+        if not callable(publisher) and bus is None:
             return
         kind_names = {
             "model_request": "MODEL_REQUEST_STARTED",
@@ -636,18 +648,24 @@ class CodingAgent:
             return
         from .events import EventKind, EventSource
 
-        bus.publish(
-            getattr(EventKind, kind_name),
-            source=EventSource.TOOL if is_tool_event else EventSource.MODEL,
-            session_id=getattr(context, "session_id", None) or "local",
-            task_id=getattr(context, "task_id", None),
-            correlation_id=(
+        options = {
+            "source": EventSource.TOOL if is_tool_event else EventSource.MODEL,
+            "correlation_id": (
                 payload.get("tool_call_id")
                 if is_tool_event
                 else payload.get("request_id")
             ),
-            payload=payload,
-        )
+            "payload": payload,
+        }
+        if callable(publisher):
+            publisher(getattr(EventKind, kind_name), **options)
+        else:
+            bus.publish(
+                getattr(EventKind, kind_name),
+                session_id=getattr(context, "session_id", None) or "local",
+                task_id=getattr(context, "task_id", None),
+                **options,
+            )
 
     @classmethod
     def _safe_arguments(cls, arguments: dict[str, Any]) -> dict[str, Any]:

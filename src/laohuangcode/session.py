@@ -14,6 +14,7 @@ from uuid import uuid4
 from .cancellation import CancelToken, CancellationError
 from .events import EventBus, EventEnvelope, EventKind, EventSource
 from .routing import (
+    DeadLetterQueue,
     EventRouter,
     HeldQueue,
     PendingQueue,
@@ -57,6 +58,8 @@ class Submission:
     task_id: str | None
     queued: bool
     control: bool = False
+    rejected: bool = False
+    reason: str = ""
 
 
 class TaskContext:
@@ -90,10 +93,9 @@ class TaskContext:
         correlation_id: str | None = None,
         payload: Mapping[str, Any] | None = None,
     ) -> EventEnvelope:
-        return self.event_bus.publish(
+        return self._session._publish_internal_event(
             kind,
             source=source,
-            session_id=self.session_id,
             task_id=self.task_id,
             correlation_id=correlation_id,
             payload=payload,
@@ -181,7 +183,8 @@ class AgentSession:
         self.task_registry = task_registry or TaskRegistry()
         self.pending = PendingQueue()
         self.held = HeldQueue()
-        self.scheduler = Scheduler(self.pending, self.held)
+        self.dead_letters = DeadLetterQueue()
+        self.scheduler = Scheduler(self.pending, self.held, self.dead_letters)
         self.router = EventRouter(
             self.task_registry,
             semantic_classifier=semantic_classifier,
@@ -234,10 +237,10 @@ class AgentSession:
             raise ValueError("input must not be empty")
         if text == "/cancel":
             event = self._publish_input(
-                EventKind.INPUT_CANCEL_REQUESTED, text, strategy=None
+                EventKind.INPUT_SLASH_COMMAND, text, strategy=None
             )
             routed = self.router.route(event)
-            cancelled = self._cancel_routed(routed)
+            self._cancel_routed(routed)
             return Submission(
                 event,
                 routed,
@@ -251,9 +254,16 @@ class AgentSession:
             if text.startswith("/")
             else EventKind.INPUT_USER_MESSAGE
         )
+        event = self._publish_input(kind, text, strategy=strategy)
+        routing_task_id = self.task_registry.active_task_id
+        # Layer-three classification may make a network request. Never hold
+        # Session coordination while waiting for it; the worker must remain
+        # free to finish, cancel, or reach a safe point.
+        routed = self.router.route(event)
         with self._coordination_lock:
-            event = self._publish_input(kind, text, strategy=strategy)
-            routed = self.router.route(event)
+            routed = self._refresh_route_for_current_task(
+                routed, routing_task_id=routing_task_id
+            )
             self._publish_route(routed)
             scheduled = self.scheduler.schedule(routed)
             task_id = routed.decision.task_id
@@ -277,13 +287,107 @@ class AgentSession:
                     correlation_id=event.event_id,
                     payload={"held_count": len(self.held)},
                 )
+            if scheduled.rejected:
+                self.event_bus.publish(
+                    EventKind.ROUTING_REJECTED,
+                    source=EventSource.ROUTER,
+                    session_id=self.session_id,
+                    task_id=task_id,
+                    correlation_id=event.event_id,
+                    payload={
+                        "reason": scheduled.reason,
+                        "destination": RouteDestination.DROP.value,
+                        "layer": 4,
+                    },
+                )
             return Submission(
                 event,
                 routed,
                 task_id,
                 queued=scheduled.queued,
                 control=routed.decision.destination is RouteDestination.CONTROL,
+                rejected=scheduled.rejected,
+                reason=scheduled.reason,
             )
+
+    def _refresh_route_for_current_task(
+        self, routed: RoutedEvent, *, routing_task_id: str | None
+    ) -> RoutedEvent:
+        """Repair a decision if task state changed during semantic routing."""
+
+        decision = routed.decision
+        active = self.task_registry.active()
+        destination = decision.destination
+        if routing_task_id is not None:
+            original = self.task_registry.get(routing_task_id)
+            if active is not None and active.task_id == routing_task_id:
+                if active.state is not TaskState.CANCELLING:
+                    return routed
+            elif (
+                active is None
+                and original is not None
+                and original.state is TaskState.COMPLETED
+            ):
+                replacement = RouteDecision(
+                    None,
+                    RouteDestination.NEW_TASK,
+                    RouteTiming.IMMEDIATE,
+                    RouteStrategy.EXECUTE,
+                    1.0,
+                    "original task completed while routing; start follow-up task",
+                    4,
+                )
+                return RoutedEvent(routed.event, replacement)
+            replacement = RouteDecision(
+                routing_task_id,
+                RouteDestination.HELD,
+                RouteTiming.AFTER_CANCEL,
+                RouteStrategy.FOLLOW_UP,
+                1.0,
+                "original task stopped or changed while routing; hold input",
+                4,
+            )
+            return RoutedEvent(routed.event, replacement)
+
+        stale = (
+            destination is RouteDestination.NEW_TASK and active is not None
+        ) or (
+            destination in {RouteDestination.PENDING, RouteDestination.HELD}
+            and (active is None or decision.task_id != active.task_id)
+        )
+        if not stale:
+            return routed
+        if active is None:
+            replacement = RouteDecision(
+                None,
+                RouteDestination.NEW_TASK,
+                RouteTiming.IMMEDIATE,
+                RouteStrategy.EXECUTE,
+                1.0,
+                "task state changed while routing; start a new task",
+                4,
+            )
+        elif active.state is TaskState.CANCELLING:
+            replacement = RouteDecision(
+                active.task_id,
+                RouteDestination.HELD,
+                RouteTiming.AFTER_CANCEL,
+                RouteStrategy.FOLLOW_UP,
+                1.0,
+                "task began cancelling while routing; hold input",
+                4,
+            )
+        else:
+            replacement = RouteDecision(
+                active.task_id,
+                RouteDestination.PENDING,
+                RouteTiming.SAFE_POINT,
+                RouteStrategy.FOLLOW_UP,
+                1.0,
+                "active task changed while routing; queue safe follow-up",
+                4,
+            )
+        return RoutedEvent(routed.event, replacement)
 
     def request_cancel(self, reason: str = "cancelled by user") -> bool:
         event = self.event_bus.publish(
@@ -301,7 +405,13 @@ class AgentSession:
         return self.request_cancel("cancelled by user")
 
     def queue_status(self) -> dict[str, int]:
-        return {"pending": len(self.pending), "held": len(self.held)}
+        return {
+            "pending": len(self.pending),
+            "held": len(self.held),
+            "dead_letters": len(self.dead_letters),
+            "pending_tokens": self.pending.estimated_tokens,
+            "held_tokens": self.held.estimated_tokens,
+        }
 
     def publish_notice(self, text: str, *, style: str = "") -> EventEnvelope:
         """Publish user-facing local feedback in canonical event order."""
@@ -314,7 +424,33 @@ class AgentSession:
         )
 
     def clear_queues(self) -> int:
-        return self.pending.clear() + len(self.held.drain())
+        return self.pending.clear() + self.held.clear() + self.dead_letters.clear()
+
+    def _publish_internal_event(
+        self,
+        kind: EventKind | str,
+        *,
+        source: EventSource | str,
+        task_id: str,
+        correlation_id: str | None,
+        payload: Mapping[str, Any] | None,
+    ) -> EventEnvelope:
+        """Normalize and route a model/tool callback before fan-out."""
+
+        event = self.event_bus.factory.create(
+            kind,
+            source=source,
+            session_id=self.session_id,
+            task_id=task_id,
+            correlation_id=correlation_id,
+            payload=payload,
+        )
+        routed = self.router.route(event)
+        self._publish_route(routed)
+        if routed.decision.destination is RouteDestination.DROP:
+            self.dead_letters.put(event, routed.decision.reason)
+            return event
+        return self.event_bus.publish_event(event)
 
     def _cancel_routed(
         self, routed: RoutedEvent, *, reason: str = "cancelled by user"
@@ -603,6 +739,7 @@ class AgentSession:
                 self.held.put(held)
                 held_count += 1
             except OverflowError:
+                self.dead_letters.put(pending.event, "held queue is full")
                 self.event_bus.publish(
                     EventKind.ROUTING_REJECTED,
                     source=EventSource.ROUTER,

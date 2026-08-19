@@ -86,7 +86,13 @@ class SessionCommandTests(unittest.TestCase):
 
     def test_queue_commands_delegate_to_agent_session(self):
         session = SimpleNamespace(
-            queue_status=lambda: {"pending": 2, "held": 1},
+            queue_status=lambda: {
+                "pending": 2,
+                "held": 1,
+                "pending_tokens": 20,
+                "held_tokens": 10,
+                "dead_letters": 1,
+            },
             clear_queues=lambda: 3,
             resume_held=lambda: 1,
         )
@@ -103,7 +109,8 @@ class SessionCommandTests(unittest.TestCase):
             self.assertEqual(
                 outputs,
                 [
-                    "Pending: 2 · Held: 1",
+                    "Pending: 2 (20 est. tokens) · Held: 1 (10 est. tokens)"
+                    " · Dead letters: 1",
                     "Resumed 1 held message(s).",
                     "Cleared 3 queued message(s).",
                 ],

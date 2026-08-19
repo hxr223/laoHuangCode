@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+import json
 from queue import Empty, Full, Queue
 import re
-from threading import Lock, Thread, current_thread
+from threading import Condition, Lock, Thread, current_thread
+from time import monotonic
 from types import MappingProxyType
 from typing import Any
 from uuid import uuid4
@@ -112,6 +115,12 @@ class EventSpec:
     kind: EventKind
     sources: frozenset[EventSource] | None = None
     required_payload: frozenset[str] = frozenset()
+    payload_types: Mapping[str, type | tuple[type, ...]] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    require_task_id: bool = False
+    require_correlation_id: bool = False
+    max_payload_chars: int = 1_000_000
     validator: EventValidator | None = None
 
     def validate(self, event: EventEnvelope) -> None:
@@ -123,11 +132,38 @@ class EventSpec:
             raise EventValidationError(
                 f"source {event.source} is not valid for {event.kind}"
             )
+        if self.require_task_id and not event.task_id:
+            raise EventValidationError(f"event {event.kind} requires task_id")
+        if self.require_correlation_id and not event.correlation_id:
+            raise EventValidationError(
+                f"event {event.kind} requires correlation_id"
+            )
         missing = self.required_payload.difference(event.payload)
         if missing:
             names = ", ".join(sorted(missing))
             raise EventValidationError(
                 f"event {event.kind} is missing payload fields: {names}"
+            )
+        for name, expected in self.payload_types.items():
+            if name in event.payload and not isinstance(event.payload[name], expected):
+                raise EventValidationError(
+                    f"event {event.kind} payload field {name!r} has invalid type"
+                )
+        try:
+            payload_size = len(
+                json.dumps(
+                    _thaw(event.payload),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+        except (TypeError, ValueError, RecursionError) as error:
+            raise EventValidationError(
+                f"event {event.kind} payload must be JSON-compatible"
+            ) from error
+        if payload_size > self.max_payload_chars:
+            raise EventValidationError(
+                f"event {event.kind} payload exceeds {self.max_payload_chars} characters"
             )
         if self.validator is not None and self.validator(event) is False:
             raise EventValidationError(f"custom validation failed for {event.kind}")
@@ -137,12 +173,28 @@ def _spec(
     kind: EventKind,
     *sources: EventSource,
     required_payload: frozenset[str] = frozenset(),
+    payload_types: Mapping[str, type | tuple[type, ...]] | None = None,
+    require_task_id: bool = False,
+    require_correlation_id: bool = False,
+    max_payload_chars: int = 1_000_000,
 ) -> EventSpec:
     return EventSpec(
         kind,
         sources=frozenset(sources),
         required_payload=required_payload,
+        payload_types=MappingProxyType(dict(payload_types or {})),
+        require_task_id=require_task_id,
+        require_correlation_id=require_correlation_id,
+        max_payload_chars=max_payload_chars,
     )
+
+
+def _thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _thaw(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return [_thaw(item) for item in value]
+    return value
 
 
 # The default boundary prevents external/user events from impersonating model,
@@ -155,17 +207,33 @@ EVENT_SPECS: Mapping[EventKind, EventSpec] = MappingProxyType(
             EventSource.USER,
             EventSource.CLI,
             required_payload=frozenset({"content"}),
+            payload_types={"content": str, "strategy": str},
+            max_payload_chars=100_000,
         ),
         EventKind.INPUT_SLASH_COMMAND: _spec(
             EventKind.INPUT_SLASH_COMMAND,
             EventSource.USER,
             EventSource.CLI,
             required_payload=frozenset({"content"}),
+            payload_types={"content": str},
+            max_payload_chars=16_384,
         ),
         EventKind.INPUT_PENDING: _spec(
-            EventKind.INPUT_PENDING, EventSource.SESSION
+            EventKind.INPUT_PENDING,
+            EventSource.SESSION,
+            required_payload=frozenset({"pending_count"}),
+            payload_types={"pending_count": int},
+            require_task_id=True,
+            require_correlation_id=True,
         ),
-        EventKind.INPUT_HELD: _spec(EventKind.INPUT_HELD, EventSource.SESSION),
+        EventKind.INPUT_HELD: _spec(
+            EventKind.INPUT_HELD,
+            EventSource.SESSION,
+            required_payload=frozenset({"held_count"}),
+            payload_types={"held_count": int},
+            require_task_id=True,
+            require_correlation_id=True,
+        ),
         EventKind.INPUT_CANCEL_REQUESTED: _spec(
             EventKind.INPUT_CANCEL_REQUESTED,
             EventSource.USER,
@@ -173,19 +241,36 @@ EVENT_SPECS: Mapping[EventKind, EventSpec] = MappingProxyType(
             EventSource.SESSION,
         ),
         **{
-            kind: _spec(kind, EventSource.SESSION)
+            kind: _spec(kind, EventSource.SESSION, require_task_id=True)
             for kind in (
                 EventKind.TASK_STARTED,
                 EventKind.TASK_STATE_CHANGED,
                 EventKind.TASK_COMPLETED,
                 EventKind.TASK_FAILED,
                 EventKind.TASK_CANCELLED,
-                EventKind.SESSION_READY,
-                EventKind.SESSION_STOPPED,
             )
         },
+        EventKind.TASK_STATE_CHANGED: _spec(
+            EventKind.TASK_STATE_CHANGED,
+            EventSource.SESSION,
+            required_payload=frozenset({"state"}),
+            payload_types={"state": str},
+            require_task_id=True,
+        ),
+        EventKind.SESSION_READY: _spec(
+            EventKind.SESSION_READY, EventSource.SESSION
+        ),
+        EventKind.SESSION_STOPPED: _spec(
+            EventKind.SESSION_STOPPED, EventSource.SESSION
+        ),
         **{
-            kind: _spec(kind, EventSource.MODEL)
+            kind: _spec(
+                kind,
+                EventSource.MODEL,
+                require_task_id=True,
+                require_correlation_id=True,
+                max_payload_chars=(16_384 if "delta" in kind.value else 100_000),
+            )
             for kind in (
                 EventKind.MODEL_REQUEST_STARTED,
                 EventKind.MODEL_TEXT_DELTA,
@@ -197,6 +282,42 @@ EVENT_SPECS: Mapping[EventKind, EventSpec] = MappingProxyType(
                 EventKind.MODEL_REQUEST_FAILED,
             )
         },
+        EventKind.MODEL_REQUEST_STARTED: _spec(
+            EventKind.MODEL_REQUEST_STARTED,
+            EventSource.MODEL,
+            required_payload=frozenset({"request_id"}),
+            payload_types={"request_id": str},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=100_000,
+        ),
+        EventKind.MODEL_TEXT_DELTA: _spec(
+            EventKind.MODEL_TEXT_DELTA,
+            EventSource.MODEL,
+            required_payload=frozenset({"text"}),
+            payload_types={"text": str, "request_id": str},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=16_384,
+        ),
+        EventKind.MODEL_REASONING_DELTA: _spec(
+            EventKind.MODEL_REASONING_DELTA,
+            EventSource.MODEL,
+            required_payload=frozenset({"text"}),
+            payload_types={"text": str, "request_id": str},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=16_384,
+        ),
+        EventKind.MODEL_TOOL_CALL_DELTA: _spec(
+            EventKind.MODEL_TOOL_CALL_DELTA,
+            EventSource.MODEL,
+            required_payload=frozenset({"index"}),
+            payload_types={"index": int, "request_id": str},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=16_384,
+        ),
         EventKind.MODEL_SWITCHED: _spec(
             EventKind.MODEL_SWITCHED,
             EventSource.MODEL,
@@ -209,20 +330,63 @@ EVENT_SPECS: Mapping[EventKind, EventSpec] = MappingProxyType(
             EventSource.SESSION,
             EventSource.SYSTEM,
             required_payload=frozenset({"text"}),
+            payload_types={"text": str, "style": str},
+            max_payload_chars=100_000,
         ),
         **{
-            kind: _spec(kind, EventSource.TOOL)
+            kind: _spec(
+                kind,
+                EventSource.TOOL,
+                require_task_id=True,
+                require_correlation_id=True,
+                max_payload_chars=100_000,
+            )
             for kind in (
                 EventKind.TOOL_STARTED,
                 EventKind.TOOL_OUTPUT_DELTA,
                 EventKind.TOOL_FINISHED,
             )
         },
+        EventKind.TOOL_STARTED: _spec(
+            EventKind.TOOL_STARTED,
+            EventSource.TOOL,
+            required_payload=frozenset({"name", "arguments"}),
+            payload_types={"name": str, "arguments": Mapping},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=100_000,
+        ),
+        EventKind.TOOL_OUTPUT_DELTA: _spec(
+            EventKind.TOOL_OUTPUT_DELTA,
+            EventSource.TOOL,
+            required_payload=frozenset({"stream", "text"}),
+            payload_types={"stream": str, "text": str},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=16_384,
+        ),
+        EventKind.TOOL_FINISHED: _spec(
+            EventKind.TOOL_FINISHED,
+            EventSource.TOOL,
+            required_payload=frozenset({"status"}),
+            payload_types={"status": str},
+            require_task_id=True,
+            require_correlation_id=True,
+            max_payload_chars=100_000,
+        ),
         EventKind.ROUTING_DECIDED: _spec(
-            EventKind.ROUTING_DECIDED, EventSource.ROUTER
+            EventKind.ROUTING_DECIDED,
+            EventSource.ROUTER,
+            required_payload=frozenset({"destination", "reason"}),
+            payload_types={"destination": str, "reason": str},
+            require_correlation_id=True,
         ),
         EventKind.ROUTING_REJECTED: _spec(
-            EventKind.ROUTING_REJECTED, EventSource.ROUTER
+            EventKind.ROUTING_REJECTED,
+            EventSource.ROUTER,
+            required_payload=frozenset({"reason"}),
+            payload_types={"reason": str},
+            require_correlation_id=True,
         ),
     }
 )
@@ -344,6 +508,173 @@ class EventProjector:
         }
 
 
+_COALESCIBLE_EVENTS = {
+    EventKind.MODEL_TEXT_DELTA,
+    EventKind.MODEL_REASONING_DELTA,
+    EventKind.MODEL_TOOL_CALL_DELTA,
+    EventKind.TOOL_OUTPUT_DELTA,
+}
+_MAX_COALESCED_TEXT_CHARS = 65_536
+
+
+class _SubscriberMailbox:
+    """One bounded worker queue per subscriber.
+
+    A slow terminal or web projection can no longer stall another subscriber.
+    Under pressure only adjacent compatible deltas are combined; lifecycle and
+    control events are never discarded.
+    """
+
+    def __init__(
+        self,
+        callback: Callable[[EventEnvelope], None],
+        *,
+        max_items: int,
+        name: str,
+    ) -> None:
+        self.callback = callback
+        self.max_items = max_items
+        self._items: deque[EventEnvelope] = deque()
+        self._condition = Condition()
+        self._unfinished = 0
+        self._dropped = 0
+        self._pending_gap = 0
+        self._closed = False
+        self._worker = Thread(target=self._run, name=name, daemon=True)
+        self._worker.start()
+
+    @staticmethod
+    def _merge(left: EventEnvelope, right: EventEnvelope) -> EventEnvelope | None:
+        if (
+            left.kind is not right.kind
+            or left.task_id != right.task_id
+            or left.correlation_id != right.correlation_id
+            or left.kind not in _COALESCIBLE_EVENTS
+        ):
+            return None
+        left_text = left.payload.get("text")
+        right_text = right.payload.get("text")
+        if not isinstance(left_text, str) or not isinstance(right_text, str):
+            return None
+        if len(left_text) + len(right_text) > _MAX_COALESCED_TEXT_CHARS:
+            return None
+        payload = dict(right.payload)
+        payload["text"] = left_text + right_text
+        inherited_gap = int(left.payload.get("_projection_dropped", 0) or 0)
+        if inherited_gap:
+            payload["_projection_dropped"] = (
+                int(payload.get("_projection_dropped", 0) or 0) + inherited_gap
+            )
+        payload["coalesced_from_sequence"] = left.payload.get(
+            "coalesced_from_sequence", left.sequence
+        )
+        return replace(right, payload=_freeze(payload))
+
+    def enqueue(self, event: EventEnvelope) -> bool:
+        with self._condition:
+            if self._closed:
+                return False
+            if self._items:
+                merged = self._merge(self._items[-1], event)
+                if merged is not None and len(self._items) >= self.max_items - 64:
+                    self._items[-1] = self._with_gap_marker(merged)
+                    return True
+            if (
+                event.kind in _COALESCIBLE_EVENTS
+                and len(self._items) >= self.max_items - 64
+            ):
+                self._record_drop()
+                return False
+            if len(self._items) >= self.max_items:
+                # Preserve control/lifecycle events by evicting an older
+                # display-only delta. If a subscriber cannot consume even the
+                # reserved critical capacity, detach at this projection
+                # boundary instead of blocking the runtime and cancellation.
+                dropped_index = next(
+                    (
+                        index
+                        for index, queued in enumerate(self._items)
+                        if queued.kind in _COALESCIBLE_EVENTS
+                    ),
+                    None,
+                )
+                if dropped_index is None:
+                    dropped_index = 0
+                dropped_event = self._items[dropped_index]
+                del self._items[dropped_index]
+                self._unfinished -= 1
+                inherited_gap = int(
+                    dropped_event.payload.get("_projection_dropped", 0) or 0
+                )
+                self._record_drop(1 + inherited_gap)
+            self._items.append(self._with_gap_marker(event))
+            self._unfinished += 1
+            self._condition.notify_all()
+            return True
+
+    def _record_drop(self, count: int = 1) -> None:
+        self._dropped += count
+        self._pending_gap += count
+
+    def _with_gap_marker(self, event: EventEnvelope) -> EventEnvelope:
+        if not self._pending_gap:
+            return event
+        payload = dict(event.payload)
+        existing_gap = int(payload.get("_projection_dropped", 0) or 0)
+        payload["_projection_dropped"] = existing_gap + self._pending_gap
+        self._pending_gap = 0
+        return replace(event, payload=_freeze(payload))
+
+    def flush(self, timeout: float | None = None) -> bool:
+        deadline = None if timeout is None else monotonic() + timeout
+        with self._condition:
+            while self._unfinished:
+                if deadline is None:
+                    self._condition.wait()
+                    continue
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    return False
+                self._condition.wait(remaining)
+            return True
+
+    def close(self) -> None:
+        if self._worker is current_thread():
+            with self._condition:
+                self._closed = True
+                self._condition.notify_all()
+            return
+        drained = self.flush(timeout=2.0)
+        with self._condition:
+            self._closed = True
+            if not drained:
+                queued = len(self._items)
+                self._items.clear()
+                self._unfinished -= queued
+                self._record_drop(queued)
+            self._condition.notify_all()
+        self._worker.join(timeout=2)
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while not self._items and not self._closed:
+                    self._condition.wait()
+                if not self._items and self._closed:
+                    return
+                event = self._items.popleft()
+                self._condition.notify_all()
+            try:
+                self.callback(event)
+            except Exception:
+                # A broken projection is isolated to its own mailbox.
+                pass
+            finally:
+                with self._condition:
+                    self._unfinished -= 1
+                    self._condition.notify_all()
+
+
 class EventBus:
     """A FIFO bus that assigns one strict sequence across all publishers."""
 
@@ -352,24 +683,21 @@ class EventBus:
         factory: EventFactory | None = None,
         *,
         max_buffered_events: int = 4_096,
+        subscriber_mailbox_size: int = 4_096,
     ) -> None:
         if max_buffered_events <= 0:
             raise ValueError("max_buffered_events must be positive")
         self.factory = factory or EventFactory()
         self._events: Queue[EventEnvelope] = Queue(maxsize=max_buffered_events)
-        self._fanout: Queue[EventEnvelope | None] = Queue()
+        if subscriber_mailbox_size <= 64:
+            raise ValueError("subscriber_mailbox_size must be greater than 64")
+        self._subscriber_mailbox_size = subscriber_mailbox_size
         self._publish_lock = Lock()
         self._subscriber_lock = Lock()
-        self._subscribers: dict[int, Callable[[EventEnvelope], None]] = {}
+        self._subscribers: dict[int, _SubscriberMailbox] = {}
         self._subscriber_id = 0
         self._sequence = 0
         self._closed = False
-        self._dispatcher = Thread(
-            target=self._dispatch_loop,
-            name="laohuang-event-fanout",
-            daemon=True,
-        )
-        self._dispatcher.start()
 
     @property
     def last_sequence(self) -> int:
@@ -406,50 +734,44 @@ class EventBus:
             try:
                 self._events.put_nowait(published)
             except Full:
-                # Fan-out retains every event independently. The pull buffer
-                # is bounded so an unused diagnostic queue cannot grow forever
-                # during long Bash/model streams.
+                # Subscriber mailboxes retain/coalesce independently. The
+                # pull buffer is bounded so an unused diagnostic queue cannot
+                # grow forever during long Bash/model streams.
                 try:
                     self._events.get_nowait()
                 except Empty:
                     pass
                 self._events.put_nowait(published)
-            self._fanout.put_nowait(published)
+            with self._subscriber_lock:
+                mailboxes = tuple(self._subscribers.values())
+            for mailbox in mailboxes:
+                mailbox.enqueue(published)
         return published
-
-    def _dispatch_loop(self) -> None:
-        while True:
-            event = self._fanout.get()
-            try:
-                if event is None:
-                    return
-                with self._subscriber_lock:
-                    subscribers = tuple(self._subscribers.values())
-                for subscriber in subscribers:
-                    try:
-                        subscriber(event)
-                    except Exception:
-                        # A broken projection must not stop later consumers.
-                        continue
-            finally:
-                self._fanout.task_done()
 
     def flush(self) -> None:
         """Wait until every published event reached current subscribers."""
 
-        self._fanout.join()
+        while True:
+            before = self.last_sequence
+            with self._subscriber_lock:
+                mailboxes = tuple(self._subscribers.values())
+            for mailbox in mailboxes:
+                mailbox.flush()
+            if self.last_sequence == before:
+                return
 
     def close(self) -> None:
-        """Deliver queued events and stop the dispatcher thread exactly once."""
+        """Deliver queued events and stop subscriber workers exactly once."""
 
         with self._publish_lock:
             if self._closed:
                 return
             self._closed = True
-            self._fanout.put_nowait(None)
-        self._fanout.join()
-        if self._dispatcher is not current_thread():
-            self._dispatcher.join(timeout=2)
+        with self._subscriber_lock:
+            mailboxes = tuple(self._subscribers.values())
+            self._subscribers.clear()
+        for mailbox in mailboxes:
+            mailbox.close()
 
     def subscribe(
         self, callback: Callable[[EventEnvelope], None]
@@ -459,14 +781,21 @@ class EventBus:
         with self._publish_lock:
             if self._closed:
                 raise RuntimeError("event bus is closed")
-        with self._subscriber_lock:
-            self._subscriber_id += 1
-            subscriber_id = self._subscriber_id
-            self._subscribers[subscriber_id] = callback
+            with self._subscriber_lock:
+                self._subscriber_id += 1
+                subscriber_id = self._subscriber_id
+                mailbox = _SubscriberMailbox(
+                    callback,
+                    max_items=self._subscriber_mailbox_size,
+                    name=f"laohuang-event-subscriber-{subscriber_id}",
+                )
+                self._subscribers[subscriber_id] = mailbox
 
         def unsubscribe() -> None:
             with self._subscriber_lock:
-                self._subscribers.pop(subscriber_id, None)
+                removed = self._subscribers.pop(subscriber_id, None)
+            if removed is not None:
+                removed.close()
 
         return unsubscribe
 

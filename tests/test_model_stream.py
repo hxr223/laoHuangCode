@@ -97,6 +97,29 @@ class CancellingTools:
 
 
 class ModelStreamTests(unittest.TestCase):
+    def test_text_deltas_are_coalesced_before_publication(self):
+        events = []
+        stream = FakeStream(
+            [
+                chunk(delta=delta(content="a")),
+                chunk(delta=delta(content="b")),
+                chunk(delta=delta(content="c")),
+                chunk(delta=delta(), finish_reason="stop"),
+            ]
+        )
+
+        result = ChatCompletionStreamer(FakeCompletions(stream)).complete(
+            model="model",
+            messages=[],
+            tools=[],
+            on_delta=lambda kind, payload: events.append((kind, payload)),
+        )
+
+        text_events = [item for item in events if item[0] == "model_text_delta"]
+        self.assertEqual(result.content, "abc")
+        self.assertEqual(len(text_events), 1)
+        self.assertEqual(text_events[0][1]["text"], "abc")
+
     def test_assembles_reasoning_content_tool_calls_and_usage(self):
         events = []
         stream = FakeStream(

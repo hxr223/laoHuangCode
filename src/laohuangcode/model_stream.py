@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -278,6 +279,61 @@ class ModelAttempt:
 DeltaCallback = Callable[[str, dict[str, Any]], None]
 
 
+class _TextDeltaCoalescer:
+    """Emit model text at most every 40ms or once 4KB is accumulated."""
+
+    def __init__(
+        self,
+        callback: DeltaCallback | None,
+        *,
+        interval: float = 0.04,
+        max_chars: int = 4_096,
+    ) -> None:
+        self.callback = callback
+        self.interval = interval
+        self.max_chars = max_chars
+        self._parts: list[str] = []
+        self._chars = 0
+        self._request_id = ""
+        self._last_flush = monotonic()
+
+    def emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self.callback is None:
+            return
+        if event_type != "model_text_delta":
+            self.flush()
+            self.callback(event_type, payload)
+            return
+        text = payload.get("text")
+        if not isinstance(text, str) or not text:
+            return
+        self._request_id = str(payload.get("request_id", ""))
+        self._parts.append(text)
+        self._chars += len(text)
+        if self._chars >= self.max_chars or monotonic() - self._last_flush >= self.interval:
+            self.flush()
+
+    def flush_if_due(self) -> None:
+        if self._parts and monotonic() - self._last_flush >= self.interval:
+            self.flush()
+
+    def flush(self) -> None:
+        if self.callback is None or not self._parts:
+            return
+        text = "".join(self._parts)
+        self._parts.clear()
+        self._chars = 0
+        self._last_flush = monotonic()
+        for offset in range(0, len(text), self.max_chars):
+            self.callback(
+                "model_text_delta",
+                {
+                    "request_id": self._request_id,
+                    "text": text[offset : offset + self.max_chars],
+                },
+            )
+
+
 class ChatCompletionStreamer:
     """Create and assemble one OpenAI-compatible streaming completion."""
 
@@ -309,6 +365,7 @@ class ChatCompletionStreamer:
 
         for retry in range(max_pre_delta_retries + 1):
             attempt = ModelAttempt(request_id=request_id)
+            deltas = _TextDeltaCoalescer(on_delta)
             stream: Any = None
             unregister_cancel: Callable[[], None] = lambda: None
             try:
@@ -340,13 +397,14 @@ class ChatCompletionStreamer:
                         continue
                     for choice in choices:
                         for event_type, payload in attempt.add_choice(choice):
-                            if on_delta is not None:
-                                on_delta(
-                                    event_type,
-                                    {"request_id": request_id, **payload},
-                                )
+                            deltas.emit(
+                                event_type,
+                                {"request_id": request_id, **payload},
+                            )
+                    deltas.flush_if_due()
 
                 _ensure_active(cancel_token, is_request_active, request_id)
+                deltas.flush()
                 if on_delta is not None:
                     on_delta(
                         "model_response_validating",
@@ -354,10 +412,12 @@ class ChatCompletionStreamer:
                     )
                 return attempt.validate()
             except (ModelStreamCancelled, StaleModelRequest):
+                deltas.flush()
                 attempt.abort()
                 _close_stream(stream)
                 raise
             except Exception as error:
+                deltas.flush()
                 attempt.abort()
                 _close_stream(stream)
                 last_error = error

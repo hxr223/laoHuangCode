@@ -1,13 +1,88 @@
 import io
 from pathlib import Path
+from types import SimpleNamespace
+import threading
+import time
 import unittest
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
-from laohuangcode.terminal_ui import TerminalUI
+from laohuangcode.commands import CommandRegistry, CommandSpec
+from laohuangcode.terminal_ui import TerminalUI, _input_bindings
 
 
 class TerminalUITests(unittest.TestCase):
+    def test_real_prompt_frame_is_compact_and_has_both_borders(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=40, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        with create_pipe_input() as pipe:
+            ui = TerminalUI(
+                console=Console(file=io.StringIO(), force_terminal=False),
+                session_factory=lambda **options: PromptSession(
+                    input=pipe,
+                    output=output,
+                    **options,
+                ),
+            )
+
+            def prompt() -> None:
+                try:
+                    ui.prompt()
+                except EOFError:
+                    pass
+
+            worker = threading.Thread(target=prompt)
+            worker.start()
+            time.sleep(0.05)
+            rendered = output_buffer.getvalue()
+            pipe.send_bytes(b"\x04")
+            worker.join(1)
+
+        self.assertIn("┌", rendered)
+        self.assertIn("└", rendered)
+        self.assertIn("│", rendered)
+        self.assertLessEqual(rendered.count("\r\n"), 3)
+
+    def test_typing_slash_opens_command_completion_immediately(self):
+        calls = []
+
+        class Buffer:
+            text = ""
+            cursor_position = 0
+
+            def insert_text(self, text):
+                self.text += text
+                self.cursor_position += len(text)
+
+            def start_completion(self, *, select_first):
+                calls.append(select_first)
+
+        binding = next(
+            item
+            for item in _input_bindings().bindings
+            if item.keys == ("/",)
+        )
+        buffer = Buffer()
+
+        binding.handler(SimpleNamespace(current_buffer=buffer))
+
+        self.assertEqual(buffer.text, "/")
+        self.assertEqual(calls, [False])
+
     def test_assistant_response_is_rendered_as_markdown_without_chat_prefix(self):
         stream = io.StringIO()
         ui = TerminalUI(
@@ -46,10 +121,10 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertEqual(value, "first line\nsecond line")
         self.assertTrue(options["multiline"])
+        self.assertTrue(options["show_frame"])
         self.assertTrue(options["enable_history_search"])
-        self.assertIn("─", str(options["message"]()))
         self.assertIn("❯", str(options["message"]()))
-        self.assertNotIn("Enter 发送", str(options["bottom_toolbar"]()))
+        self.assertNotIn("bottom_toolbar", options)
         self.assertIsNotNone(options["history"])
         self.assertIsNotNone(options["key_bindings"])
 
@@ -79,8 +154,47 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(len(created_sessions), 2)
         self.assertFalse(created_sessions[0]["multiline"])
         self.assertTrue(created_sessions[1]["multiline"])
-        self.assertIn("─", str(created_sessions[1]["message"]()))
+        self.assertTrue(created_sessions[1]["show_frame"])
         self.assertIn("❯", str(created_sessions[1]["message"]()))
+
+    def test_real_prompt_tab_accepts_first_slash_completion(self):
+        registry = CommandRegistry(
+            [CommandSpec("/help", "show help", "/help")]
+        )
+        with create_pipe_input() as pipe:
+            ui = TerminalUI(
+                console=Console(file=io.StringIO(), force_terminal=False),
+                command_registry=registry,
+                session_factory=lambda **options: PromptSession(
+                    input=pipe,
+                    output=DummyOutput(),
+                    **options,
+                ),
+            )
+            result = []
+            errors = []
+
+            def prompt() -> None:
+                try:
+                    result.append(ui.prompt())
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=prompt)
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("/")
+            deadline = time.monotonic() + 1
+            while (
+                ui._session is None
+                or ui._session.default_buffer.complete_state is None
+            ) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            pipe.send_bytes(b"\t\r")
+            worker.join(1)
+
+        self.assertFalse(errors)
+        self.assertEqual(result, ["/help"])
 
     def test_tool_call_is_rendered_as_a_compact_result_card(self):
         stream = io.StringIO()

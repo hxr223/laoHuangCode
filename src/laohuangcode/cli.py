@@ -19,6 +19,7 @@ from .credentials import CredentialStore
 from .events import EventProjector
 from .model_selection import ModelSelector
 from .providers import provider_names
+from .semantic_classifier import SmallModelSemanticClassifier
 from .session import AgentSession
 from .terminal_ui import PlainEventSink, TerminalUI
 from .tools import ToolRegistry
@@ -121,10 +122,17 @@ def run_session_repl(
                 continue
 
             if user_input == "/exit":
+                session.submit_input(user_input)
                 break
             if not user_input:
                 continue
             if user_input.startswith("/"):
+                if user_input == "/cancel":
+                    submission = session.submit_input(user_input)
+                    if submission.task_id is None:
+                        session.publish_notice("No active task to cancel.")
+                    continue
+                session.submit_input(user_input)
                 if command_handler is not None and command_handler(user_input):
                     continue
                 command_name = user_input.split()[0]
@@ -147,6 +155,10 @@ def run_session_repl(
                 session.publish_notice(
                     "Message queued "
                     f"(pending {status['pending']} · held {status['held']})."
+                )
+            elif submission.rejected:
+                session.publish_notice(
+                    f"Message rejected: {submission.reason}", style="bold red"
                 )
     finally:
         clean_shutdown = session.close(wait=True, timeout=10)
@@ -191,10 +203,17 @@ def run_plain_session_repl(
                 continue
 
             if user_input == "/exit":
+                session.submit_input(user_input)
                 break
             if not user_input:
                 continue
             if user_input.startswith("/"):
+                if user_input == "/cancel":
+                    submission = session.submit_input(user_input)
+                    if submission.task_id is None:
+                        session.publish_notice("No active task to cancel.")
+                    continue
+                session.submit_input(user_input)
                 if command_handler is not None and command_handler(user_input):
                     continue
                 session.publish_notice(
@@ -212,6 +231,8 @@ def run_plain_session_repl(
                     "Message queued "
                     f"(pending {status['pending']} · held {status['held']})."
                 )
+            elif submission.rejected:
+                session.publish_notice(f"Message rejected: {submission.reason}")
     finally:
         clean_shutdown = session.close(wait=True, timeout=10)
         if clean_shutdown:
@@ -497,7 +518,11 @@ def main(
         on_agent_event=None,
         provider=config.provider,
     )
-    runtime = AgentSession(agent)
+    semantic_classifier = SmallModelSemanticClassifier(
+        client=client,
+        model=config.model,
+    )
+    runtime = AgentSession(agent, semantic_classifier=semantic_classifier)
     plain_sink = PlainEventSink(output_fn) if terminal_ui is None else None
     session_sink = terminal_ui if terminal_ui is not None else plain_sink
     assert session_sink is not None
@@ -566,7 +591,9 @@ def main(
         )
 
     def handle_command(command: str) -> bool:
-        return commands.handle(command)
+        handled = commands.handle(command)
+        semantic_classifier.configure(client=agent.client, model=agent.model)
+        return handled
 
     clean_shutdown = False
     try:

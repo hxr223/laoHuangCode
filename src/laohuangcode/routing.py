@@ -176,6 +176,58 @@ class RoutedEvent:
     decision: RouteDecision
 
 
+def estimate_tokens(text: str) -> int:
+    """Provider-neutral conservative token estimate without a tokenizer."""
+
+    if not text:
+        return 0
+    return max(1, (len(text.encode("utf-8")) + 3) // 4)
+
+
+def _event_tokens(routed: RoutedEvent) -> int:
+    return estimate_tokens(str(routed.event.payload.get("content", "")))
+
+
+@dataclass(frozen=True, slots=True)
+class DeadLetter:
+    event: EventEnvelope
+    reason: str
+
+
+class DeadLetterQueue:
+    """Bounded inspection queue for events rejected by routing or capacity."""
+
+    def __init__(self, max_items: int = 100) -> None:
+        if max_items <= 0:
+            raise ValueError("max_items must be positive")
+        self.max_items = max_items
+        self._items: deque[DeadLetter] = deque()
+        self._lock = Lock()
+
+    def put(self, event: EventEnvelope, reason: str) -> None:
+        with self._lock:
+            if len(self._items) >= self.max_items:
+                self._items.popleft()
+            self._items.append(DeadLetter(event, reason))
+
+    def drain(self) -> tuple[DeadLetter, ...]:
+        with self._lock:
+            items = tuple(self._items)
+            self._items.clear()
+            return items
+
+    def snapshot(self) -> tuple[DeadLetter, ...]:
+        with self._lock:
+            return tuple(self._items)
+
+    def clear(self) -> int:
+        return len(self.drain())
+
+    def __len__(self) -> int:
+        with self._lock:
+            return len(self._items)
+
+
 SemanticClassifier = Callable[
     [EventEnvelope, TaskRecord | None], RouteStrategy | str | RouteDecision | None
 ]
@@ -476,11 +528,17 @@ def _compatibility_key(routed: RoutedEvent) -> tuple[str, str | None, str, str]:
 class PendingQueue:
     """FIFO queue with atomic compatible-batch snapshots."""
 
-    def __init__(self, max_items: int = 100) -> None:
+    def __init__(
+        self, max_items: int = 100, *, max_estimated_tokens: int = 8_000
+    ) -> None:
         if max_items <= 0:
             raise ValueError("max_items must be positive")
+        if max_estimated_tokens <= 0:
+            raise ValueError("max_estimated_tokens must be positive")
         self._items: deque[RoutedEvent] = deque()
         self.max_items = max_items
+        self.max_estimated_tokens = max_estimated_tokens
+        self._estimated_tokens = 0
         self._lock = Lock()
 
     def put(self, event: RoutedEvent) -> None:
@@ -489,7 +547,11 @@ class PendingQueue:
         with self._lock:
             if len(self._items) >= self.max_items:
                 raise OverflowError("pending queue is full")
+            event_tokens = _event_tokens(event)
+            if self._estimated_tokens + event_tokens > self.max_estimated_tokens:
+                raise OverflowError("pending queue token budget is full")
             self._items.append(event)
+            self._estimated_tokens += event_tokens
 
     def drain_compatible(
         self,
@@ -527,6 +589,7 @@ class PendingQueue:
                 else:
                     retained.append(item)
             self._items = retained
+            self._estimated_tokens = sum(_event_tokens(item) for item in retained)
             return tuple(drained)
 
     def __len__(self) -> int:
@@ -546,7 +609,13 @@ class PendingQueue:
                 else:
                     retained.append(item)
             self._items = retained
+            self._estimated_tokens = sum(_event_tokens(item) for item in retained)
             return tuple(drained)
+
+    @property
+    def estimated_tokens(self) -> int:
+        with self._lock:
+            return self._estimated_tokens
 
     def snapshot(self) -> tuple[RoutedEvent, ...]:
         with self._lock:
@@ -556,17 +625,24 @@ class PendingQueue:
         with self._lock:
             count = len(self._items)
             self._items.clear()
+            self._estimated_tokens = 0
             return count
 
 
 class HeldQueue:
     """Inputs retained while the active task is cancelling."""
 
-    def __init__(self, max_items: int = 100) -> None:
+    def __init__(
+        self, max_items: int = 100, *, max_estimated_tokens: int = 8_000
+    ) -> None:
         if max_items <= 0:
             raise ValueError("max_items must be positive")
+        if max_estimated_tokens <= 0:
+            raise ValueError("max_estimated_tokens must be positive")
         self._items: deque[RoutedEvent] = deque()
         self.max_items = max_items
+        self.max_estimated_tokens = max_estimated_tokens
+        self._estimated_tokens = 0
         self._lock = Lock()
 
     def put(self, event: RoutedEvent) -> None:
@@ -575,13 +651,18 @@ class HeldQueue:
         with self._lock:
             if len(self._items) >= self.max_items:
                 raise OverflowError("held queue is full")
+            event_tokens = _event_tokens(event)
+            if self._estimated_tokens + event_tokens > self.max_estimated_tokens:
+                raise OverflowError("held queue token budget is full")
             self._items.append(event)
+            self._estimated_tokens += event_tokens
 
     def drain(self, *, task_id: str | None = None) -> tuple[RoutedEvent, ...]:
         with self._lock:
             if task_id is None:
                 items = tuple(self._items)
                 self._items.clear()
+                self._estimated_tokens = 0
                 return items
             drained: list[RoutedEvent] = []
             retained: deque[RoutedEvent] = deque()
@@ -592,7 +673,16 @@ class HeldQueue:
                 else:
                     retained.append(item)
             self._items = retained
+            self._estimated_tokens = sum(_event_tokens(item) for item in retained)
             return tuple(drained)
+
+    @property
+    def estimated_tokens(self) -> int:
+        with self._lock:
+            return self._estimated_tokens
+
+    def clear(self) -> int:
+        return len(self.drain())
 
     def __len__(self) -> int:
         with self._lock:
@@ -603,6 +693,8 @@ class HeldQueue:
 class ScheduleResult:
     immediate: tuple[RoutedEvent, ...] = ()
     queued: bool = False
+    rejected: bool = False
+    reason: str = ""
 
 
 class Scheduler:
@@ -610,20 +702,30 @@ class Scheduler:
         self,
         pending: PendingQueue | None = None,
         held: HeldQueue | None = None,
+        dead_letters: DeadLetterQueue | None = None,
     ) -> None:
         self.pending = pending if pending is not None else PendingQueue()
         self.held = held if held is not None else HeldQueue()
+        self.dead_letters = (
+            dead_letters if dead_letters is not None else DeadLetterQueue()
+        )
 
     def schedule(self, event: RoutedEvent) -> ScheduleResult:
         destination = event.decision.destination
-        if destination is RouteDestination.PENDING:
-            self.pending.put(event)
-            return ScheduleResult(queued=True)
-        if destination is RouteDestination.HELD:
-            self.held.put(event)
-            return ScheduleResult(queued=True)
+        try:
+            if destination is RouteDestination.PENDING:
+                self.pending.put(event)
+                return ScheduleResult(queued=True)
+            if destination is RouteDestination.HELD:
+                self.held.put(event)
+                return ScheduleResult(queued=True)
+        except OverflowError as error:
+            reason = str(error)
+            self.dead_letters.put(event.event, reason)
+            return ScheduleResult(rejected=True, reason=reason)
         if destination is RouteDestination.DROP:
-            return ScheduleResult()
+            self.dead_letters.put(event.event, event.decision.reason)
+            return ScheduleResult(rejected=True, reason=event.decision.reason)
         return ScheduleResult(immediate=(event,))
 
     def safe_point(self, task_id: str) -> tuple[RoutedEvent, ...]:
