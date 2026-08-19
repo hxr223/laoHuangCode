@@ -48,6 +48,7 @@ class TerminalUITests(unittest.TestCase):
         self.assertTrue(options["multiline"])
         self.assertTrue(options["enable_history_search"])
         self.assertIn("─", str(options["message"]()))
+        self.assertIn("❯", str(options["message"]()))
         self.assertNotIn("Enter 发送", str(options["bottom_toolbar"]()))
         self.assertIsNotNone(options["history"])
         self.assertIsNotNone(options["key_bindings"])
@@ -79,6 +80,7 @@ class TerminalUITests(unittest.TestCase):
         self.assertFalse(created_sessions[0]["multiline"])
         self.assertTrue(created_sessions[1]["multiline"])
         self.assertIn("─", str(created_sessions[1]["message"]()))
+        self.assertIn("❯", str(created_sessions[1]["message"]()))
 
     def test_tool_call_is_rendered_as_a_compact_result_card(self):
         stream = io.StringIO()

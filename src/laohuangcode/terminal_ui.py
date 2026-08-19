@@ -290,6 +290,7 @@ class TerminalUI:
                 {
                     "input-border": "#9b6aa0",
                     "input-padding": "",
+                    "prompt": "bold ansicyan",
                     "bottom-toolbar": "noreverse",
                 }
             ),
@@ -330,7 +331,7 @@ class TerminalUI:
     def _input_prompt(self) -> HTML:
         return HTML(
             f"<input-border>{self._input_border()}</input-border>\n"
-            "<input-padding>  </input-padding>"
+            "<prompt>❯ </prompt>"
         )
 
     def _input_bottom_border(self) -> HTML:
