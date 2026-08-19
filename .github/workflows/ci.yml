@@ -45,3 +45,19 @@ jobs:
         working-directory: npm
       - run: npm pack --dry-run
         working-directory: npm
+
+  release-readiness:
+    if: github.event_name == 'pull_request'
+    needs: [python, npm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Require a synchronized, unpublished release version
+        run: |
+          python scripts/check_versions.py
+          python scripts/check_npm_unpublished.py
