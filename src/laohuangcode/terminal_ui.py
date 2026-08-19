@@ -50,7 +50,6 @@ class TerminalUI:
         self._session_factory = session_factory
         self._session: Any | None = None
         self._question_session: Any | None = None
-        self._permission_session: Any | None = None
         self.project_root = project_root
         self.provider = provider
         self.model = model
@@ -186,28 +185,6 @@ class TerminalUI:
         else:
             detail = json.dumps(result, ensure_ascii=False)
         self.console.print(Text(f"  └─ {detail}", style="dim"))
-
-    def ask_permission(self, name: str, arguments: dict[str, Any]) -> str:
-        safe_arguments = dict(arguments)
-        for key in ("content", "old_text", "new_text"):
-            value = safe_arguments.get(key)
-            if isinstance(value, str):
-                safe_arguments[key] = f"<{len(value)} chars>"
-        body = Text(
-            f"{name} {json.dumps(safe_arguments, ensure_ascii=False)}",
-            style="yellow",
-        )
-        self.console.print(
-            Panel(body, title="Permission required", border_style="yellow")
-        )
-        if self._permission_session is None:
-            self._permission_session = self._session_factory(
-                message=HTML("<warning>Allow? [y/N/a] </warning>"),
-                multiline=False,
-                history=InMemoryHistory(),
-                style=Style.from_dict({"warning": "bold ansiyellow"}),
-            )
-        return self._permission_session.prompt()
 
     @staticmethod
     def _clip(value: str, limit: int) -> str:

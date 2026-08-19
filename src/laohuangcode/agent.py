@@ -7,7 +7,6 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
-from .permissions import PermissionGate
 from .tools import ToolExecutionMode, ToolRegistry
 
 
@@ -45,7 +44,6 @@ class CodingAgent:
         ]
         | None = None,
         on_agent_event: AgentEventCallback | None = None,
-        permission_gate: PermissionGate | None = None,
         provider: str | None = None,
         tool_execution: ToolExecutionMode = "parallel",
     ) -> None:
@@ -55,7 +53,6 @@ class CodingAgent:
         self.max_tool_rounds = max_tool_rounds
         self.on_tool_event = on_tool_event
         self.on_agent_event = on_agent_event
-        self.permission_gate = permission_gate
         self.provider = provider
         self.tool_execution = tool_execution
         self.messages: list[dict[str, Any]] = [
@@ -231,19 +228,7 @@ class CodingAgent:
                     "arguments": self._safe_arguments(arguments),
                 },
             )
-            if result is None and (
-                self.permission_gate is not None
-                and not self.permission_gate.authorize(
-                    tool_call.function.name, arguments
-                )
-            ):
-                result = {
-                    "ok": False,
-                    "error": "Tool execution denied by user",
-                }
-                self._emit("tool_denied", event_context)
-            elif result is None:
-                self._emit("tool_approved", event_context)
+            if result is None:
                 prepared.append((offset, tool_call, arguments, event_context))
 
             if result is not None:

@@ -107,34 +107,6 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("exit 0", rendered)
         self.assertIn("24 tests passed", rendered)
 
-    def test_permission_prompt_hides_file_content(self):
-        stream = io.StringIO()
-
-        class FakeSession:
-            def prompt(self, **kwargs):
-                return "a"
-
-        ui = TerminalUI(
-            console=Console(
-                file=stream,
-                color_system=None,
-                force_terminal=False,
-                width=100,
-            ),
-            session_factory=lambda **_kwargs: FakeSession(),
-        )
-
-        answer = ui.ask_permission(
-            "write", {"path": "notes.txt", "content": "secret"}
-        )
-
-        rendered = stream.getvalue()
-        self.assertEqual(answer, "a")
-        self.assertIn("write", rendered)
-        self.assertIn("notes.txt", rendered)
-        self.assertNotIn("secret", rendered)
-        self.assertIn("6 chars", rendered)
-
     def test_welcome_panel_shows_session_context(self):
         stream = io.StringIO()
         ui = TerminalUI(

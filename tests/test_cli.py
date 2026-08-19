@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 
 from laohuangcode.__main__ import run_repl
+from laohuangcode import __version__
 from laohuangcode.cli import _supports_terminal_ui, main as cli_main
 from laohuangcode.config import ConfigManager
 from laohuangcode.credentials import CredentialStore
@@ -303,7 +304,7 @@ class ReplTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "laohuang 0.3.0")
+        self.assertEqual(completed.stdout.strip(), f"laohuang {__version__}")
 
 
 if __name__ == "__main__":

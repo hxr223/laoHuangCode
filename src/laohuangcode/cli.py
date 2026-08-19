@@ -18,7 +18,6 @@ from .commands import SessionCommands
 from .config import Config, ConfigManager
 from .credentials import CredentialStore
 from .model_selection import ModelSelector
-from .permissions import PermissionGate
 from .providers import provider_names
 from .terminal_ui import TerminalUI
 from .tools import ToolRegistry
@@ -121,22 +120,6 @@ def _tool_reporter(
     return report
 
 
-def _permission_prompt(
-    input_fn: Callable[[str], str],
-    output_fn: Callable[[str], None],
-) -> Callable[[str, dict[str, Any]], str]:
-    def prompt(name: str, arguments: dict[str, Any]) -> str:
-        safe_arguments = dict(arguments)
-        for key in ("content", "old_text", "new_text"):
-            value = safe_arguments.get(key)
-            if isinstance(value, str):
-                safe_arguments[key] = f"<{len(value)} chars>"
-        output_fn(f"\nPermission required: {name} {_summarize(safe_arguments)}")
-        return input_fn("Allow? [y/N/a] ")
-
-    return prompt
-
-
 def _supports_terminal_ui(
     *,
     input_fn: Callable[[str], str],
@@ -175,12 +158,6 @@ def _parser() -> argparse.ArgumentParser:
         metavar="PORT",
         help="dashboard port (default: 8765; use 0 for any free port)",
     )
-    parser.add_argument(
-        "--dangerously-skip-permissions",
-        action="store_true",
-        help="allow write, edit, and bash without confirmation",
-    )
-
     subcommands = parser.add_subparsers(dest="command")
     configure = subcommands.add_parser("config", help="configure a model profile")
     configure.add_argument(
@@ -391,11 +368,6 @@ def main(
                 "provider": config.provider,
                 "model": config.model,
                 "profile": config.profile,
-                "permission_mode": (
-                    "bypass"
-                    if args.dangerously_skip_permissions
-                    else "confirm"
-                ),
             },
         )
         try:
@@ -419,14 +391,6 @@ def main(
             else _tool_reporter(output_fn)
         ),
         on_agent_event=event_log.record if event_log is not None else None,
-        permission_gate=PermissionGate(
-            prompt=(
-                terminal_ui.ask_permission
-                if terminal_ui is not None
-                else _permission_prompt(input_fn, output_fn)
-            ),
-            dangerously_skip_permissions=args.dangerously_skip_permissions,
-        ),
         provider=config.provider,
     )
     commands = SessionCommands(

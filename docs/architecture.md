@@ -36,7 +36,6 @@ laoHuangCode/
 │   ├── config.py              # Profile 存储与解析
 │   ├── credentials.py         # 私有凭据文件
 │   ├── model_selection.py     # 供应商与模型交互选择、首次启动凭据引导
-│   ├── permissions.py         # 工具权限闸门
 │   ├── providers.py           # DeepSeek/OpenAI 预设
 │   ├── terminal_ui.py         # Rich 输出与 prompt_toolkit 交互输入
 │   ├── tools.py               # read/write/edit/bash
@@ -66,14 +65,12 @@ flowchart LR
         Commands --> Client
         CLI --> Agent["agent.py"]
         Commands -->|switch_model| Agent
-        CLI --> Gate["permissions.py"]
         CLI --> Registry["tools.py"]
-        Agent --> Gate
         Agent --> Registry
         Agent -.运行事件.-> Web["web.py"]
     end
 
-    TUI -->|Markdown / 工具卡片 / 权限确认| User
+    TUI -->|Markdown / 工具卡片| User
     Client --> SDK["OpenAI SDK / Chat Completions"]
     Agent --> SDK
     Registry --> Tools["read / write / edit / bash"]
@@ -88,7 +85,6 @@ sequenceDiagram
     participant CLI as CLI / REPL
     participant Agent as CodingAgent
     participant API as Chat Completions
-    participant Gate as PermissionGate
     participant Tools as ToolRegistry
 
     User->>CLI: 输入编码任务
@@ -97,16 +93,10 @@ sequenceDiagram
 
     loop 模型返回 tool_calls（最多 20 轮）
         API-->>Agent: tool_calls
-        loop 按源顺序预检每个调用
-            Agent->>Gate: authorize(name, arguments)
-            alt 用户拒绝
-                Gate-->>Agent: deny
-                Agent->>Agent: 生成拒绝结果
-            else read / 已确认 / 会话放行
-                Gate-->>Agent: allow
-            end
+        loop 按源顺序解析每个调用
+            Agent->>Agent: 解析并校验参数
         end
-        par 允许的调用默认并发执行
+        par 调用默认并发执行
             Agent->>Tools: execute(call 1)
             Tools-->>Agent: result 1
         and
@@ -122,13 +112,13 @@ sequenceDiagram
     CLI-->>User: 显示回复
 ```
 
-即使用户拒绝工具，Agent 也会向模型追加对应的 `tool` 角色结果，保持每个
-`tool_call_id` 都有配对响应，再让模型解释或选择其他方案。
+Agent 会向模型追加每个调用对应的 `tool` 角色结果，保持每个 `tool_call_id` 都有
+配对响应，再让模型解释结果或选择其他方案。
 
 ## 工具并发与顺序
 
-Agent 默认采用与 Pi 相同的批次语义：参数解析和权限确认按模型给出的顺序完成，
-通过预检的工具随后在线程池中并发执行。`tool_result` 事件按实际完成顺序立即发出，
+Agent 默认采用与 Pi 相同的批次语义：参数解析按模型给出的顺序完成，工具随后在
+线程池中并发执行。`tool_result` 事件按实际完成顺序立即发出，
 但加入会话历史并回传模型的 `tool` 消息始终保持原始 `tool_calls` 顺序，因此日志可
 实时反映快慢，模型上下文仍然确定。
 
@@ -138,14 +128,14 @@ Agent 默认采用与 Pi 相同的批次语义：参数解析和权限确认按�
 
 `write` 和 `edit` 使用解析后绝对路径作为修改锁的键：同一文件的修改逐个完成，避免
 丢失更新；不同文件仍可并发。`read` 和 `bash` 不进入文件修改锁，其中 `bash` 可能
-修改任意未知文件，因此它与其他工具并发时的副作用仍由权限确认和用户环境承担。
+修改任意未知文件，因此它与其他工具并发时的副作用由用户环境承担。
 
 ## Web 可观测事件
 
 启用 `--web` 后，`CodingAgent` 旁路发送：
 
 - `user_message`、`model_request`、`model_response`。
-- `tool_start`、`tool_approved`、`tool_denied`、`tool_result`。
+- `tool_start`、`tool_result`。
 - `assistant_response`、`model_error`、`agent_error`。
 - `model_switched`：供应商或模型切换成功。
 
@@ -154,4 +144,4 @@ Agent 默认采用与 Pi 相同的批次语义：参数解析和权限确认按�
 `/api/events?after=<id>` 拉取增量事件。日志仅在内存中，CLI 退出时 Web 服务一并
 停止。
 
-> 权限确认不是沙箱。尤其是 `bash`，获准后仍拥有当前用户在操作系统中的权限。
+> 当前没有工具确认或 Bash 沙箱。`bash` 拥有当前用户在操作系统中的权限。
