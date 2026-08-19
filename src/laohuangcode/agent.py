@@ -2,11 +2,19 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
+from uuid import uuid4
 
+from .model_stream import (
+    ChatCompletionStreamer,
+    ModelStreamCancelled,
+    ModelStreamError,
+    StaleModelRequest,
+)
 from .tools import ToolExecutionMode, ToolRegistry
 
 
@@ -23,12 +31,19 @@ class AgentError(RuntimeError):
     """Raised when the model response cannot drive the agent loop."""
 
 
+class AgentCancelled(AgentError):
+    """Raised when the active agent task is cooperatively cancelled."""
+
+
 def _is_authentication_error(error: Exception) -> bool:
     status_code = getattr(error, "status_code", None)
     if status_code is None:
         response = getattr(error, "response", None)
         status_code = getattr(response, "status_code", None)
-    return status_code == 401 or type(error).__name__ == "AuthenticationError"
+    if status_code == 401 or type(error).__name__ == "AuthenticationError":
+        return True
+    cause = error.__cause__
+    return isinstance(cause, Exception) and _is_authentication_error(cause)
 
 
 class CodingAgent:
@@ -59,6 +74,8 @@ class CodingAgent:
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
         self._turn = 0
+        self._active_context: Any | None = None
+        self._active_request_id: str | None = None
 
     def switch_model(self, *, client: Any, model: str, provider: str) -> None:
         previous_model = self.model
@@ -99,98 +116,271 @@ class CodingAgent:
             portable["tool_call_id"] = message["tool_call_id"]
         return portable
 
-    def run(self, user_input: str) -> str:
+    def run(
+        self,
+        user_input: str,
+        context: Any | None = None,
+        *,
+        cancel_token: Any | None = None,
+        request_id: str | None = None,
+        is_request_active: Callable[[str], bool] | None = None,
+    ) -> str:
+        """Run one user turn, committing only fully validated model attempts."""
+        if context is not None and cancel_token is None:
+            cancel_token = getattr(context, "cancel_token", None)
+        self._active_context = context
         self._turn += 1
-        self.messages.append({"role": "user", "content": user_input})
-        self._emit("user_message", {"content": user_input})
         tool_rounds = 0
         model_round = 0
 
-        while True:
-            model_round += 1
-            self._emit(
-                "model_request",
-                {"round": model_round, "message_count": len(self.messages)},
-            )
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=list(self.messages),
-                    tools=self.tools.definitions,
+        try:
+            user_message = {"role": "user", "content": user_input}
+            commit_input = getattr(context, "commit_input", None)
+            if callable(commit_input):
+                committed = self._commit_context_message(
+                    commit_input, user_message
                 )
-            except Exception as error:
-                self._emit(
-                    "model_error", {"round": model_round, "error": str(error)}
+            else:
+                self._raise_if_cancelled(cancel_token)
+                self.messages.append(user_message)
+                committed = True
+            if not committed:
+                raise AgentCancelled("cancelled before user input commit")
+            self._emit("user_message", {"content": user_input})
+            while True:
+                self._raise_if_cancelled(cancel_token)
+                model_started = getattr(context, "model_started", None)
+                if callable(model_started):
+                    if model_started() is False:
+                        raise AgentCancelled("cancelled before model request")
+                model_round += 1
+                current_request_id = (
+                    request_id if model_round == 1 and request_id else str(uuid4())
                 )
-                message = f"Model request failed: {error}"
-                if _is_authentication_error(error) and self.provider:
-                    message += (
-                        f"\nAuthentication failed for {self.provider}. "
-                        f"Run /login {self.provider} to update your API key."
-                    )
-                raise AgentError(message) from error
-            if not response.choices:
+                self._active_request_id = current_request_id
                 self._emit(
-                    "model_error", {"round": model_round, "error": "no choices"}
-                )
-                raise AgentError("Model returned no choices")
-
-            message = response.choices[0].message
-            tool_calls = list(message.tool_calls or [])
-            self._emit(
-                "model_response",
-                {
-                    "round": model_round,
-                    "tool_call_count": len(tool_calls),
-                    "tool_names": [call.function.name for call in tool_calls],
-                    "tool_call_ids": [call.id for call in tool_calls],
-                },
-            )
-            if tool_calls and tool_rounds >= self.max_tool_rounds:
-                self._emit(
-                    "agent_error",
+                    "model_request",
                     {
                         "round": model_round,
-                        "error": f"tool round limit {self.max_tool_rounds} exceeded",
+                        "request_id": current_request_id,
+                        "message_count": len(self.messages),
                     },
                 )
-                raise AgentError(
-                    f"Agent exceeded the limit of {self.max_tool_rounds} tool rounds"
-                )
+                try:
+                    result = ChatCompletionStreamer(
+                        self.client.chat.completions
+                    ).complete(
+                        model=self.model,
+                        messages=list(self.messages),
+                        tools=self.tools.definitions,
+                        request_id=current_request_id,
+                        cancel_token=cancel_token,
+                        is_request_active=(
+                            is_request_active or self._is_active_request
+                        ),
+                        on_delta=lambda event_type, payload: self._emit(
+                            event_type,
+                            {"round": model_round, **payload},
+                        ),
+                        on_request_opened=getattr(
+                            context, "model_request_opened", None
+                        ),
+                    )
+                except (ModelStreamCancelled, StaleModelRequest) as error:
+                    self._emit(
+                        "model_response_aborted",
+                        {
+                            "round": model_round,
+                            "request_id": current_request_id,
+                            "reason": str(error),
+                        },
+                    )
+                    raise AgentCancelled(str(error)) from error
+                except Exception as error:
+                    error_payload = {
+                        "round": model_round,
+                        "request_id": current_request_id,
+                        "error": str(error),
+                    }
+                    if (
+                        isinstance(error, ModelStreamError)
+                        and error.had_delta
+                    ):
+                        self._emit("model_response_aborted", error_payload)
+                        self._emit_legacy("model_error", error_payload)
+                    else:
+                        self._emit("model_error", error_payload)
+                    message = f"Model request failed: {error}"
+                    if _is_authentication_error(error) and self.provider:
+                        message += (
+                            f"\nAuthentication failed for {self.provider}. "
+                            f"Run /login {self.provider} to update your API key."
+                        )
+                    raise AgentError(message) from error
 
-            self.messages.append(message.model_dump(exclude_none=True))
-            if not tool_calls:
-                if not message.content:
+                tool_calls = list(result.tool_calls)
+                self._emit(
+                    "model_response",
+                    {
+                        "round": model_round,
+                        "request_id": current_request_id,
+                        "finish_reason": result.finish_reason,
+                        "tool_call_count": len(tool_calls),
+                        "tool_names": [call.function.name for call in tool_calls],
+                        "tool_call_ids": [call.id for call in tool_calls],
+                        "usage": result.usage,
+                    },
+                )
+                if tool_calls and tool_rounds >= self.max_tool_rounds:
                     self._emit(
                         "agent_error",
                         {
                             "round": model_round,
-                            "error": "empty model response",
+                            "error": (
+                                f"tool round limit {self.max_tool_rounds} exceeded"
+                            ),
                         },
                     )
-                    raise AgentError("Model returned neither text nor tool calls")
+                    raise AgentError(
+                        "Agent exceeded the limit of "
+                        f"{self.max_tool_rounds} tool rounds"
+                    )
+
+                # The complete assistant message is committed only if
+                # cancellation has not won the Session coordination race.
+                assistant_message = result.message_dict()
+                commit_if_active = getattr(context, "commit_if_active", None)
+                if callable(commit_if_active):
+                    committed = commit_if_active(
+                        lambda: self.messages.append(assistant_message)
+                    )
+                else:
+                    self._raise_if_cancelled(cancel_token)
+                    self.messages.append(assistant_message)
+                    committed = True
+                if not committed:
+                    self._emit(
+                        "model_response_aborted",
+                        {
+                            "round": model_round,
+                            "request_id": current_request_id,
+                            "reason": "cancelled before history commit",
+                        },
+                    )
+                    raise AgentCancelled("cancelled before history commit")
                 self._emit(
-                    "assistant_response",
+                    "model_response_committed",
                     {
                         "round": model_round,
-                        "content": self._truncate_for_event(message.content),
+                        "request_id": current_request_id,
                     },
                 )
-                return message.content
+                if not tool_calls:
+                    assert result.content is not None
+                    self._emit(
+                        "assistant_response",
+                        {
+                            "round": model_round,
+                            "content": self._truncate_for_event(result.content),
+                        },
+                    )
+                    return result.content
 
-            tool_rounds += 1
-            tool_results = self._execute_tool_batch(tool_calls, model_round)
-            for tool_call, result in zip(tool_calls, tool_results, strict=True):
-                self.messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    }
+                tool_rounds += 1
+                tools_started = getattr(context, "tools_started", None)
+                if callable(tools_started):
+                    tools_started()
+                tool_results = self._execute_tool_batch(
+                    tool_calls,
+                    model_round,
+                    cancel_token=cancel_token,
+                    context=context,
                 )
+                # Every committed assistant tool call must receive one paired
+                # tool result, including calls cancelled before they start.
+                for tool_call, tool_result in zip(
+                    tool_calls, tool_results, strict=True
+                ):
+                    self.messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": json.dumps(
+                                tool_result, ensure_ascii=False
+                            ),
+                        }
+                    )
+                self._raise_if_cancelled(cancel_token)
+                safe_point = getattr(context, "safe_point", None)
+                if callable(safe_point):
+                    pending_batch = safe_point()
+                    pending_content = getattr(pending_batch, "content", "")
+                    if pending_content:
+                        pending_message = {
+                            "role": "user",
+                            "content": pending_content,
+                        }
+                        commit_pending = getattr(
+                            context, "commit_pending", None
+                        )
+                        if callable(commit_pending):
+                            committed = self._commit_context_message(
+                                commit_pending,
+                                pending_message,
+                                leading_arguments=(pending_batch,),
+                            )
+                        else:
+                            self._raise_if_cancelled(cancel_token)
+                            self.messages.append(pending_message)
+                            committed = True
+                        if not committed:
+                            raise AgentCancelled(
+                                "cancelled before pending input commit"
+                            )
+                        self._emit(
+                            "user_message",
+                            {
+                                "content": pending_content,
+                                "pending_event_ids": list(
+                                    getattr(pending_batch, "event_ids", ())
+                                ),
+                            },
+                        )
+        finally:
+            self._active_request_id = None
+            self._active_context = None
+
+    def _commit_context_message(
+        self,
+        commit: Callable[..., bool],
+        message: dict[str, Any],
+        *,
+        leading_arguments: tuple[Any, ...] = (),
+    ) -> bool:
+        def append() -> None:
+            self.messages.append(message)
+
+        def rollback() -> None:
+            if self.messages and self.messages[-1] is message:
+                self.messages.pop()
+
+        try:
+            supports_rollback = "rollback" in inspect.signature(commit).parameters
+        except (TypeError, ValueError):
+            supports_rollback = False
+        if supports_rollback:
+            return bool(
+                commit(*leading_arguments, append, rollback=rollback)
+            )
+        return bool(commit(*leading_arguments, append))
 
     def _execute_tool_batch(
-        self, tool_calls: list[Any], model_round: int
+        self,
+        tool_calls: list[Any],
+        model_round: int,
+        *,
+        cancel_token: Any | None = None,
+        context: Any | None = None,
     ) -> list[dict[str, Any]]:
         results: list[dict[str, Any] | None] = [None] * len(tool_calls)
         prepared: list[
@@ -243,10 +433,22 @@ class CodingAgent:
         sequential_batch = self.tool_execution == "sequential" or any(
             self.tools.execution_mode(tool_call.function.name) == "sequential"
             for tool_call in tool_calls
+        ) or any(
+            tool_call.function.name in {"write", "edit"}
+            for tool_call in tool_calls
         )
         if sequential_batch:
             for offset, tool_call, arguments, event_context in prepared:
-                result = self._execute_tool(tool_call.function.name, arguments)
+                if self._is_cancelled(cancel_token):
+                    result = self._cancelled_tool_result(cancel_token)
+                else:
+                    result = self._execute_tool(
+                        tool_call.function.name,
+                        arguments,
+                        tool_call_id=tool_call.id,
+                        cancel_token=cancel_token,
+                        context=context,
+                    )
                 results[offset] = result
                 self._finish_tool_event(
                     tool_call.function.name,
@@ -256,7 +458,16 @@ class CodingAgent:
                 )
         elif len(prepared) == 1:
             offset, tool_call, arguments, event_context = prepared[0]
-            result = self._execute_tool(tool_call.function.name, arguments)
+            if self._is_cancelled(cancel_token):
+                result = self._cancelled_tool_result(cancel_token)
+            else:
+                result = self._execute_tool(
+                    tool_call.function.name,
+                    arguments,
+                    tool_call_id=tool_call.id,
+                    cancel_token=cancel_token,
+                    context=context,
+                )
             results[offset] = result
             self._finish_tool_event(
                 tool_call.function.name, arguments, result, event_context
@@ -265,7 +476,12 @@ class CodingAgent:
             with ThreadPoolExecutor(max_workers=len(prepared)) as executor:
                 futures = {
                     executor.submit(
-                        self._execute_tool, tool_call.function.name, arguments
+                        self._execute_tool,
+                        tool_call.function.name,
+                        arguments,
+                        tool_call_id=tool_call.id,
+                        cancel_token=cancel_token,
+                        context=context,
                     ): (offset, tool_call, arguments, event_context)
                     for offset, tool_call, arguments, event_context in prepared
                 }
@@ -288,12 +504,73 @@ class CodingAgent:
         ]
 
     def _execute_tool(
-        self, name: str, arguments: dict[str, Any]
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        tool_call_id: str | None = None,
+        cancel_token: Any | None = None,
+        context: Any | None = None,
     ) -> dict[str, Any]:
+        if self._is_cancelled(cancel_token):
+            return self._cancelled_tool_result(cancel_token)
         try:
+            tool_context = self._make_tool_context(
+                context=context,
+                tool_call_id=tool_call_id,
+                cancel_token=cancel_token,
+            )
+            parameters = inspect.signature(self.tools.execute).parameters
+            if "context" in parameters:
+                return self.tools.execute(name, arguments, context=tool_context)
             return self.tools.execute(name, arguments)
         except Exception as error:
             return {"ok": False, "error": str(error)}
+
+    @staticmethod
+    def _make_tool_context(
+        *,
+        context: Any | None,
+        tool_call_id: str | None,
+        cancel_token: Any | None,
+    ) -> Any | None:
+        try:
+            from .tools import ToolExecutionContext
+        except ImportError:
+            return None
+        return ToolExecutionContext(
+            session_id=getattr(context, "session_id", None),
+            task_id=getattr(context, "task_id", None),
+            tool_call_id=tool_call_id,
+            cancel_token=cancel_token,
+            event_sink=getattr(context, "event_bus", None),
+        )
+
+    @staticmethod
+    def _is_cancelled(cancel_token: Any | None) -> bool:
+        if cancel_token is None:
+            return False
+        checker = getattr(cancel_token, "is_cancelled", None)
+        if callable(checker):
+            return bool(checker())
+        checker = getattr(cancel_token, "is_set", None)
+        if callable(checker):
+            return bool(checker())
+        return bool(getattr(cancel_token, "cancelled", False))
+
+    @classmethod
+    def _raise_if_cancelled(cls, cancel_token: Any | None) -> None:
+        if cls._is_cancelled(cancel_token):
+            reason = getattr(cancel_token, "reason", None) or "cancelled"
+            raise AgentCancelled(str(reason))
+
+    @staticmethod
+    def _cancelled_tool_result(cancel_token: Any | None) -> dict[str, Any]:
+        reason = getattr(cancel_token, "reason", None) or "cancelled"
+        return {"ok": False, "status": "cancelled", "error": str(reason)}
+
+    def _is_active_request(self, request_id: str) -> bool:
+        return self._active_request_id == request_id
 
     def _finish_tool_event(
         self,
@@ -308,13 +585,69 @@ class CodingAgent:
             "tool_result",
             {
                 **event_context,
+                "status": result.get("status")
+                or ("completed" if result.get("ok") else "failed"),
                 "result": self._safe_result(result),
             },
         )
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
+        full_payload = {"turn": self._turn, **payload}
+        self._emit_legacy(event_type, full_payload, add_turn=False)
+        self._publish_runtime_event(event_type, full_payload)
+
+    def _emit_legacy(
+        self,
+        event_type: str,
+        payload: dict[str, Any],
+        *,
+        add_turn: bool = True,
+    ) -> None:
         if self.on_agent_event is not None:
-            self.on_agent_event(event_type, {"turn": self._turn, **payload})
+            body = {"turn": self._turn, **payload} if add_turn else payload
+            self.on_agent_event(event_type, body)
+
+    def _publish_runtime_event(
+        self, event_type: str, payload: dict[str, Any]
+    ) -> None:
+        context = self._active_context
+        bus = getattr(context, "event_bus", None)
+        if bus is None:
+            return
+        kind_names = {
+            "model_request": "MODEL_REQUEST_STARTED",
+            "model_text_delta": "MODEL_TEXT_DELTA",
+            "model_reasoning_delta": "MODEL_REASONING_DELTA",
+            "model_tool_call_delta": "MODEL_TOOL_CALL_DELTA",
+            "model_response_validating": "MODEL_RESPONSE_VALIDATING",
+            "model_response_committed": "MODEL_RESPONSE_COMMITTED",
+            "model_response_aborted": "MODEL_RESPONSE_ABORTED",
+            "model_error": "MODEL_REQUEST_FAILED",
+            "tool_start": "TOOL_STARTED",
+            "tool_result": "TOOL_FINISHED",
+        }
+        kind_name = kind_names.get(event_type)
+        if kind_name is None:
+            return
+        # Streaming Bash owns its own start/output/finish events. The Agent
+        # supplies lifecycle events for the three synchronous file tools.
+        is_tool_event = event_type in {"tool_start", "tool_result"}
+        if is_tool_event and payload.get("name") == "bash":
+            return
+        from .events import EventKind, EventSource
+
+        bus.publish(
+            getattr(EventKind, kind_name),
+            source=EventSource.TOOL if is_tool_event else EventSource.MODEL,
+            session_id=getattr(context, "session_id", None) or "local",
+            task_id=getattr(context, "task_id", None),
+            correlation_id=(
+                payload.get("tool_call_id")
+                if is_tool_event
+                else payload.get("request_id")
+            ),
+            payload=payload,
+        )
 
     @classmethod
     def _safe_arguments(cls, arguments: dict[str, Any]) -> dict[str, Any]:

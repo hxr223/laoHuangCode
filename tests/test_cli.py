@@ -4,17 +4,107 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 from types import SimpleNamespace
 import unittest
 
 from laohuangcode.__main__ import run_repl
 from laohuangcode import __version__
-from laohuangcode.cli import _supports_terminal_ui, main as cli_main
+from laohuangcode.cli import (
+    _supports_terminal_ui,
+    main as cli_main,
+    run_plain_session_repl,
+    run_session_repl,
+)
 from laohuangcode.config import ConfigManager
 from laohuangcode.credentials import CredentialStore
+from laohuangcode.events import EventProjector
+from laohuangcode.session import AgentSession
+from laohuangcode.terminal_ui import PlainEventSink
 
 
 class ReplTests(unittest.TestCase):
+    def test_session_repl_keeps_prompting_while_worker_runs(self):
+        started = []
+        release = threading.Event()
+
+        def runner(text, _context):
+            started.append(text)
+            release.wait(1)
+            return "done"
+
+        session = AgentSession(runner)
+
+        class FakeUI:
+            command_registry = None
+
+            def __init__(self):
+                self.inputs = iter(["first", "second", "/exit"])
+                self.messages = []
+
+            def show_welcome(self):
+                self.messages.append("welcome")
+
+            def prompt(self):
+                value = next(self.inputs)
+                if value == "/exit":
+                    release.set()
+                return value
+
+            def write(self, message):
+                self.messages.append(message)
+
+            def show_error(self, message):
+                self.messages.append(message)
+
+            def show_goodbye(self):
+                self.messages.append("goodbye")
+
+            def show_interrupted(self):
+                self.messages.append("interrupted")
+
+            def stop_event_renderer(self):
+                return None
+
+        ui = FakeUI()
+        session.event_bus.subscribe(
+            lambda event: ui.messages.append(str(event.payload.get("text", "")))
+            if event.kind.value == "ui.message"
+            else None
+        )
+
+        run_session_repl(session, ui=ui)
+
+        self.assertEqual(started[0], "first")
+        self.assertTrue(any("Message queued" in item for item in ui.messages))
+        self.assertIn("goodbye", ui.messages)
+
+    def test_plain_repl_uses_agent_session_and_waits_for_pipe_eof(self):
+        calls = []
+        answers = iter(["hello"])
+        outputs = []
+
+        def read_input(_prompt):
+            try:
+                return next(answers)
+            except StopIteration as error:
+                raise EOFError from error
+
+        session = AgentSession(lambda content: calls.append(content) or "done")
+        sink = PlainEventSink(outputs.append)
+        projector = EventProjector()
+        session.event_bus.subscribe(
+            lambda event: sink.publish_event(
+                projector.project(event, "terminal")
+            )
+        )
+
+        run_plain_session_repl(session, input_fn=read_input, sink=sink)
+
+        self.assertEqual(calls, ["hello"])
+        self.assertTrue(any("ready" in output for output in outputs))
+        self.assertEqual(outputs[-1], "Goodbye.")
+
     def test_terminal_ui_is_only_enabled_for_the_real_interactive_streams(self):
         tty = SimpleNamespace(isatty=lambda: True)
         pipe = SimpleNamespace(isatty=lambda: False)
