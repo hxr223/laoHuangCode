@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 from collections.abc import Callable
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any
 from .agent import AgentError, CodingAgent
 from .config import Config
 from .tools import ToolRegistry
+from .web import EventLog, WebDashboard
 
 
 def run_repl(
@@ -66,7 +68,25 @@ def _print_tool_event(
     print(f"[result] {_summarize(result, limit=2_000)}")
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="A minimal coding agent")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="start the local agent trace dashboard",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=8765,
+        metavar="PORT",
+        help="dashboard port (default: 8765; use 0 for any free port)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
     try:
         config = Config.from_env()
     except ValueError as error:
@@ -80,13 +100,35 @@ def main() -> int:
         client_options["base_url"] = config.base_url
 
     client = OpenAI(**client_options)
+    project_root = Path.cwd()
+    event_log: EventLog | None = None
+    dashboard: WebDashboard | None = None
+    if args.web:
+        event_log = EventLog()
+        event_log.record(
+            "session_start",
+            {"project_root": str(project_root), "model": config.model},
+        )
+        try:
+            dashboard = WebDashboard(event_log, port=args.web_port)
+            dashboard.start()
+        except OSError as error:
+            print(f"Web dashboard error: {error}", file=sys.stderr)
+            return 2
+        print(f"Web dashboard: {dashboard.url}")
+
     agent = CodingAgent(
         client=client,
         model=config.model,
-        tools=ToolRegistry(Path.cwd()),
+        tools=ToolRegistry(project_root),
         on_tool_event=_print_tool_event,
+        on_agent_event=event_log.record if event_log is not None else None,
     )
-    run_repl(agent)
+    try:
+        run_repl(agent)
+    finally:
+        if dashboard is not None:
+            dashboard.stop()
     return 0
 
 

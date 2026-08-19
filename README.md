@@ -47,6 +47,24 @@ laohuangcode
 
 在终端中持续输入任务，使用 `/exit` 或 `Ctrl+D` 退出。会话历史只保留在当前进程内。
 
+### Web 日志面板
+
+使用 `--web` 在保留终端交互的同时启动本地观察面板：
+
+```bash
+python -m laohuangcode --web
+```
+
+然后访问终端显示的地址，默认是 <http://127.0.0.1:8765>。修改端口：
+
+```bash
+python -m laohuangcode --web --web-port 9000
+```
+
+页面按时间展示用户输入、每次模型请求与响应、该响应包含的 `tool_calls` 数量、每个工具的调用序号和结果，以及最终回复。`turn` 区分用户对话轮次，借助同一 `turn` 内的 `round` 和 `batch_size` 可以区分“一次模型响应批量返回多个工具”和“多轮 ReAct 分别调用工具”。
+
+面板仅监听 `127.0.0.1`，日志只保存在当前进程内，退出后清空。`write`、`edit` 的正文不会写入观察日志，长结果会被截断。
+
 ## 测试
 
 ```bash
@@ -74,4 +92,4 @@ python -m unittest discover -s tests -v
   -> 模型返回最终回复
 ```
 
-详细设计见 [`docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md`](docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md)。
+架构图见 [`docs/architecture.md`](docs/architecture.md)，初始设计见 [`docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md`](docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md)。

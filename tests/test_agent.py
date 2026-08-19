@@ -201,6 +201,84 @@ class CodingAgentTests(unittest.TestCase):
             ):
                 agent.run("Hello")
 
+    def test_events_group_batch_tool_calls_under_one_model_round(self):
+        with tempfile.TemporaryDirectory() as directory:
+            events = []
+            client = fake_client(
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            "call_1",
+                            "write",
+                            '{"path":"trace.txt","content":"hello"}',
+                        ),
+                        FakeToolCall(
+                            "call_2", "read", '{"path":"trace.txt"}'
+                        ),
+                    ]
+                ),
+                FakeMessage(content="Done"),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+                on_agent_event=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                ),
+            )
+
+            agent.run("Trace this")
+
+            model_responses = [
+                payload for event_type, payload in events
+                if event_type == "model_response"
+            ]
+            tool_starts = [
+                payload for event_type, payload in events
+                if event_type == "tool_start"
+            ]
+            self.assertEqual(model_responses[0]["round"], 1)
+            self.assertEqual(model_responses[0]["tool_call_count"], 2)
+            self.assertEqual(model_responses[0]["tool_names"], ["write", "read"])
+            self.assertEqual(
+                [(event["round"], event["index"]) for event in tool_starts],
+                [(1, 1), (1, 2)],
+            )
+            self.assertEqual(
+                tool_starts[0]["arguments"]["content"], "<5 chars>"
+            )
+            self.assertEqual(model_responses[1]["round"], 2)
+            self.assertEqual(model_responses[1]["tool_call_count"], 0)
+
+    def test_events_distinguish_consecutive_user_turns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            events = []
+            agent = CodingAgent(
+                client=fake_client(
+                    FakeMessage(content="First"),
+                    FakeMessage(content="Second"),
+                ),
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+                on_agent_event=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                ),
+            )
+
+            agent.run("Question one")
+            agent.run("Question two")
+
+            model_requests = [
+                payload
+                for event_type, payload in events
+                if event_type == "model_request"
+            ]
+            self.assertEqual(
+                [(event["turn"], event["round"]) for event in model_requests],
+                [(1, 1), (2, 1)],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

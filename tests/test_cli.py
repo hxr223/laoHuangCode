@@ -1,6 +1,9 @@
 from contextlib import redirect_stderr
 import io
 import os
+from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -30,10 +33,42 @@ class ReplTests(unittest.TestCase):
         errors = io.StringIO()
 
         with patch.dict(os.environ, {}, clear=True), redirect_stderr(errors):
-            status = main()
+            status = main([])
 
         self.assertEqual(status, 2)
         self.assertIn("OPENAI_API_KEY, OPENAI_MODEL", errors.getvalue())
+
+    def test_web_flag_starts_dashboard_and_cleanly_exits(self):
+        project_root = Path(__file__).resolve().parents[1]
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "OPENAI_API_KEY": "test-key",
+                "OPENAI_MODEL": "test-model",
+                "PYTHONPATH": str(project_root / "src"),
+            }
+        )
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "laohuangcode",
+                "--web",
+                "--web-port",
+                "0",
+            ],
+            cwd=project_root,
+            env=environment,
+            input="/exit\n",
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("Web dashboard: http://127.0.0.1:", completed.stdout)
 
 
 if __name__ == "__main__":
