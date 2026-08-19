@@ -1,4 +1,4 @@
-"""Environment-backed configuration for the model client."""
+"""Persistent model profiles and runtime configuration."""
 
 from __future__ import annotations
 
@@ -10,35 +10,17 @@ from pathlib import Path
 import tempfile
 from typing import Any
 
-from .credentials import resolve_api_key
+from .credentials import CredentialStore
 from .providers import get_provider
 
 
 @dataclass(frozen=True)
 class Config:
-    api_key: str
     model: str
     base_url: str | None = None
     provider: str = "openai-compatible"
     profile: str | None = None
-
-    @classmethod
-    def from_env(
-        cls, environ: Mapping[str, str] | None = None
-    ) -> "Config":
-        environment = os.environ if environ is None else environ
-        required = ("OPENAI_API_KEY", "OPENAI_MODEL")
-        missing = [name for name in required if not environment.get(name)]
-        if missing:
-            raise ValueError(
-                "Missing required environment variables: " + ", ".join(missing)
-            )
-
-        return cls(
-            api_key=environment["OPENAI_API_KEY"],
-            model=environment["OPENAI_MODEL"],
-            base_url=environment.get("OPENAI_BASE_URL"),
-        )
+    api_key: str | None = None
 
 
 class ConfigManager:
@@ -74,6 +56,34 @@ class ConfigManager:
     def resolve(
         self,
         *,
+        credentials: CredentialStore,
+        environ: Mapping[str, str] | None = None,
+        profile: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+    ) -> Config:
+        config = self.resolve_settings(
+            environ=environ,
+            profile=profile,
+            model=model,
+            base_url=base_url,
+        )
+        api_key = credentials.get(config.provider)
+        if not api_key:
+            raise ValueError(
+                f"No API key configured for provider: {config.provider}"
+            )
+        return Config(
+            api_key=api_key,
+            model=config.model,
+            base_url=config.base_url,
+            provider=config.provider,
+            profile=config.profile,
+        )
+
+    def resolve_settings(
+        self,
+        *,
         environ: Mapping[str, str] | None = None,
         profile: str | None = None,
         model: str | None = None,
@@ -92,7 +102,7 @@ class ConfigManager:
 
         stored = profiles[profile_name]
         provider_name = stored["provider"]
-        provider = get_provider(provider_name)
+        get_provider(provider_name)
         resolved_model = model or environment.get("LAOHUANG_MODEL") or stored["model"]
         resolved_base_url = (
             base_url
@@ -100,7 +110,6 @@ class ConfigManager:
             else environment.get("LAOHUANG_BASE_URL", stored.get("base_url"))
         )
         return Config(
-            api_key=resolve_api_key(provider, environment),
             model=resolved_model,
             base_url=resolved_base_url,
             provider=provider_name,

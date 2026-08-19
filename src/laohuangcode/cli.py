@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from collections.abc import Callable, Mapping, Sequence
+import getpass
 import json
 import os
 from pathlib import Path
@@ -13,9 +14,13 @@ from typing import Any
 from . import __version__
 from .agent import AgentError, CodingAgent
 from .client import create_client
+from .commands import SessionCommands
 from .config import Config, ConfigManager
+from .credentials import CredentialStore
+from .model_selection import ModelSelector
 from .permissions import PermissionGate
 from .providers import provider_names
+from .terminal_ui import TerminalUI
 from .tools import ToolRegistry
 from .web import EventLog, WebDashboard
 
@@ -23,35 +28,73 @@ from .web import EventLog, WebDashboard
 def run_repl(
     agent: Any,
     *,
+    command_handler: Callable[[str], bool] | None = None,
     input_fn: Callable[[str], str] = input,
     output_fn: Callable[[str], None] = print,
+    ui: Any | None = None,
 ) -> None:
-    output_fn("laoHuangCode is ready. Type /exit to quit.")
+    if ui is not None:
+        ui.show_welcome()
+    else:
+        output_fn("laoHuangCode is ready. Type /help for commands or /exit to quit.")
 
     while True:
         try:
-            user_input = input_fn("\nyou> ").strip()
+            user_input = (
+                ui.prompt() if ui is not None else input_fn("\nyou> ")
+            ).strip()
         except EOFError:
-            output_fn("\nGoodbye.")
+            if ui is not None:
+                ui.show_goodbye()
+            else:
+                output_fn("\nGoodbye.")
             return
         except KeyboardInterrupt:
-            output_fn("\nInterrupted. Type /exit to quit.")
+            if ui is not None:
+                ui.show_interrupted()
+            else:
+                output_fn("\nInterrupted. Type /exit to quit.")
             continue
 
         if user_input == "/exit":
-            output_fn("Goodbye.")
+            if ui is not None:
+                ui.show_goodbye()
+            else:
+                output_fn("Goodbye.")
             return
         if not user_input:
             continue
+        if user_input.startswith("/"):
+            if command_handler is not None and command_handler(user_input):
+                continue
+            message = f"Unknown command: {user_input.split()[0]}"
+            if ui is not None:
+                ui.write(message)
+            else:
+                output_fn(message)
+            continue
 
         try:
-            response = agent.run(user_input)
+            if ui is not None:
+                with ui.thinking():
+                    response = agent.run(user_input)
+            else:
+                response = agent.run(user_input)
         except AgentError as error:
-            output_fn(f"\nError: {error}")
+            if ui is not None:
+                ui.show_error(str(error))
+            else:
+                output_fn(f"\nError: {error}")
         except KeyboardInterrupt:
-            output_fn("\nOperation interrupted.")
+            if ui is not None:
+                ui.show_interrupted(operation=True)
+            else:
+                output_fn("\nOperation interrupted.")
         else:
-            output_fn(f"\nlaoHuangCode> {response}")
+            if ui is not None:
+                ui.show_assistant(response)
+            else:
+                output_fn(f"\nlaoHuangCode> {response}")
 
 
 def _summarize(value: Any, limit: int = 500) -> str:
@@ -92,6 +135,24 @@ def _permission_prompt(
         return input_fn("Allow? [y/N/a] ")
 
     return prompt
+
+
+def _supports_terminal_ui(
+    *,
+    input_fn: Callable[[str], str],
+    output_fn: Callable[[str], None],
+    stdin: Any = None,
+    stdout: Any = None,
+) -> bool:
+    """Only enable the interactive UI for the process's real TTY streams."""
+    input_stream = sys.stdin if stdin is None else stdin
+    output_stream = sys.stdout if stdout is None else stdout
+    return (
+        input_fn is input
+        and output_fn is print
+        and bool(getattr(input_stream, "isatty", lambda: False)())
+        and bool(getattr(output_stream, "isatty", lambda: False)())
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -151,13 +212,33 @@ def main(
     *,
     environ: Mapping[str, str] | None = None,
     config_path: Path | None = None,
+    credentials_path: Path | None = None,
     input_fn: Callable[[str], str] = input,
+    secret_input_fn: Callable[[str], str] = getpass.getpass,
     output_fn: Callable[[str], None] = print,
+    client_factory: Callable[..., Any] | None = None,
 ) -> int:
     args = _parser().parse_args(argv)
     environment = os.environ if environ is None else environ
+    project_root = Path.cwd()
+    terminal_ui: TerminalUI | None = None
+    if _supports_terminal_ui(input_fn=input_fn, output_fn=output_fn):
+        terminal_ui = TerminalUI(project_root=project_root)
+        input_fn = terminal_ui.prompt
+        output_fn = terminal_ui.write
+
     path = config_path or _default_config_path(environment)
     manager = ConfigManager(path)
+    credentials = CredentialStore(
+        credentials_path or path.with_name("credentials.json")
+    )
+    selector = ModelSelector(
+        credentials=credentials,
+        input_fn=input_fn,
+        secret_input_fn=secret_input_fn,
+        output_fn=output_fn,
+        client_factory=client_factory,
+    )
 
     if args.command == "config":
         if args.config_action == "list":
@@ -186,15 +267,22 @@ def main(
             output_fn(f"Active profile: {args.config_target}")
             return 0
 
-        provider = args.provider or input_fn(
-            f"Provider ({'/'.join(provider_names())}): "
-        ).strip()
         try:
+            selection = selector.select(
+                provider_name=args.provider,
+                model_name=args.config_model,
+            )
+            if selection is None:
+                return 2
             manager.configure(
                 name=args.config_profile,
-                provider=provider,
-                model=args.config_model,
-                base_url=args.config_base_url,
+                provider=selection.config.provider,
+                model=selection.config.model,
+                base_url=(
+                    args.config_base_url
+                    if args.config_base_url is not None
+                    else selection.config.base_url
+                ),
             )
         except ValueError as error:
             print(f"Configuration error: {error}", file=sys.stderr)
@@ -202,35 +290,96 @@ def main(
         output_fn(f"Saved profile '{args.config_profile}' to {path}")
         return 0
 
-    try:
-        if path.exists():
-            config = manager.resolve(
+    if args.command == "doctor":
+        try:
+            settings = manager.resolve_settings(
                 environ=environment,
                 profile=args.profile,
                 model=args.model,
                 base_url=args.base_url,
             )
-        else:
-            config = Config.from_env(environment)
-    except ValueError as error:
-        print(f"Configuration error: {error}", file=sys.stderr)
-        return 2
-
-    if args.command == "doctor":
-        output_fn(f"Provider: {config.provider}")
-        output_fn(f"Model: {config.model}")
-        output_fn(f"Base URL: {config.base_url or 'SDK default'}")
-        output_fn("API key: configured")
+        except ValueError as error:
+            print(f"Configuration error: {error}", file=sys.stderr)
+            return 2
+        key_configured = credentials.get(settings.provider) is not None
+        output_fn(f"Provider: {settings.provider}")
+        output_fn(f"Model: {settings.model}")
+        output_fn(f"Base URL: {settings.base_url or 'SDK default'}")
+        output_fn(
+            f"API key: {'configured' if key_configured else 'not configured'}"
+        )
         output_fn(f"Configuration: {path}")
         output_fn(
             f"Python: {sys.version_info.major}.{sys.version_info.minor}."
             f"{sys.version_info.micro}"
         )
         output_fn(f"Bash: {'available' if Path('/bin/bash').exists() else 'missing'}")
-        return 0
+        return 0 if key_configured else 1
 
-    client = create_client(config)
-    project_root = Path.cwd()
+    runtime_client: Any | None = None
+    try:
+        if path.exists():
+            config = manager.resolve(
+                credentials=credentials,
+                environ=environment,
+                profile=args.profile,
+                model=args.model,
+                base_url=args.base_url,
+            )
+        else:
+            selection = selector.select()
+            if selection is None:
+                return 2
+            config = selection.config
+            runtime_client = selection.client
+            manager.configure(
+                name="default",
+                provider=config.provider,
+                model=config.model,
+                base_url=config.base_url,
+            )
+            output_fn(
+                f"Configured {config.provider} / {config.model} as default."
+            )
+    except ValueError as error:
+        if (
+            path.exists()
+            and args.command is None
+            and str(error).startswith("No API key configured")
+        ):
+            try:
+                settings = manager.resolve_settings(
+                    environ=environment,
+                    profile=args.profile,
+                    model=args.model,
+                    base_url=args.base_url,
+                )
+                selection = selector.select(
+                    provider_name=settings.provider,
+                    model_name=settings.model,
+                )
+            except ValueError as selection_error:
+                print(
+                    f"Configuration error: {selection_error}",
+                    file=sys.stderr,
+                )
+                return 2
+            if selection is None:
+                return 2
+            config = selection.config
+            runtime_client = selection.client
+        else:
+            print(f"Configuration error: {error}", file=sys.stderr)
+            return 2
+
+    if terminal_ui is not None:
+        terminal_ui.provider = config.provider
+        terminal_ui.model = config.model
+
+    client = runtime_client or create_client(
+        config,
+        client_factory=client_factory,
+    )
     event_log: EventLog | None = None
     dashboard: WebDashboard | None = None
     if args.web:
@@ -255,21 +404,47 @@ def main(
         except OSError as error:
             print(f"Web dashboard error: {error}", file=sys.stderr)
             return 2
-        output_fn(f"Web dashboard: {dashboard.url}")
+        if terminal_ui is not None:
+            terminal_ui.dashboard_url = dashboard.url
+        else:
+            output_fn(f"Web dashboard: {dashboard.url}")
 
     agent = CodingAgent(
         client=client,
         model=config.model,
         tools=ToolRegistry(project_root),
-        on_tool_event=_tool_reporter(output_fn),
+        on_tool_event=(
+            terminal_ui.show_tool
+            if terminal_ui is not None
+            else _tool_reporter(output_fn)
+        ),
         on_agent_event=event_log.record if event_log is not None else None,
         permission_gate=PermissionGate(
-            prompt=_permission_prompt(input_fn, output_fn),
+            prompt=(
+                terminal_ui.ask_permission
+                if terminal_ui is not None
+                else _permission_prompt(input_fn, output_fn)
+            ),
             dangerously_skip_permissions=args.dangerously_skip_permissions,
         ),
+        provider=config.provider,
+    )
+    commands = SessionCommands(
+        agent=agent,
+        selector=selector,
+        credentials=credentials,
+        current_config=config,
+        secret_input_fn=secret_input_fn,
+        output_fn=output_fn,
     )
     try:
-        run_repl(agent, input_fn=input_fn, output_fn=output_fn)
+        run_repl(
+            agent,
+            command_handler=commands.handle,
+            input_fn=input_fn,
+            output_fn=output_fn,
+            ui=terminal_ui,
+        )
     finally:
         if dashboard is not None:
             dashboard.stop()

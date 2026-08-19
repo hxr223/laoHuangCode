@@ -13,6 +13,8 @@ def create_client(
     *,
     client_factory: Callable[..., Any] | None = None,
 ) -> Any:
+    if not config.api_key:
+        raise ValueError("API key is required to create a model client")
     if client_factory is None:
         from openai import OpenAI
 

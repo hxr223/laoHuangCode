@@ -16,7 +16,7 @@ class VersionSyncTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("0.2.0", completed.stdout)
+        self.assertIn("0.3.0", completed.stdout)
 
     def test_release_tag_must_match_the_package_version(self):
         root = Path(__file__).resolve().parents[1]

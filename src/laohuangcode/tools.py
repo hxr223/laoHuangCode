@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from pathlib import Path
 import subprocess
-from typing import Any
+import threading
+from typing import Any, Literal
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -79,6 +82,34 @@ MODEL_API_KEY_ENV_NAMES = (
     "DEEPSEEK_API_KEY",
     "LAOHUANG_API_KEY",
 )
+ToolExecutionMode = Literal["parallel", "sequential"]
+
+
+class _MutationLockEntry:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.users = 0
+
+
+_MUTATION_LOCKS: dict[Path, _MutationLockEntry] = {}
+_MUTATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _file_mutation_lock(path: Path) -> Iterator[None]:
+    with _MUTATION_LOCKS_GUARD:
+        entry = _MUTATION_LOCKS.setdefault(path, _MutationLockEntry())
+        entry.users += 1
+
+    entry.lock.acquire()
+    try:
+        yield
+    finally:
+        entry.lock.release()
+        with _MUTATION_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _MUTATION_LOCKS.get(path) is entry:
+                del _MUTATION_LOCKS[path]
 
 
 class ToolRegistry:
@@ -90,14 +121,19 @@ class ToolRegistry:
         *,
         bash_timeout: float = 120,
         max_output_chars: int = 20_000,
+        execution_modes: Mapping[str, ToolExecutionMode] | None = None,
     ) -> None:
         self.root = root.resolve()
         self.bash_timeout = bash_timeout
         self.max_output_chars = max_output_chars
+        self.execution_modes = dict(execution_modes or {})
 
     @property
     def definitions(self) -> list[dict[str, Any]]:
         return TOOL_DEFINITIONS
+
+    def execution_mode(self, name: str) -> ToolExecutionMode | None:
+        return self.execution_modes.get(name)
 
     def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -108,23 +144,25 @@ class ToolRegistry:
 
             if name == "write":
                 path = self._resolve_path(arguments["path"])
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(arguments["content"], encoding="utf-8")
+                with _file_mutation_lock(path):
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(arguments["content"], encoding="utf-8")
                 return {"ok": True, "path": arguments["path"]}
 
             if name == "edit":
                 path = self._resolve_path(arguments["path"])
-                content = path.read_text(encoding="utf-8")
-                old_text = arguments["old_text"]
-                matches = content.count(old_text)
-                if matches != 1:
-                    raise ValueError(
-                        f"old_text must appear exactly once; found {matches} matches"
+                with _file_mutation_lock(path):
+                    content = path.read_text(encoding="utf-8")
+                    old_text = arguments["old_text"]
+                    matches = content.count(old_text)
+                    if matches != 1:
+                        raise ValueError(
+                            f"old_text must appear exactly once; found {matches} matches"
+                        )
+                    path.write_text(
+                        content.replace(old_text, arguments["new_text"], 1),
+                        encoding="utf-8",
                     )
-                path.write_text(
-                    content.replace(old_text, arguments["new_text"], 1),
-                    encoding="utf-8",
-                )
                 return {"ok": True, "path": arguments["path"]}
 
             if name == "bash":

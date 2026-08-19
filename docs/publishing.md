@@ -7,7 +7,7 @@
 ## 首次发布前设置
 
 1. 确认 PyPI 项目名 `laohuangcode` 和 npm 包名 `laohuang` 可用。
-2. 创建 GitHub 仓库 `huangxurui/laoHuangCode`，并确认两个包的 repository 元数据
+2. 创建 GitHub 仓库 `hxr223/laoHuangCode`，并确认两个包的 repository 元数据
    与真实仓库完全一致。
 3. 在 PyPI 为该仓库的 `release.yml` 配置 Trusted Publisher，环境名为 `pypi`。
 4. 在 npm 为该仓库的 `release.yml` 配置 Trusted Publisher，环境名为 `npm`，允许
@@ -24,7 +24,7 @@ npm Trusted Publishing 需要 Node 22.14+ 和 npm 11.5.1+；工作流固定使�
 1. 同时修改 `pyproject.toml`、`src/laohuangcode/__init__.py` 和
    `npm/package.json` 中的版本。
 2. 执行 `scripts/release-check.sh`。
-3. 提交改动并创建与版本一致的 tag，例如 `v0.2.0`。
+3. 提交改动并创建与版本一致的 tag，例如 `v0.3.0`。
 4. 推送 tag；观察 GitHub `Release` workflow。
 
 不要先单独发布 npm 包。npm 启动器严格安装 `laohuangcode==<npm version>`，因此

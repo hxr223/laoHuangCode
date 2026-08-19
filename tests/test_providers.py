@@ -9,12 +9,17 @@ class ProviderTests(unittest.TestCase):
 
         self.assertEqual(provider.default_model, "deepseek-v4-flash")
         self.assertEqual(provider.base_url, "https://api.deepseek.com")
-        self.assertEqual(provider.api_key_env, "DEEPSEEK_API_KEY")
+        self.assertEqual(
+            provider.suggested_models,
+            ("deepseek-v4-flash", "deepseek-v4-pro"),
+        )
 
     def test_supported_provider_names_are_available_for_configuration(self):
-        self.assertEqual(provider_names(), ("custom", "deepseek", "openai"))
-        self.assertEqual(get_provider("openai").api_key_env, "OPENAI_API_KEY")
-        self.assertIsNone(get_provider("custom").default_model)
+        self.assertEqual(provider_names(), ("deepseek", "openai"))
+        self.assertIsNone(get_provider("openai").default_model)
+
+        with self.assertRaisesRegex(ValueError, "Unknown provider"):
+            get_provider("custom")
 
 
 if __name__ == "__main__":

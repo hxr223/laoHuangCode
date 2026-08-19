@@ -11,9 +11,12 @@ already be available as `python3` or `python`.
 ```bash
 npm install --global laohuang
 laohuang --version
-laohuang config --provider deepseek
 laohuang
 ```
+
+The first interactive launch asks for DeepSeek or OpenAI, reads the API key
+with hidden terminal input, and then asks which model to use. No API key
+environment variable is needed.
 
 The launcher accepts two advanced environment variables:
 

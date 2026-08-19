@@ -1,28 +1,68 @@
-# 模型配置
+# 模型与凭据配置
 
-## Provider 预设
+## 首次启动
 
-| Provider | 默认模型 | Base URL | API key 环境变量 |
-| --- | --- | --- | --- |
-| `deepseek` | `deepseek-v4-flash` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` |
-| `openai` | 必填 | SDK 默认地址 | `OPENAI_API_KEY` |
-| `custom` | 必填 | 可选 | `OPENAI_API_KEY` |
+用户不需要设置 API key 环境变量。第一次执行 `laohuang` 时，终端依次完成：
 
-DeepSeek 当前官方 OpenAI 兼容 API 支持 `deepseek-v4-flash` 和
-`deepseek-v4-pro`，并支持 Tool Calls。模型可能变化，发布后应以
-[DeepSeek 官方模型页](https://api-docs.deepseek.com/quick_start/pricing) 为准。
-
-## 创建与选择 Profile
-
-```bash
-laohuang config --provider deepseek
-laohuang config --profile pro --provider deepseek --model deepseek-v4-pro
-laohuang config list
-laohuang config use pro
+```text
+选择供应商（DeepSeek / OpenAI）
+→ 隐藏输入 API key
+→ 选择模型名称
+→ 保存默认 Profile
+→ 启动 Agent
 ```
 
-默认路径为 `~/.config/laohuang/config.json`，也可以用 `XDG_CONFIG_HOME` 或
-`LAOHUANG_CONFIG` 改变位置。文件权限设置为 `0600`，结构类似：
+DeepSeek 提供 `deepseek-v4-flash` 和 `deepseek-v4-pro`。OpenAI 在获得 key 后通过
+SDK 读取账户可用模型；如果读取失败，可以手动输入模型名称。
+
+## 运行中切换
+
+```text
+/model
+/model current
+/model deepseek deepseek-v4-pro
+/model openai <model-name>
+```
+
+`/model` 默认只改变当前会话，不修改默认 Profile。切换成功前会完成凭据检查和新
+客户端创建；任何失败都不会替换当前客户端。切换后保留已经完成的对话历史，并将
+历史消息规范化为两家服务都接受的 Chat Completions 通用字段。
+
+`/model` 不负责录入凭据。选择尚未登录的供应商时，会提示先运行相应的
+`/login <provider>`。
+
+## 登录与凭据管理
+
+```text
+/login
+/login deepseek
+/login openai
+/logout deepseek
+/logout openai
+```
+
+key 使用 Python `getpass` 隐藏输入，不会出现在 Shell 历史、普通终端输出、Web
+事件或 Agent 消息中。`/login` 更新当前供应商时会立即重建客户端；`/logout` 删除
+当前供应商的已保存 key 时不会抹除内存中的现有客户端，退出或切换模型后才完全
+失效。模型请求返回 401 时，错误信息会提示运行对应的 `/login <provider>`。
+
+旧命令 `/apikey`、`/apikey set <provider>` 和 `/apikey remove <provider>` 暂时
+保留为兼容别名，新用法应优先使用 `/login`、`/logout`。
+
+## 本地文件
+
+默认配置目录是 `~/.config/laohuang`：
+
+```text
+~/.config/laohuang/
+├── config.json          # 供应商、模型和 Profile
+└── credentials.json     # API key
+```
+
+程序创建的默认目录权限为 `0700`，两个文件为 `0600`。凭据文件当前是严格权限保护的明文 JSON；
+后续可以升级为 macOS Keychain 或 Linux Secret Service。
+
+模型配置示例：
 
 ```json
 {
@@ -38,26 +78,11 @@ laohuang config use pro
 }
 ```
 
-API key 永远不写入该文件，必须由环境变量提供。
-
-## 解析优先级
-
-每次启动按以下顺序覆盖模型连接参数：
-
-1. CLI：`--profile`、`--model`、`--base-url`。
-2. 环境变量：`LAOHUANG_PROFILE`、`LAOHUANG_MODEL`、`LAOHUANG_BASE_URL`。
-3. 当前 Profile 中保存的值。
-
-API key 只读取所选 Provider 对应的环境变量。使用 `laohuang doctor` 可以确认最终
-解析出的 Provider、模型、地址和 key 是否存在，但不会打印 key 内容。
-
-## 旧版环境变量模式
-
-如果配置文件不存在，以下变量仍可直接启动 Agent：
+也可以使用非交互 Profile 命令管理已保存模型；如果缺少对应 key，下次启动时仍会在
+终端中隐藏询问：
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="your-model-name"
-export OPENAI_BASE_URL="https://compatible.example/v1"  # 可省略
-laohuang
+laohuang config list
+laohuang config use default
+laohuang doctor
 ```

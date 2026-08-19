@@ -1,5 +1,8 @@
 import os
 import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -152,6 +155,112 @@ class ToolRegistryTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["stdout"], "||")
+
+    def test_writes_to_the_same_file_are_serialized(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = ToolRegistry(root)
+            original_write_text = Path.write_text
+            counter_lock = threading.Lock()
+            active_writes = 0
+            maximum_active_writes = 0
+
+            def tracked_write_text(path, *args, **kwargs):
+                nonlocal active_writes, maximum_active_writes
+                with counter_lock:
+                    active_writes += 1
+                    maximum_active_writes = max(
+                        maximum_active_writes, active_writes
+                    )
+                try:
+                    time.sleep(0.05)
+                    return original_write_text(path, *args, **kwargs)
+                finally:
+                    with counter_lock:
+                        active_writes -= 1
+
+            with patch.object(Path, "write_text", tracked_write_text):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    results = list(
+                        executor.map(
+                            lambda content: tools.execute(
+                                "write",
+                                {"path": "shared.txt", "content": content},
+                            ),
+                            ["first", "second"],
+                        )
+                    )
+
+            self.assertTrue(all(result["ok"] for result in results))
+            self.assertEqual(maximum_active_writes, 1)
+
+    def test_writes_to_different_files_can_run_concurrently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = ToolRegistry(root)
+            original_write_text = Path.write_text
+            counter_lock = threading.Lock()
+            active_writes = 0
+            maximum_active_writes = 0
+
+            def tracked_write_text(path, *args, **kwargs):
+                nonlocal active_writes, maximum_active_writes
+                with counter_lock:
+                    active_writes += 1
+                    maximum_active_writes = max(
+                        maximum_active_writes, active_writes
+                    )
+                try:
+                    time.sleep(0.05)
+                    return original_write_text(path, *args, **kwargs)
+                finally:
+                    with counter_lock:
+                        active_writes -= 1
+
+            with patch.object(Path, "write_text", tracked_write_text):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    results = list(
+                        executor.map(
+                            lambda item: tools.execute(
+                                "write",
+                                {"path": item[0], "content": item[1]},
+                            ),
+                            [("first.txt", "first"), ("second.txt", "second")],
+                        )
+                    )
+
+            self.assertTrue(all(result["ok"] for result in results))
+            self.assertEqual(maximum_active_writes, 2)
+
+    def test_edits_to_the_same_file_do_not_lose_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "shared.txt"
+            path.write_text("one\ntwo\n", encoding="utf-8")
+            tools = ToolRegistry(root)
+            original_read_text = Path.read_text
+
+            def slow_read_text(target, *args, **kwargs):
+                content = original_read_text(target, *args, **kwargs)
+                if target.name == "shared.txt":
+                    time.sleep(0.05)
+                return content
+
+            edits = [
+                {"path": "shared.txt", "old_text": "one", "new_text": "ONE"},
+                {"path": "shared.txt", "old_text": "two", "new_text": "TWO"},
+            ]
+            with patch.object(Path, "read_text", slow_read_text):
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    results = list(
+                        executor.map(
+                            lambda arguments: tools.execute("edit", arguments),
+                            edits,
+                        )
+                    )
+
+            self.assertTrue(all(result["ok"] for result in results))
+            self.assertEqual(path.read_text(encoding="utf-8"), "ONE\nTWO\n")
 
 
 if __name__ == "__main__":

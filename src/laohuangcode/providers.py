@@ -10,27 +10,20 @@ class Provider:
     name: str
     default_model: str | None
     base_url: str | None
-    api_key_env: str
+    suggested_models: tuple[str, ...] = ()
 
 
 _PROVIDERS = {
-    "custom": Provider(
-        name="custom",
-        default_model=None,
-        base_url=None,
-        api_key_env="OPENAI_API_KEY",
-    ),
     "deepseek": Provider(
         name="deepseek",
         default_model="deepseek-v4-flash",
         base_url="https://api.deepseek.com",
-        api_key_env="DEEPSEEK_API_KEY",
+        suggested_models=("deepseek-v4-flash", "deepseek-v4-pro"),
     ),
     "openai": Provider(
         name="openai",
         default_model=None,
         base_url=None,
-        api_key_env="OPENAI_API_KEY",
     ),
 }
 

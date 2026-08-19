@@ -1,5 +1,4 @@
-from contextlib import redirect_stderr
-import io
+from contextlib import nullcontext
 import os
 from pathlib import Path
 import subprocess
@@ -7,14 +6,43 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
-from laohuangcode.__main__ import main, run_repl
-from laohuangcode.cli import main as cli_main
+from laohuangcode.__main__ import run_repl
+from laohuangcode.cli import _supports_terminal_ui, main as cli_main
 from laohuangcode.config import ConfigManager
+from laohuangcode.credentials import CredentialStore
 
 
 class ReplTests(unittest.TestCase):
+    def test_terminal_ui_is_only_enabled_for_the_real_interactive_streams(self):
+        tty = SimpleNamespace(isatty=lambda: True)
+        pipe = SimpleNamespace(isatty=lambda: False)
+
+        self.assertTrue(
+            _supports_terminal_ui(
+                input_fn=input,
+                output_fn=print,
+                stdin=tty,
+                stdout=tty,
+            )
+        )
+        self.assertFalse(
+            _supports_terminal_ui(
+                input_fn=lambda _prompt: "",
+                output_fn=print,
+                stdin=tty,
+                stdout=tty,
+            )
+        )
+        self.assertFalse(
+            _supports_terminal_ui(
+                input_fn=input,
+                output_fn=print,
+                stdin=pipe,
+                stdout=tty,
+            )
+        )
+
     def test_user_can_chat_until_exit(self):
         inputs = iter(["hello", "/exit"])
         outputs = []
@@ -32,50 +60,109 @@ class ReplTests(unittest.TestCase):
         self.assertEqual(agent.inputs, ["hello"])
         self.assertTrue(any("hi there" in output for output in outputs))
 
-    def test_startup_explains_missing_configuration(self):
-        errors = io.StringIO()
+    def test_repl_can_drive_a_structured_terminal_ui(self):
+        class FakeUI:
+            def __init__(self):
+                self.inputs = iter(["hello", "/exit"])
+                self.events = []
 
-        with patch.dict(os.environ, {}, clear=True), redirect_stderr(errors):
-            status = main([])
+            def show_welcome(self):
+                self.events.append("welcome")
 
-        self.assertEqual(status, 2)
-        self.assertIn("OPENAI_API_KEY, OPENAI_MODEL", errors.getvalue())
+            def prompt(self):
+                return next(self.inputs)
+
+            def thinking(self):
+                return nullcontext()
+
+            def show_assistant(self, response):
+                self.events.append(("assistant", response))
+
+            def show_goodbye(self):
+                self.events.append("goodbye")
+
+        ui = FakeUI()
+        agent = SimpleNamespace(run=lambda _text: "hi there")
+
+        run_repl(agent, ui=ui)
+
+        self.assertEqual(
+            ui.events,
+            ["welcome", ("assistant", "hi there"), "goodbye"],
+        )
+
+    def test_first_start_collects_provider_key_and_model_in_the_terminal(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            credentials_path = Path(directory) / "credentials.json"
+            answers = iter(["1", "1", "/exit"])
+            outputs = []
+
+            status = cli_main(
+                [],
+                environ={},
+                config_path=config_path,
+                credentials_path=credentials_path,
+                input_fn=lambda _prompt: next(answers),
+                secret_input_fn=lambda _prompt: "terminal-secret",
+                output_fn=outputs.append,
+                client_factory=lambda **_options: SimpleNamespace(),
+            )
+
+            self.assertEqual(status, 0)
+            self.assertEqual(
+                CredentialStore(credentials_path).get("deepseek"),
+                "terminal-secret",
+            )
+            self.assertNotIn("terminal-secret", "\n".join(outputs))
+            self.assertEqual(
+                ConfigManager(config_path).list_profiles()[0]["model"],
+                "deepseek-v4-flash",
+            )
 
     def test_web_flag_starts_dashboard_and_cleanly_exits(self):
         project_root = Path(__file__).resolve().parents[1]
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "OPENAI_API_KEY": "test-key",
-                "OPENAI_MODEL": "test-model",
-                "PYTHONPATH": str(project_root / "src"),
-            }
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            config_path = Path(directory) / "config.json"
+            ConfigManager(config_path).configure(
+                name="default", provider="deepseek"
+            )
+            CredentialStore(config_path.with_name("credentials.json")).set(
+                "deepseek", "test-key"
+            )
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "LAOHUANG_CONFIG": str(config_path),
+                    "PYTHONPATH": str(project_root / "src"),
+                }
+            )
 
-        completed = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "laohuangcode",
-                "--web",
-                "--web-port",
-                "0",
-            ],
-            cwd=project_root,
-            env=environment,
-            input="/exit\n",
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "laohuangcode",
+                    "--web",
+                    "--web-port",
+                    "0",
+                ],
+                cwd=project_root,
+                env=environment,
+                input="/exit\n",
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
 
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("Web dashboard: http://127.0.0.1:", completed.stdout)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertIn("Web dashboard: http://127.0.0.1:", completed.stdout)
 
     def test_config_command_saves_a_provider_profile_without_starting_agent(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
+            credentials_path = Path(directory) / "credentials.json"
             outputs = []
 
             status = cli_main(
@@ -88,58 +175,64 @@ class ReplTests(unittest.TestCase):
                 ],
                 environ={},
                 config_path=config_path,
+                credentials_path=credentials_path,
+                input_fn=lambda _prompt: "1",
+                secret_input_fn=lambda _prompt: "terminal-key",
                 output_fn=outputs.append,
+                client_factory=lambda **_options: SimpleNamespace(),
             )
 
             self.assertEqual(status, 0)
             self.assertTrue(config_path.exists())
+            self.assertEqual(
+                CredentialStore(credentials_path).get("deepseek"),
+                "terminal-key",
+            )
             self.assertTrue(any("work" in output for output in outputs))
 
     def test_config_command_reports_invalid_interactive_provider(self):
         with tempfile.TemporaryDirectory() as directory:
-            errors = io.StringIO()
-            with redirect_stderr(errors):
-                status = cli_main(
-                    ["config"],
-                    environ={},
-                    config_path=Path(directory) / "config.json",
-                    input_fn=lambda _prompt: "invalid-provider",
-                )
+            outputs = []
+            status = cli_main(
+                ["config"],
+                environ={},
+                config_path=Path(directory) / "config.json",
+                input_fn=lambda _prompt: "invalid-provider",
+                secret_input_fn=lambda _prompt: self.fail("no key expected"),
+                output_fn=outputs.append,
+            )
 
             self.assertEqual(status, 2)
-            self.assertIn("Unknown provider", errors.getvalue())
+            self.assertTrue(any("invalid provider" in line for line in outputs))
 
     def test_configured_deepseek_profile_starts_interactive_cli(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
+            credentials_path = Path(directory) / "credentials.json"
             ConfigManager(config_path).configure(
                 name="deepseek", provider="deepseek"
             )
-            project_root = Path(__file__).resolve().parents[1]
-            environment = os.environ.copy()
-            environment.update(
-                {
-                    "DEEPSEEK_API_KEY": "test-key",
-                    "LAOHUANG_CONFIG": str(config_path),
-                    "PYTHONPATH": str(project_root / "src"),
-                }
-            )
-            environment.pop("OPENAI_API_KEY", None)
-            environment.pop("OPENAI_MODEL", None)
+            outputs = []
 
-            completed = subprocess.run(
-                [sys.executable, "-m", "laohuangcode"],
-                cwd=project_root,
-                env=environment,
-                input="/exit\n",
-                capture_output=True,
-                text=True,
-                timeout=5,
-                check=False,
+            status = cli_main(
+                [],
+                environ={},
+                config_path=config_path,
+                credentials_path=credentials_path,
+                input_fn=lambda _prompt: "/exit",
+                secret_input_fn=lambda _prompt: "terminal-key",
+                output_fn=outputs.append,
+                client_factory=lambda **_options: SimpleNamespace(),
             )
 
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertIn("laoHuangCode is ready", completed.stdout)
+            self.assertEqual(status, 0)
+            self.assertEqual(
+                CredentialStore(credentials_path).get("deepseek"),
+                "terminal-key",
+            )
+            self.assertTrue(
+                any("laoHuangCode is ready" in output for output in outputs)
+            )
 
     def test_user_can_list_profiles_and_switch_the_active_one(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -173,15 +266,18 @@ class ReplTests(unittest.TestCase):
     def test_doctor_reports_resolved_runtime_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
+            credentials_path = Path(directory) / "credentials.json"
             ConfigManager(config_path).configure(
                 name="deepseek", provider="deepseek"
             )
+            CredentialStore(credentials_path).set("deepseek", "secret")
             outputs = []
 
             status = cli_main(
                 ["doctor"],
-                environ={"DEEPSEEK_API_KEY": "secret"},
+                environ={},
                 config_path=config_path,
+                credentials_path=credentials_path,
                 output_fn=outputs.append,
             )
 
@@ -207,7 +303,7 @@ class ReplTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(completed.stdout.strip(), "laohuang 0.2.0")
+        self.assertEqual(completed.stdout.strip(), "laohuang 0.3.0")
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "laohuangcode"
-version = "0.2.0"
+version = "0.3.0"
 description = "A minimal coding agent built for learning and experimentation"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,15 +21,17 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.0,<4",
+    "prompt-toolkit>=3.0.52,<4",
+    "rich>=13.9,<15",
 ]
 
 [project.optional-dependencies]
 dev = ["build>=1.2"]
 
 [project.urls]
-Homepage = "https://github.com/huangxurui/laoHuangCode"
-Repository = "https://github.com/huangxurui/laoHuangCode.git"
-Issues = "https://github.com/huangxurui/laoHuangCode/issues"
+Homepage = "https://github.com/hxr223/laoHuangCode"
+Repository = "https://github.com/hxr223/laoHuangCode.git"
+Issues = "https://github.com/hxr223/laoHuangCode/issues"
 
 [project.scripts]
 laohuang = "laohuangcode.cli:main"

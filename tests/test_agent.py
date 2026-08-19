@@ -1,3 +1,4 @@
+import json
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -55,6 +56,15 @@ class FailingCompletions:
         raise RuntimeError("network unavailable")
 
 
+class AuthenticationFailure(Exception):
+    status_code = 401
+
+
+class AuthenticationFailingCompletions:
+    def create(self, **request):
+        raise AuthenticationFailure("invalid API key")
+
+
 def fake_client(*messages):
     completions = FakeCompletions(messages)
     return SimpleNamespace(
@@ -63,6 +73,37 @@ def fake_client(*messages):
 
 
 class CodingAgentTests(unittest.TestCase):
+    def test_model_can_switch_without_losing_conversation_history(self):
+        original_client = fake_client(FakeMessage(content="hello"))
+        replacement_client = fake_client(FakeMessage(content="switched"))
+        events = []
+        with tempfile.TemporaryDirectory() as directory:
+            agent = CodingAgent(
+                client=original_client,
+                model="old-model",
+                tools=ToolRegistry(Path(directory)),
+                on_agent_event=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                ),
+            )
+            agent.run("first turn")
+
+            agent.switch_model(
+                client=replacement_client,
+                model="new-model",
+                provider="openai",
+            )
+            answer = agent.run("second turn")
+
+        self.assertEqual(answer, "switched")
+        self.assertEqual(
+            replacement_client.completions.requests[0]["model"], "new-model"
+        )
+        self.assertTrue(
+            any(message.get("content") == "first turn" for message in agent.messages)
+        )
+        self.assertTrue(any(event[0] == "model_switched" for event in events))
+
     def test_user_receives_a_direct_model_response(self):
         with tempfile.TemporaryDirectory() as directory:
             client = fake_client(FakeMessage(content="Hello from the model"))
@@ -163,6 +204,177 @@ class CodingAgentTests(unittest.TestCase):
                 ["call_1", "call_2"],
             )
 
+    def test_tool_batch_executes_concurrently_and_returns_source_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wait_for_second = (
+                "touch first.started; "
+                "for _ in {1..100}; do "
+                "[ -f second.started ] && { printf first; exit 0; }; "
+                "sleep 0.01; done; exit 1"
+            )
+            wait_for_first = (
+                "touch second.started; "
+                "for _ in {1..100}; do "
+                "[ -f first.started ] && { printf second; exit 0; }; "
+                "sleep 0.01; done; exit 1"
+            )
+            client = fake_client(
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            "call_1",
+                            "bash",
+                            json.dumps({"command": wait_for_second}),
+                        ),
+                        FakeToolCall(
+                            "call_2",
+                            "bash",
+                            json.dumps({"command": wait_for_first}),
+                        ),
+                    ]
+                ),
+                FakeMessage(content="Finished."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(root, bash_timeout=2),
+            )
+
+            agent.run("Run both checks")
+
+            tool_messages = client.completions.requests[1]["messages"][-2:]
+            results = [json.loads(message["content"]) for message in tool_messages]
+            self.assertEqual(
+                [message["tool_call_id"] for message in tool_messages],
+                ["call_1", "call_2"],
+            )
+            self.assertEqual(
+                [(result["ok"], result["stdout"]) for result in results],
+                [(True, "first"), (True, "second")],
+            )
+
+    def test_global_sequential_mode_runs_tool_calls_one_by_one(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            wait_for_second = (
+                "touch first.started; "
+                "for _ in {1..10}; do "
+                "[ -f second.started ] && exit 0; sleep 0.01; "
+                "done; exit 1"
+            )
+            wait_for_first = (
+                "touch second.started; "
+                "[ -f first.started ]"
+            )
+            client = fake_client(
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            "call_1",
+                            "bash",
+                            json.dumps({"command": wait_for_second}),
+                        ),
+                        FakeToolCall(
+                            "call_2",
+                            "bash",
+                            json.dumps({"command": wait_for_first}),
+                        ),
+                    ]
+                ),
+                FakeMessage(content="Finished."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(root, bash_timeout=1),
+                tool_execution="sequential",
+            )
+
+            agent.run("Run sequentially")
+
+            tool_messages = client.completions.requests[1]["messages"][-2:]
+            results = [json.loads(message["content"]) for message in tool_messages]
+            self.assertEqual([result["ok"] for result in results], [False, True])
+
+    def test_one_sequential_tool_forces_the_whole_batch_to_run_sequentially(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            client = fake_client(
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            "call_1",
+                            "bash",
+                            json.dumps(
+                                {"command": "sleep 0.1; touch first.done"}
+                            ),
+                        ),
+                        FakeToolCall(
+                            "call_2",
+                            "bash",
+                            json.dumps({"command": "[ -f first.done ]"}),
+                        ),
+                    ]
+                ),
+                FakeMessage(content="Finished."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(
+                    root, execution_modes={"bash": "sequential"}
+                ),
+            )
+
+            agent.run("Run with a sequential tool")
+
+            tool_messages = client.completions.requests[1]["messages"][-2:]
+            results = [json.loads(message["content"]) for message in tool_messages]
+            self.assertEqual([result["ok"] for result in results], [True, True])
+
+    def test_completion_events_are_live_while_messages_stay_source_ordered(self):
+        with tempfile.TemporaryDirectory() as directory:
+            events = []
+            client = fake_client(
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            "call_1",
+                            "bash",
+                            '{"command":"sleep 0.1; printf slow"}',
+                        ),
+                        FakeToolCall(
+                            "call_2", "bash", '{"command":"printf fast"}'
+                        ),
+                    ]
+                ),
+                FakeMessage(content="Finished."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+                on_agent_event=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                ),
+            )
+
+            agent.run("Run a slow and a fast tool")
+
+            completed_ids = [
+                payload["tool_call_id"]
+                for event_type, payload in events
+                if event_type == "tool_result"
+            ]
+            tool_messages = client.completions.requests[1]["messages"][-2:]
+            self.assertEqual(completed_ids, ["call_2", "call_1"])
+            self.assertEqual(
+                [message["tool_call_id"] for message in tool_messages],
+                ["call_1", "call_2"],
+            )
+
     def test_consecutive_user_turns_share_conversation_history(self):
         with tempfile.TemporaryDirectory() as directory:
             client = fake_client(
@@ -200,6 +412,23 @@ class CodingAgentTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 AgentError, "Model request failed: network unavailable"
             ):
+                agent.run("Hello")
+
+    def test_authentication_failures_point_to_provider_login(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = SimpleNamespace(
+                chat=SimpleNamespace(
+                    completions=AuthenticationFailingCompletions()
+                )
+            )
+            agent = CodingAgent(
+                client=client,
+                model="deepseek-v4-flash",
+                provider="deepseek",
+                tools=ToolRegistry(Path(directory)),
+            )
+
+            with self.assertRaisesRegex(AgentError, r"/login deepseek"):
                 agent.run("Hello")
 
     def test_events_group_batch_tool_calls_under_one_model_round(self):
