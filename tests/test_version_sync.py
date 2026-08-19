@@ -16,7 +16,27 @@ class VersionSyncTests(unittest.TestCase):
         )
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("0.3.1", completed.stdout)
+        version = subprocess.run(
+            [sys.executable, "scripts/check_versions.py", "--print-version"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(completed.stdout.strip(), f"Versions synchronized: {version}")
+
+    def test_version_can_be_printed_for_release_automation(self):
+        root = Path(__file__).resolve().parents[1]
+        completed = subprocess.run(
+            [sys.executable, "scripts/check_versions.py", "--print-version"],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertRegex(completed.stdout.strip(), r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
     def test_release_tag_must_match_the_package_version(self):
         root = Path(__file__).resolve().parents[1]
