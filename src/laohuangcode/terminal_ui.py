@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from queue import Empty, Full, Queue
+import shutil
 import threading
 from typing import Any
 
@@ -259,10 +260,10 @@ class TerminalUI:
 
     def _create_session(self) -> Any:
         return self._session_factory(
-            message=HTML("<prompt>❯ </prompt>"),
+            message=self._input_prompt,
             multiline=True,
-            prompt_continuation=HTML("<continuation>│ </continuation>"),
-            bottom_toolbar=self._bottom_toolbar,
+            prompt_continuation=HTML("<input-padding>  </input-padding>"),
+            bottom_toolbar=self._input_bottom_border,
             history=InMemoryHistory(),
             enable_history_search=True,
             auto_suggest=AutoSuggestFromHistory(),
@@ -287,9 +288,9 @@ class TerminalUI:
             reserve_space_for_menu=6,
             style=Style.from_dict(
                 {
-                    "prompt": "bold ansicyan",
-                    "continuation": "ansibrightblack",
-                    "toolbar": "bg:#1f2937 #d1d5db",
+                    "input-border": "#9b6aa0",
+                    "input-padding": "",
+                    "bottom-toolbar": "noreverse",
                 }
             ),
         )
@@ -321,35 +322,20 @@ class TerminalUI:
         if self.cancel_callback is not None:
             self.cancel_callback()
 
-    def _bottom_toolbar(self) -> HTML:
-        state = self.state.session_state
-        if state == "CANCELLING":
-            status = "Cancelling…"
-        elif state in {"RUNNING_TOOL", "RUNNING_TOOLS"}:
-            status = "Running tools"
-        elif state == "RUNNING_MODEL":
-            status = "Thinking"
-        elif state == "FAILED":
-            status = "Failed"
-        else:
-            status = "Ready"
-        model = " / ".join(
-            value
-            for value in (
-                self.state.provider or self.provider,
-                self.state.model or self.model,
-            )
-            if value
-        )
-        queue = ""
-        if self.state.pending_count:
-            queue += f" · pending {self.state.pending_count}"
-        if self.state.held_count:
-            queue += f" · held {self.state.held_count}"
-        context = f" · {model}" if model else ""
+    @staticmethod
+    def _input_border() -> str:
+        columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+        return "─" * max(8, columns - 2)
+
+    def _input_prompt(self) -> HTML:
         return HTML(
-            f"<toolbar> {status}{context}{queue} · Enter 发送 · Alt+Enter 换行 "
-            "· Ctrl+D 退出 </toolbar>"
+            f"<input-border>{self._input_border()}</input-border>\n"
+            "<input-padding>  </input-padding>"
+        )
+
+    def _input_bottom_border(self) -> HTML:
+        return HTML(
+            f"<input-border>{self._input_border()}</input-border>"
         )
 
     def start_event_renderer(self) -> None:
