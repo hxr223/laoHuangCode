@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import unittest
 
 from laohuangcode.agent import AgentError, CodingAgent
+from laohuangcode.permissions import PermissionGate
 from laohuangcode.tools import ToolRegistry
 
 
@@ -277,6 +278,44 @@ class CodingAgentTests(unittest.TestCase):
             self.assertEqual(
                 [(event["turn"], event["round"]) for event in model_requests],
                 [(1, 1), (2, 1)],
+            )
+
+    def test_denied_tool_is_reported_to_model_without_execution(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            events = []
+            client = fake_client(
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            "call_1",
+                            "write",
+                            '{"path":"blocked.txt","content":"nope"}',
+                        )
+                    ]
+                ),
+                FakeMessage(content="The write was denied."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(root),
+                permission_gate=PermissionGate(
+                    prompt=lambda name, arguments: "n"
+                ),
+                on_agent_event=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                ),
+            )
+
+            result = agent.run("Write a file")
+
+            self.assertEqual(result, "The write was denied.")
+            self.assertFalse((root / "blocked.txt").exists())
+            tool_message = client.completions.requests[1]["messages"][-1]
+            self.assertIn("denied", tool_message["content"])
+            self.assertTrue(
+                any(event_type == "tool_denied" for event_type, _ in events)
             )
 
 

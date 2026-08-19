@@ -128,17 +128,30 @@ class ToolRegistryTests(unittest.TestCase):
             self.assertEqual(result["content"][:10], "abcdefghij")
             self.assertIn("truncated", result["content"])
 
-    def test_bash_does_not_receive_the_model_api_key(self):
+    def test_bash_does_not_receive_model_api_keys(self):
         with tempfile.TemporaryDirectory() as directory:
             tools = ToolRegistry(Path(directory))
 
-            with patch.dict(os.environ, {"OPENAI_API_KEY": "top-secret"}):
+            with patch.dict(
+                os.environ,
+                {
+                    "OPENAI_API_KEY": "openai-secret",
+                    "DEEPSEEK_API_KEY": "deepseek-secret",
+                    "LAOHUANG_API_KEY": "custom-secret",
+                },
+            ):
                 result = tools.execute(
-                    "bash", {"command": "printf %s \"$OPENAI_API_KEY\""}
+                    "bash",
+                    {
+                        "command": (
+                            "printf '%s|%s|%s' \"$OPENAI_API_KEY\" "
+                            "\"$DEEPSEEK_API_KEY\" \"$LAOHUANG_API_KEY\""
+                        )
+                    },
                 )
 
             self.assertTrue(result["ok"])
-            self.assertEqual(result["stdout"], "")
+            self.assertEqual(result["stdout"], "||")
 
 
 if __name__ == "__main__":

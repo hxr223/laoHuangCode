@@ -74,6 +74,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
 ]
 
+MODEL_API_KEY_ENV_NAMES = (
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "LAOHUANG_API_KEY",
+)
+
 
 class ToolRegistry:
     """Execute the small set of tools exposed to the model."""
@@ -123,7 +129,8 @@ class ToolRegistry:
 
             if name == "bash":
                 environment = os.environ.copy()
-                environment.pop("OPENAI_API_KEY", None)
+                for variable_name in MODEL_API_KEY_ENV_NAMES:
+                    environment.pop(variable_name, None)
                 completed = subprocess.run(
                     ["/bin/bash", "-lc", arguments["command"]],
                     cwd=self.root,

@@ -1,19 +1,39 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "laohuangcode"
-version = "0.1.0"
+version = "0.2.0"
 description = "A minimal coding agent built for learning and experimentation"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["ai", "agent", "coding-agent", "cli", "openai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "openai>=1.0,<4",
 ]
 
+[project.optional-dependencies]
+dev = ["build>=1.2"]
+
+[project.urls]
+Homepage = "https://github.com/huangxurui/laoHuangCode"
+Repository = "https://github.com/huangxurui/laoHuangCode.git"
+Issues = "https://github.com/huangxurui/laoHuangCode/issues"
+
 [project.scripts]
-laohuangcode = "laohuangcode.__main__:main"
+laohuang = "laohuangcode.cli:main"
+laohuangcode = "laohuangcode.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

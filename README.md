@@ -1,95 +1,119 @@
 # laoHuangCode
 
-一个用于学习和验证的最小 coding agent。它不依赖 agent 框架，只用 Python、官方 `openai` SDK 和 Chat Completions 原生工具调用实现完整 agent loop。
+一个用于学习和验证的最小 coding agent。核心只使用 Python、官方
+`openai` SDK 和 Chat Completions 原生工具调用，不依赖 Agent 框架。
 
-第一版提供四个工具：
+当前提供四个工具：`read`、`write`、`edit`、`bash`。`read` 自动放行；会改变
+系统状态的三个工具默认在终端中逐次确认。
 
-- `read`：读取项目内的 UTF-8 文本文件。
-- `write`：创建或完整覆盖项目内文件。
-- `edit`：对文件做唯一、精确的文本替换。
-- `bash`：在项目根目录执行 Bash 命令。
+## 快速开始
 
-## 安装
+需要 Node.js 18+ 和 Python 3.11+。面向普通用户的安装方式：
 
-需要 Python 3.11 或更高版本。
+```bash
+npm install --global laohuang
+export DEEPSEEK_API_KEY="your-api-key"
+laohuang config --provider deepseek
+cd /path/to/your/project
+laohuang
+```
+
+npm 包只是一个很薄的启动器：第一次运行时，它会在用户缓存目录创建隔离的
+Python 环境，并安装版本完全一致的 `laohuangcode` Python 内核。Agent 本身没有
+Node.js 重复实现。
+
+开发仓库也可以直接安装：
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
+laohuang --version
 ```
 
-## 配置
+## 模型配置
 
-程序直接读取环境变量，不会自动加载 `.env`：
+DeepSeek 是当前开箱即用的默认预设：
+
+```bash
+export DEEPSEEK_API_KEY="your-api-key"
+laohuang config --provider deepseek
+```
+
+该预设使用 `https://api.deepseek.com` 和 `deepseek-v4-flash`。也可以配置任意
+OpenAI Chat Completions 兼容服务：
 
 ```bash
 export OPENAI_API_KEY="your-api-key"
-export OPENAI_MODEL="your-model-name"
-export OPENAI_BASE_URL="https://your-compatible-service.example/v1"
+laohuang config \
+  --profile local \
+  --provider custom \
+  --model your-model-name \
+  --base-url http://127.0.0.1:8000/v1
 ```
 
-`OPENAI_BASE_URL` 可省略，此时使用 `openai` SDK 的默认地址。所选服务和模型必须支持 Chat Completions 的原生 tool calling。
+常用配置命令：
+
+```bash
+laohuang config list
+laohuang config use local
+laohuang doctor
+laohuang --profile local --model temporary-override
+```
+
+配置保存在 `~/.config/laohuang/config.json`，只保存服务地址和模型名，不保存
+API key。完整规则见 [模型配置文档](docs/configuration.md)。旧版
+`OPENAI_API_KEY`、`OPENAI_MODEL`、`OPENAI_BASE_URL` 环境变量仍可在没有配置文件时
+直接使用。
 
 ## 运行
 
-进入希望 agent 操作的项目目录后运行：
+进入希望 Agent 操作的项目目录后执行：
 
 ```bash
-python -m laohuangcode
+laohuang
 ```
 
-也可以使用安装生成的命令：
+输入任务，使用 `/exit` 或 `Ctrl+D` 退出。会话历史只保留在当前进程中。
+
+`write`、`edit`、`bash` 执行前会显示参数摘要：输入 `y` 仅允许本次，输入 `a`
+允许本会话之后的全部操作，其他输入拒绝。仅在你完全信任模型和环境时使用：
 
 ```bash
-laohuangcode
+laohuang --dangerously-skip-permissions
 ```
-
-在终端中持续输入任务，使用 `/exit` 或 `Ctrl+D` 退出。会话历史只保留在当前进程内。
 
 ### Web 日志面板
 
-使用 `--web` 在保留终端交互的同时启动本地观察面板：
-
 ```bash
-python -m laohuangcode --web
+laohuang --web
+laohuang --web --web-port 9000
 ```
 
-然后访问终端显示的地址，默认是 <http://127.0.0.1:8765>。修改端口：
+面板默认位于 <http://127.0.0.1:8765>，展示模型轮次、工具调用、权限结果和最终
+回复。它只监听本机，数据只存在内存中，进程退出后清空。
 
-```bash
-python -m laohuangcode --web --web-port 9000
-```
-
-页面按时间展示用户输入、每次模型请求与响应、该响应包含的 `tool_calls` 数量、每个工具的调用序号和结果，以及最终回复。`turn` 区分用户对话轮次，借助同一 `turn` 内的 `round` 和 `batch_size` 可以区分“一次模型响应批量返回多个工具”和“多轮 ReAct 分别调用工具”。
-
-面板仅监听 `127.0.0.1`，日志只保存在当前进程内，退出后清空。`write`、`edit` 的正文不会写入观察日志，长结果会被截断。
-
-## 测试
+## 开发与发布检查
 
 ```bash
 python -m unittest discover -s tests -v
+npm --prefix npm test
+scripts/release-check.sh
 ```
 
-全部测试都是离线测试，不会请求真实模型 API。
+`release-check.sh` 会检查 Python/npm 版本一致性、运行两套测试、检查 npm 包内容、
+构建 Python 分发包并在临时环境验证两个入口。发布设计见
+[npm 分发说明](docs/npm-distribution.md) 和 [发布流程](docs/publishing.md)。
 
-## 安全说明
+## 安全边界
 
-这是学习原型，不应直接用于不可信环境。
+文件工具会限制在启动目录内并阻止符号链接逃逸；Bash 子进程不会继承已知的模型
+API key。但 `bash` **没有操作系统级沙箱**，获准后仍能访问项目外文件、网络和其他
+系统资源。公开使用前请阅读 [安全模型](docs/security.md)。
 
-`read`、`write` 和 `edit` 会限制路径位于启动目录内，并阻止 `..` 和符号链接逃逸。Bash 子进程不会继承 `OPENAI_API_KEY`，避免模型通过环境变量读取模型密钥。
+架构图见 [docs/architecture.md](docs/architecture.md)，初始设计见
+[最小 Agent 设计](docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md)。
 
-但 `bash` 仍会自动执行模型提供的命令，**没有操作系统级沙箱**，能够访问启动目录之外的文件、网络和其他系统资源。运行前应确认当前机器和目录适合执行模型生成的命令。
+## License
 
-## 核心流程
-
-```text
-用户输入
-  -> Chat Completions
-  -> 模型返回 tool_calls
-  -> 本地执行 read/write/edit/bash
-  -> 工具结果发回模型
-  -> 模型返回最终回复
-```
-
-架构图见 [`docs/architecture.md`](docs/architecture.md)，初始设计见 [`docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md`](docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md)。
+MIT

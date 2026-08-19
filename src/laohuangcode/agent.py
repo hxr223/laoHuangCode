@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from .permissions import PermissionGate
 from .tools import ToolRegistry
 
 
@@ -35,6 +36,7 @@ class CodingAgent:
         ]
         | None = None,
         on_agent_event: AgentEventCallback | None = None,
+        permission_gate: PermissionGate | None = None,
     ) -> None:
         self.client = client
         self.model = model
@@ -42,6 +44,7 @@ class CodingAgent:
         self.max_tool_rounds = max_tool_rounds
         self.on_tool_event = on_tool_event
         self.on_agent_event = on_agent_event
+        self.permission_gate = permission_gate
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
@@ -150,7 +153,22 @@ class CodingAgent:
                     },
                 )
                 if result is None:
-                    result = self.tools.execute(tool_call.function.name, arguments)
+                    if (
+                        self.permission_gate is not None
+                        and not self.permission_gate.authorize(
+                            tool_call.function.name, arguments
+                        )
+                    ):
+                        result = {
+                            "ok": False,
+                            "error": "Tool execution denied by user",
+                        }
+                        self._emit("tool_denied", event_context)
+                    else:
+                        self._emit("tool_approved", event_context)
+                        result = self.tools.execute(
+                            tool_call.function.name, arguments
+                        )
 
                 if self.on_tool_event is not None:
                     self.on_tool_event(tool_call.function.name, arguments, result)

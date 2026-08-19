@@ -1,0 +1,35 @@
+{
+  "name": "laohuang",
+  "version": "0.2.0",
+  "description": "Node.js launcher for the laoHuangCode coding agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huangxurui/laoHuangCode.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/huangxurui/laoHuangCode#readme",
+  "bugs": "https://github.com/huangxurui/laoHuangCode/issues",
+  "type": "commonjs",
+  "bin": {
+    "laohuang": "bin/laohuang.js"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --test"
+  }
+}
