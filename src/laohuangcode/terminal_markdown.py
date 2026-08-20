@@ -11,6 +11,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.theme import Theme
 
+from .terminal_screen import strip_terminal_controls, truncate_to_width
 from .terminal_theme import TerminalTheme
 
 
@@ -62,7 +63,7 @@ def render_markdown_lines(
     )
     console.print(
         Markdown(
-            text,
+            strip_terminal_controls(text),
             code_theme="ansi_light" if theme.name == "light" else "monokai",
             # prompt_toolkit's ANSI parser deliberately does not interpret
             # OSC-8 hyperlinks.  Render their visible URL instead of leaking
@@ -74,7 +75,8 @@ def render_markdown_lines(
     rendered = _OSC8.sub("", output.getvalue()).replace("\r\n", "\n")
     if rendered.endswith("\n"):
         rendered = rendered[:-1]
-    return tuple(rendered.split("\n")) if rendered else ()
+    lines = tuple(rendered.split("\n")) if rendered else ()
+    return tuple(truncate_to_width(line, width) for line in lines)
 
 
 def _markdown_theme(theme: TerminalTheme) -> Theme:

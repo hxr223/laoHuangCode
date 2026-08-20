@@ -22,7 +22,6 @@ from prompt_toolkit.history import DummyHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
-from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -42,7 +41,15 @@ from .terminal_editor import (
     StdinBuffer,
     TerminalInputFilter,
 )
-from .terminal_screen import PiMainScreenRenderer, ScreenFrame, TerminalDriver, TerminalSize
+from .terminal_screen import (
+    PiMainScreenRenderer,
+    ScreenFrame,
+    TerminalDriver,
+    TerminalSize,
+    truncate_to_width,
+    visible_width,
+    wrap_text_to_width,
+)
 from .terminal_theme import TerminalTheme, resolve_terminal_theme
 from .ui_state import UIEventReducer, UIState, UIUpdate
 
@@ -995,12 +1002,12 @@ class TerminalUI:
         for index, item in enumerate(editor.completions[:6]):
             marker = "›" if index == editor.selected_completion else " "
             text = f"{marker} {item.value}  {item.description}".rstrip()
-            rows.append(self._clip(text, width))
+            rows.append(truncate_to_width(text, width))
         return tuple(rows)
 
     def _footer_line(self, width: int) -> str | None:
         values = self._footer_text()
-        return values[0][1] if values and values[0][1] else None
+        return truncate_to_width(values[0][1], width) if values and values[0][1] else None
 
     def _background_lines(
         self,
@@ -1023,24 +1030,11 @@ class TerminalUI:
 
     @staticmethod
     def _wrap_lines(text: str, width: int) -> list[str]:
-        result: list[str] = []
-        for source_line in text.splitlines() or [""]:
-            line = ""
-            line_width = 0
-            for char in source_line:
-                char_width = max(1, get_cwidth(char))
-                if line and line_width + char_width > width:
-                    result.append(line)
-                    line = ""
-                    line_width = 0
-                line += char
-                line_width += char_width
-            result.append(line)
-        return result
+        return list(wrap_text_to_width(text, width))
 
     @staticmethod
     def _pad_line(line: str, width: int) -> str:
-        return line + " " * max(0, width - get_cwidth(line))
+        return line + " " * max(0, width - visible_width(line))
 
     @classmethod
     def _ansi_styled_text(cls, style: str, text: str) -> str:

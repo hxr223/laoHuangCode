@@ -16,7 +16,11 @@ from rich.console import Console
 from laohuangcode.commands import CommandRegistry, CommandSpec
 from laohuangcode.terminal_editor import EditorState, InputAction, InputActionKind
 from laohuangcode.terminal_input import PiInputSession
-from laohuangcode.terminal_screen import MemoryTerminalDriver, PiMainScreenRenderer
+from laohuangcode.terminal_screen import (
+    MemoryTerminalDriver,
+    PiMainScreenRenderer,
+    visible_width,
+)
 from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
 from laohuangcode.ui_state import UIUpdate
 from tests.terminal_emulator import TerminalEmulator
@@ -127,6 +131,28 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(rendered.count("❯ "), 1)
         self.assertIn("❯ as", emulator.viewport_lines)
         self.assertNotIn("❯ a", emulator.logical_lines)
+
+    def test_three_ascii_keystrokes_leave_cursor_after_third_character(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=4)
+        emulator = TerminalEmulator(columns=80, rows=4)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+
+        for char in b"asd":
+            ui.feed_input_bytes(bytes([char]))
+            ui.drain_loop()
+            emulator.write(terminal.writes())
+            terminal.clear_writes()
+
+        self.assertEqual(
+            emulator.viewport_lines[:3],
+            ("─" * 80, "❯ asd", "─" * 80),
+        )
+        self.assertEqual(emulator.cursor_row, 1)
+        self.assertEqual(emulator.cursor_column, 5)
+        self.assertEqual("\n".join(emulator.logical_lines).count("❯ "), 1)
 
     def test_two_completed_turns_remain_in_history_without_tail_truncation(self):
         ui = TerminalUI(theme="light")
@@ -471,6 +497,50 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertEqual(sum(1 for line in frame.lines if "/exit" in line), 1)
         self.assertIn("deepseek-v4-flash", frame.lines[-1])
+
+    def test_frame_lines_fit_visible_width_with_cjk_content(self):
+        registry = CommandRegistry(
+            [
+                CommandSpec(
+                    "/extralong",
+                    "说明说明说明 very long completion description",
+                    "/extralong",
+                )
+            ]
+        )
+        ui = TerminalUI(
+            terminal_driver=MemoryTerminalDriver(columns=20, rows=8),
+            command_registry=registry,
+            provider="deepseek",
+            model="deepseek-v4-flash-extra-long",
+        )
+        ui.accept_user_input("你好abc你好abc你好abc")
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "/e"), runtime_active=False)
+        editor.set_completions(registry.complete(editor.text, state="IDLE"))
+
+        frame = ui.build_frame(width=20, editor=editor)
+
+        self.assertTrue(frame.lines)
+        self.assertTrue(all(visible_width(line) <= 20 for line in frame.lines))
+
+    def test_tool_card_lines_fit_visible_width_with_styled_text(self):
+        ui = TerminalUI(
+            terminal_driver=MemoryTerminalDriver(columns=18, rows=8),
+        )
+        ui.apply_projected_event(
+            event(
+                "tool.started",
+                "tool-1",
+                name="bash",
+                arguments={"command": "echo 你好你好你好你好"},
+            )
+        )
+
+        frame = ui.build_frame(width=18, editor=EditorState())
+
+        self.assertTrue(frame.lines)
+        self.assertTrue(all(visible_width(line) <= 18 for line in frame.lines))
 
     def test_completion_shrink_clears_stale_rows_without_clearing_scrollback(self):
         terminal = MemoryTerminalDriver(columns=40, rows=4)
