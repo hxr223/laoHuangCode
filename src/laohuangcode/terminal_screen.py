@@ -17,6 +17,7 @@ class ScreenFrame:
     lines: tuple[str, ...]
     active_start: int
     cursor_row: int
+    cursor_col: int = 0
 
 
 class TerminalDriver(Protocol):
@@ -82,14 +83,16 @@ class PiMainScreenRenderer:
         first = self._first_changed(self._previous_lines, frame.lines)
         if self._previous_size is not None and size != self._previous_size:
             first = frame.active_start
+        elif self._previous_lines and frame.active_start > self._previous_active_start:
+            first = min(
+                first if first is not None else len(frame.lines),
+                self._previous_active_start,
+            )
         if first is None:
             self._place_cursor(frame)
+            self._terminal.flush()
             return
-        completed = self._newly_completed_lines(frame)
-        if completed:
-            self._append(completed)
-            self._append(frame.lines[frame.active_start:])
-        elif first == len(self._previous_lines):
+        if first == len(self._previous_lines):
             self._append(frame.lines[first:])
         else:
             self._rewrite(first, frame.lines)
@@ -124,15 +127,6 @@ class PiMainScreenRenderer:
                 self._hardware_row += 1
             self._terminal.write(line)
 
-    def _newly_completed_lines(self, frame: ScreenFrame) -> tuple[str, ...]:
-        if not self._previous_lines or frame.active_start <= self._previous_active_start:
-            return ()
-        if frame.lines[: self._previous_active_start] != self._previous_lines[
-            : self._previous_active_start
-        ]:
-            return ()
-        return frame.lines[self._previous_active_start : frame.active_start]
-
     def _rewrite(self, first: int, lines: tuple[str, ...]) -> None:
         self._move_to_row(first)
         last = max(len(self._previous_lines), len(lines))
@@ -149,6 +143,10 @@ class PiMainScreenRenderer:
             return
         target = min(max(frame.cursor_row, 0), len(frame.lines) - 1)
         self._move_to_row(target)
+        column = min(max(frame.cursor_col, 0), len(frame.lines[target]))
+        self._terminal.write("\r")
+        if column:
+            self._terminal.write(f"\x1b[{column}C")
 
     def _move_to_row(self, target: int) -> None:
         delta = target - self._hardware_row
