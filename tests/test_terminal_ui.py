@@ -20,7 +20,34 @@ from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
 from laohuangcode.ui_state import UIUpdate
 
 
+def event(kind: str, correlation_id: str, **payload: object) -> dict[str, object]:
+    return {"kind": kind, "correlation_id": correlation_id, "payload": payload}
+
+
 class TerminalUITests(unittest.TestCase):
+    def test_two_completed_turns_remain_in_history_without_tail_truncation(self):
+        ui = TerminalUI(theme="light")
+        ui.accept_user_input("first question")
+        ui.apply_projected_event(event("model.text_delta", "r1", text="first answer"))
+        ui.apply_projected_event(event("model.response_committed", "r1"))
+        ui.accept_user_input("second question")
+        ui.apply_projected_event(event("model.text_delta", "r2", text="second answer"))
+
+        rendered = "\n".join(ui.build_history_lines(width=80))
+        self.assertIn("first question", rendered)
+        self.assertIn("first answer", rendered)
+        self.assertIn("second question", rendered)
+        self.assertIn("second answer", rendered)
+
+    def test_second_request_cannot_mutate_frozen_first_response(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.text_delta", "r1", text="one"))
+        ui.apply_projected_event(event("model.response_committed", "r1"))
+        ui.apply_projected_event(event("model.text_delta", "r2", text="two"))
+
+        self.assertEqual(ui.block_for("assistant", "r1").text, "one")
+        self.assertEqual(ui.block_for("assistant", "r2").text, "two")
+
     def test_plain_sink_outputs_one_complete_model_response(self):
         output = []
         sink = PlainEventSink(output.append)
