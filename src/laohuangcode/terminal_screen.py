@@ -327,22 +327,95 @@ class PiMainScreenRenderer:
     @staticmethod
     def _validate_lines(lines: tuple[str, ...], width: int) -> None:
         for index, line in enumerate(lines):
-            visible_width = _visible_width(line)
-            if visible_width > width:
+            line_width = visible_width(line)
+            if line_width > width:
                 raise ValueError(
                     f"rendered line {index} exceeds terminal width "
-                    f"({visible_width} > {width})"
+                    f"({line_width} > {width})"
                 )
 
 
-def _visible_width(text: str) -> int:
+def visible_width(text: str) -> int:
     if not text:
         return 0
-    stripped = _strip_terminal_controls(text).replace("\t", "   ")
+    stripped = strip_terminal_controls(text).replace("\t", "   ")
     return sum(_grapheme_width(cluster) for cluster in _grapheme_clusters(stripped))
 
 
-def _strip_terminal_controls(text: str) -> str:
+def truncate_to_width(text: str, width: int) -> str:
+    if width <= 0 or not text:
+        return ""
+    result: list[str] = []
+    sgr_prefix: list[str] = []
+    used = 0
+    index = 0
+    while index < len(text):
+        if text[index] == "\x1b":
+            end = _consume_escape_sequence(text, index)
+            sequence = text[index:end]
+            if _is_sgr_sequence(sequence):
+                result.append(sequence)
+                _update_sgr_prefix(sgr_prefix, sequence)
+            index = end
+            continue
+        next_escape = text.find("\x1b", index)
+        end = len(text) if next_escape == -1 else next_escape
+        for cluster in _grapheme_clusters(text[index:end]):
+            display_cluster, cluster_width = _display_cluster(cluster)
+            if used + cluster_width > width:
+                if sgr_prefix:
+                    result.append("\x1b[0m")
+                return "".join(result)
+            result.append(display_cluster)
+            used += cluster_width
+        index = end
+    if sgr_prefix:
+        result.append("\x1b[0m")
+    return "".join(result)
+
+
+def wrap_text_to_width(text: str, width: int) -> tuple[str, ...]:
+    width = max(1, width)
+    rows: list[str] = []
+    for source_line in text.splitlines() or [""]:
+        row_parts: list[str] = []
+        row_width = 0
+        sgr_prefix: list[str] = []
+        index = 0
+
+        def finish_row() -> None:
+            if sgr_prefix:
+                row_parts.append("\x1b[0m")
+            rows.append("".join(row_parts))
+
+        while index < len(source_line):
+            if source_line[index] == "\x1b":
+                end = _consume_escape_sequence(source_line, index)
+                sequence = source_line[index:end]
+                if _is_sgr_sequence(sequence):
+                    row_parts.append(sequence)
+                    _update_sgr_prefix(sgr_prefix, sequence)
+                index = end
+                continue
+
+            next_escape = source_line.find("\x1b", index)
+            end = len(source_line) if next_escape == -1 else next_escape
+            for cluster in _grapheme_clusters(source_line[index:end]):
+                display_cluster, cluster_width = _display_cluster(cluster)
+                if row_width and row_width + cluster_width > width:
+                    finish_row()
+                    row_parts = list(sgr_prefix)
+                    row_width = 0
+                if cluster_width > width:
+                    continue
+                row_parts.append(display_cluster)
+                row_width += cluster_width
+            index = end
+        finish_row()
+    return tuple(rows)
+
+
+def strip_terminal_controls(text: str) -> str:
     result: list[str] = []
     index = 0
     while index < len(text):
@@ -367,8 +440,10 @@ def _consume_escape_sequence(text: str, start: int) -> int:
         return len(text)
     if marker == "]":
         return _consume_string_sequence(text, start + 2, allow_bel=True)
-    if marker in {"P", "_"}:
+    if marker == "P":
         return _consume_string_sequence(text, start + 2, allow_bel=False)
+    if marker == "_":
+        return _consume_string_sequence(text, start + 2, allow_bel=True)
     return start + 2
 
 
@@ -381,6 +456,28 @@ def _consume_string_sequence(text: str, start: int, *, allow_bel: bool) -> int:
             return index + 2
         index += 1
     return len(text)
+
+
+def _is_sgr_sequence(sequence: str) -> bool:
+    return sequence.startswith("\x1b[") and sequence.endswith("m")
+
+
+def _update_sgr_prefix(prefix: list[str], sequence: str) -> None:
+    raw_params = sequence[2:-1]
+    params = tuple(part for part in raw_params.replace(":", ";").split(";") if part)
+    if not params or all(param == "0" for param in params):
+        prefix.clear()
+        return
+    if "0" in params:
+        prefix[:] = [sequence]
+        return
+    prefix.append(sequence)
+
+
+def _display_cluster(cluster: str) -> tuple[str, int]:
+    if cluster == "\t":
+        return "   ", 3
+    return cluster, _grapheme_width(cluster)
 
 
 def _grapheme_clusters(text: str) -> tuple[str, ...]:
@@ -413,7 +510,11 @@ def _grapheme_clusters(text: str) -> tuple[str, ...]:
 def _grapheme_width(cluster: str) -> int:
     if not cluster:
         return 0
-    if "\u200d" in cluster or any(_is_regional_indicator(char) for char in cluster):
+    if (
+        "\u200d" in cluster
+        or "\ufe0f" in cluster
+        or any(_is_regional_indicator(char) for char in cluster)
+    ):
         return 2
     return max(0, get_cwidth(cluster))
 

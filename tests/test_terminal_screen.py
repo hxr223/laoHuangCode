@@ -4,8 +4,15 @@ from laohuangcode.terminal_screen import (
     MemoryTerminalDriver,
     PiMainScreenRenderer,
     ScreenFrame,
+    truncate_to_width,
+    visible_width,
+    wrap_text_to_width,
 )
 from tests.terminal_emulator import TerminalEmulator
+
+
+def strip_controls_for_assertion(text: str) -> str:
+    return text.replace("\x1b[31m", "").replace("\x1b[0m", "")
 
 
 class PiMainScreenRendererTests(unittest.TestCase):
@@ -189,6 +196,49 @@ class PiMainScreenRendererTests(unittest.TestCase):
             renderer.render(ScreenFrame(("12345",), 0, 0))
 
         self.assertEqual(terminal.writes(), "")
+
+    def test_visible_width_ignores_ansi_and_terminal_controls(self):
+        styled = "\x1b[31m你好\x1b[0m"
+        linked = "\x1b]8;;https://example.test\x1b\\abc\x1b]8;;\x1b\\"
+        apc = "\x1b_pi:c\x07"
+        apc_then_text = "\x1b_pi:c\x07abc"
+
+        self.assertEqual(visible_width(styled), 4)
+        self.assertEqual(visible_width(linked), 3)
+        self.assertEqual(visible_width(apc), 0)
+        self.assertEqual(visible_width(apc_then_text), 3)
+
+    def test_truncate_and_wrap_use_visible_cells(self):
+        styled = "\x1b[31m你好abc\x1b[0m"
+
+        self.assertEqual(visible_width(truncate_to_width(styled, 5)), 5)
+        self.assertEqual(wrap_text_to_width("你好abc", 4), ("你好", "abc"))
+
+    def test_truncate_closes_open_sgr_style(self):
+        self.assertEqual(
+            truncate_to_width("\x1b[31mabcdef\x1b[0m", 5),
+            "\x1b[31mabcde\x1b[0m",
+        )
+
+    def test_wrap_preserves_sgr_without_splitting_escape_sequences(self):
+        wrapped = wrap_text_to_width("\x1b[31mabcdef\x1b[0m", 5)
+
+        self.assertEqual(wrapped, ("\x1b[31mabcde\x1b[0m", "\x1b[31mf\x1b[0m"))
+        self.assertEqual(tuple(visible_width(line) for line in wrapped), (5, 1))
+        self.assertNotIn("[0m", strip_controls_for_assertion("\n".join(wrapped)))
+
+    def test_vs16_emoji_uses_two_terminal_cells(self):
+        self.assertEqual(visible_width("❤️"), 2)
+        self.assertEqual(visible_width("✈️"), 2)
+
+    def test_truncate_and_wrap_expand_tabs_consistently(self):
+        truncated = truncate_to_width("a\tb", 4)
+        wrapped = wrap_text_to_width("a\tb", 4)
+
+        self.assertEqual(truncated, "a   ")
+        self.assertEqual(wrapped, ("a   ", "b"))
+        self.assertEqual(visible_width(truncated), 4)
+        self.assertTrue(all(visible_width(line) <= 4 for line in wrapped))
 
     def test_osc8_visible_text_counts_toward_width(self):
         terminal = MemoryTerminalDriver(columns=4, rows=2)
