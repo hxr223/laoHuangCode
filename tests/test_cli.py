@@ -192,12 +192,14 @@ class ReplTests(unittest.TestCase):
     def test_persistent_exit_does_not_wait_for_slow_prior_routing(self):
         class FakeSession:
             def __init__(self):
+                self.started = threading.Event()
                 self.release = threading.Event()
                 self.event_bus = SimpleNamespace(flush=lambda: None)
                 self.closed = False
 
             def submit_input(self, text):
                 if text == "slow":
+                    self.started.set()
                     self.release.wait(5)
                     if self.closed:
                         raise RuntimeError("event bus is closed")
@@ -218,14 +220,21 @@ class ReplTests(unittest.TestCase):
                 return {"pending": 0, "held": 0}
 
             def publish_notice(self, *_args, **_kwargs):
+                if self.closed:
+                    raise RuntimeError("event bus is closed")
                 return None
 
         class FakePiLoopUI:
             command_registry = None
             render_error = None
 
+            def __init__(self):
+                self.messages = []
+
             def run(self, submit):
                 submit("slow")
+                if not session.started.wait(1):
+                    raise AssertionError("slow route did not start")
                 submit("/exit")
 
             def show_welcome(self):
@@ -241,12 +250,13 @@ class ReplTests(unittest.TestCase):
                 return None
 
             def show_error(self, message):
-                raise AssertionError(message)
+                self.messages.append(message)
 
         session = FakeSession()
+        ui = FakePiLoopUI()
         result = []
         worker = threading.Thread(
-            target=lambda: result.append(run_session_repl(session, ui=FakePiLoopUI()))
+            target=lambda: result.append(run_session_repl(session, ui=ui))
         )
 
         worker.start()
@@ -259,7 +269,46 @@ class ReplTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertEqual(result, [False])
-        self.assertFalse(closed_before_cleanup)
+        self.assertTrue(closed_before_cleanup)
+        self.assertTrue(session.closed)
+        self.assertEqual(
+            ui.messages,
+            ["Input coordinator failed during shutdown."],
+        )
+
+    def test_persistent_repl_reports_unclean_shutdown_before_ui_close(self):
+        events = []
+
+        class FakeSession:
+            event_bus = SimpleNamespace(flush=lambda: None)
+
+            def close(self, *, wait=True, timeout=None):
+                del wait, timeout
+                return False
+
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = None
+
+            def run(self, _submit):
+                return None
+
+            def show_welcome(self):
+                return None
+
+            def close(self):
+                events.append("close")
+
+            def show_error(self, message):
+                events.append(f"error:{message}")
+
+        clean = run_session_repl(FakeSession(), ui=FakePiLoopUI())
+
+        self.assertFalse(clean)
+        self.assertEqual(
+            events,
+            ["error:Task worker did not stop before the shutdown timeout.", "close"],
+        )
 
     def test_plain_repl_uses_agent_session_and_waits_for_pipe_eof(self):
         calls = []

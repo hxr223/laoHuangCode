@@ -147,3 +147,21 @@ class TerminalEditorTests(unittest.TestCase):
 
         self.assertEqual(lines, ("❯ first", "  "))
         self.assertEqual((cursor_row, cursor_column), (1, 2))
+
+    def test_render_lines_wraps_cjk_by_terminal_cell_width(self):
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "你好你"), runtime_active=False)
+
+        lines, cursor_row, cursor_column = editor.render_lines(7)
+
+        self.assertEqual(lines, ("❯ 你好", "  你"))
+        self.assertEqual((cursor_row, cursor_column), (1, 4))
+
+    def test_render_lines_places_cursor_after_exact_width_wrap(self):
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "你好a"), runtime_active=False)
+
+        lines, cursor_row, cursor_column = editor.render_lines(7)
+
+        self.assertEqual(lines, ("❯ 你好a", "  "))
+        self.assertEqual((cursor_row, cursor_column), (1, 2))

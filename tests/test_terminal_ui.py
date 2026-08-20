@@ -49,6 +49,9 @@ class TerminalUITests(unittest.TestCase):
         ui.start_loop(lambda _text: None)
         ui.feed_input_bytes(b"one\r")
         ui.publish_event(event("model.text_delta", "r1", text="first answer"))
+        ui.drain_loop()
+        self.assertIn("first answer", terminal.writes())
+        terminal.clear_writes()
         ui.publish_event(event("model.response_committed", "r1"))
         ui.drain_loop()
         self.assertIn("first answer", terminal.writes())
@@ -274,6 +277,20 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertEqual(stream.getvalue(), "")
         self.assertIn("Goodbye.", terminal.writes())
+
+    def test_closed_raw_loop_error_falls_back_to_console(self):
+        stream = io.StringIO()
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(
+            console=Console(file=stream, force_terminal=False),
+            terminal_driver=terminal,
+        )
+        ui.start_loop(lambda _text: None)
+        ui.close()
+
+        ui.show_error("shutdown failed")
+
+        self.assertIn("Error: shutdown failed", stream.getvalue())
 
     def test_raw_loop_ignores_a_repeated_exit_request(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)

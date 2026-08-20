@@ -1528,7 +1528,10 @@ class TerminalUI:
 
     def _write_local(self, message: str, style: str = "") -> None:
         if self._interactive_loop is not None:
-            self._interactive_loop.publish_event(_LocalMessage(message, style))
+            if not self._interactive_loop._closed:
+                self._interactive_loop.publish_event(_LocalMessage(message, style))
+                return
+            self.console.print(Text(message, style=style))
             return
         renderer = self._event_thread
         if renderer is not None and threading.current_thread() is not renderer:
