@@ -18,6 +18,7 @@ class InputActionKind(StrEnum):
     CURSOR_LEFT = "cursor_left"
     CURSOR_RIGHT = "cursor_right"
     BACKSPACE = "backspace"
+    DISMISS = "dismiss"
     CANCEL = "cancel"
     EOF = "eof"
 
@@ -77,6 +78,11 @@ class RawInputDecoder:
                 del self._buffer[0]
                 actions.append(InputAction(kind))
                 continue
+            if byte < 32:
+                # Ignore every remaining C0 control rather than leaving a
+                # zero-length printable chunk at the front of the buffer.
+                del self._buffer[0]
+                continue
             end = 0
             while end < len(self._buffer) and self._buffer[end] >= 32 and self._buffer[end] != 127:
                 end += 1
@@ -93,6 +99,20 @@ class RawInputDecoder:
                 actions.append(InputAction(InputActionKind.INSERT, text))
         return tuple(actions)
 
+    def flush(self) -> tuple[InputAction, ...]:
+        """Resolve bytes which remain after the raw-input escape timeout.
+
+        The event loop calls this after a short no-input interval.  This keeps
+        split CSI sequences buffered, while a genuine standalone Escape can
+        dismiss a completion overlay.
+        """
+        if self._buffer == b"\x1b":
+            self._buffer.clear()
+            return (InputAction(InputActionKind.DISMISS),)
+        if self._buffer.startswith(b"\x1b["):
+            self._buffer.clear()
+        return self.feed(b"")
+
     def _consume_escape(self) -> InputAction | None | bool:
         if len(self._buffer) == 1:
             return None
@@ -100,13 +120,20 @@ class RawInputDecoder:
             del self._buffer[:2]
             return InputAction(InputActionKind.NEWLINE)
         if self._buffer[1] == ord("["):
-            if len(self._buffer) < 3:
+            final = next(
+                (
+                    index
+                    for index, byte in enumerate(self._buffer[2:], start=2)
+                    if 0x40 <= byte <= 0x7E
+                ),
+                None,
+            )
+            if final is None:
                 return None
-            sequence = bytes(self._buffer[:3])
+            sequence = bytes(self._buffer[: final + 1])
             kind = self._ESCAPE_ACTIONS.get(sequence)
-            if kind is not None:
-                del self._buffer[:3]
-                return InputAction(kind)
+            del self._buffer[: final + 1]
+            return InputAction(kind) if kind is not None else False
         # An unsupported Alt sequence has no editor meaning; retain its character.
         del self._buffer[0]
         return False
@@ -134,6 +161,9 @@ class EditorState:
 
     def apply(self, action: InputAction, *, runtime_active: bool) -> EditorEffect:
         if action.kind is InputActionKind.SUBMIT:
+            if self.completion_visible:
+                self._accept_completion()
+                return EditorEffect()
             return self._submit()
         if action.kind is InputActionKind.NEWLINE:
             self._insert("\n")
@@ -142,6 +172,9 @@ class EditorState:
             return self._cancel_or_clear(runtime_active)
         if action.kind is InputActionKind.EOF:
             return self._exit_or_notice(runtime_active)
+        if action.kind is InputActionKind.DISMISS:
+            self._clear_completions()
+            return EditorEffect()
         return self._apply_edit_action(action)
 
     def render_lines(self, width: int) -> tuple[tuple[str, ...], int, int]:
@@ -199,14 +232,20 @@ class EditorState:
         return EditorEffect(exit_requested=True)
 
     def _apply_edit_action(self, action: InputAction) -> EditorEffect:
-        if action.kind is InputActionKind.INSERT:
+        if action.kind is InputActionKind.HISTORY_UP and self.completion_visible:
+            self._move_completion(-1)
+        elif action.kind is InputActionKind.HISTORY_DOWN and self.completion_visible:
+            self._move_completion(1)
+        elif action.kind is InputActionKind.INSERT:
             self._insert(action.text)
         elif action.kind is InputActionKind.BACKSPACE and self.cursor:
             self.text = self.text[: self.cursor - 1] + self.text[self.cursor :]
             self.cursor -= 1
         elif action.kind is InputActionKind.CURSOR_LEFT:
+            self._clear_completions()
             self.cursor = max(0, self.cursor - 1)
         elif action.kind is InputActionKind.CURSOR_RIGHT:
+            self._clear_completions()
             self.cursor = min(len(self.text), self.cursor + 1)
         elif action.kind is InputActionKind.HISTORY_UP:
             self._history_up()
@@ -230,6 +269,13 @@ class EditorState:
         self.text = self.text[:start] + item.value + self.text[self.cursor :]
         self.cursor = start + len(item.value)
         self._clear_completions()
+
+    def _move_completion(self, offset: int) -> None:
+        if self.selected_completion is None:
+            return
+        self.selected_completion = (
+            self.selected_completion + offset
+        ) % len(self.completions)
 
     def _history_up(self) -> None:
         if not self.history:
