@@ -114,6 +114,31 @@ class TerminalEditorTests(unittest.TestCase):
         self.assertEqual(editor.text, "/ex")
         self.assertFalse(editor.completion_visible)
 
+    def test_completion_rows_equal_visible_candidates(self):
+        editor = EditorState()
+        registry = CommandRegistry(
+            (
+                CommandSpec("/exit", "退出程序", "/exit"),
+                CommandSpec("/help", "帮助", "/help"),
+            )
+        )
+        editor.apply(InputAction(InputActionKind.INSERT, "/"), runtime_active=False)
+        editor.set_completions(registry.complete(editor.text, state="IDLE"))
+
+        self.assertEqual(len(editor.completions), 2)
+        editor.apply(InputAction(InputActionKind.INSERT, "x"), runtime_active=False)
+
+        self.assertEqual(len(editor.completions), 0)
+
+    def test_ctrl_d_exits_only_for_idle_empty_editor(self):
+        editor = EditorState()
+
+        running = editor.apply(InputAction(InputActionKind.EOF), runtime_active=True)
+        idle = editor.apply(InputAction(InputActionKind.EOF), runtime_active=False)
+
+        self.assertFalse(running.exit_requested)
+        self.assertTrue(idle.exit_requested)
+
     def test_render_lines_places_cursor_on_the_newline_row(self):
         editor = EditorState()
         editor.apply(InputAction(InputActionKind.INSERT, "first\n"), runtime_active=False)
