@@ -33,11 +33,14 @@ from .commands import CommandCompleter, CommandRegistry
 from .terminal_input import PiInputSession
 from .terminal_markdown import render_markdown, render_markdown_lines
 from .terminal_editor import (
+    BufferedInputKind,
     EditorEffect,
     EditorState,
     InputAction,
     InputActionKind,
     RawInputDecoder,
+    StdinBuffer,
+    TerminalInputFilter,
 )
 from .terminal_screen import PiMainScreenRenderer, ScreenFrame, TerminalDriver, TerminalSize
 from .terminal_theme import TerminalTheme, resolve_terminal_theme
@@ -333,6 +336,11 @@ class InteractiveTerminalLoop:
         self._ui = ui
         self._driver = driver
         self._work: Queue[tuple[str, Any]] = Queue(maxsize=4_096)
+        self._stdin_buffer = StdinBuffer()
+        self._input_filter = TerminalInputFilter(
+            enable_modify_other_keys=self._enable_modify_other_keys,
+            disable_modify_other_keys=self._disable_modify_other_keys,
+        )
         self._decoder = RawInputDecoder()
         self._editor = EditorState()
         self._renderer = PiMainScreenRenderer(driver)
@@ -349,11 +357,15 @@ class InteractiveTerminalLoop:
         self._question: _LoopQuestion | None = None
         self.write_error: Exception | None = None
         self._needs_render = True
+        self._terminal_modes_started = False
+        self._keyboard_protocol_pushed = False
+        self._modify_other_keys_active = False
 
     def start(self, on_submit: Callable[[str], None]) -> None:
         self._on_submit = on_submit
         self._exit_requested = False
         self._input_closed = False
+        self._start_terminal_modes()
         self._running.set()
 
     def publish_event(self, event: Any) -> None:
@@ -396,7 +408,7 @@ class InteractiveTerminalLoop:
                 self.drain()
                 ready = self._selector.select(self._ESCAPE_TIMEOUT)
                 if not ready:
-                    self._apply_actions(self._decoder.flush())
+                    self._apply_actions(self._flush_pending_input())
                     continue
                 for key, _mask in ready:
                     if key.data == "wake":
@@ -407,7 +419,7 @@ class InteractiveTerminalLoop:
                             self.feed_input_bytes(data)
                         else:
                             self._close_input_registration(key.fd)
-                            self._apply_actions(((self._decoder.flush()) + ()))
+                            self._apply_actions(self._flush_pending_input())
                             self._apply_eof()
         except Exception as error:
             self.write_error = error
@@ -438,6 +450,7 @@ class InteractiveTerminalLoop:
             question.answered.set()
         if self._selector is not None:
             self._selector.close()
+        self._stop_terminal_modes()
         for fd in (self._wake_read, self._wake_write):
             try:
                 os.close(fd)
@@ -554,7 +567,7 @@ class InteractiveTerminalLoop:
                 return changed
             try:
                 if kind == "input":
-                    self._apply_actions(self._decoder.feed(payload))
+                    self._apply_actions(self._decode_input(payload))
                     changed = True
                 elif isinstance(payload, _LocalMessage):
                     self._ui._append_transcript(
@@ -602,6 +615,76 @@ class InteractiveTerminalLoop:
                 pass
         except BlockingIOError:
             pass
+
+    def _decode_input(self, data: bytes) -> tuple[InputAction, ...]:
+        actions: list[InputAction] = []
+        for event in self._stdin_buffer.feed(data):
+            if event.kind is BufferedInputKind.PASTE:
+                actions.append(
+                    InputAction(
+                        InputActionKind.INSERT,
+                        event.data.decode("utf-8", errors="replace"),
+                    )
+                )
+                continue
+            for sequence in self._input_filter.feed(event.data):
+                actions.extend(self._decoder.feed(sequence))
+        return tuple(actions)
+
+    def _flush_pending_input(self) -> tuple[InputAction, ...]:
+        actions: list[InputAction] = []
+        for event in self._stdin_buffer.flush():
+            if event.kind is BufferedInputKind.PASTE:
+                actions.append(
+                    InputAction(
+                        InputActionKind.INSERT,
+                        event.data.decode("utf-8", errors="replace"),
+                    )
+                )
+                continue
+            for sequence in self._input_filter.feed(event.data):
+                actions.extend(self._decoder.feed(sequence))
+        for sequence in self._input_filter.flush():
+            actions.extend(self._decoder.feed(sequence))
+        actions.extend(self._decoder.flush())
+        return tuple(actions)
+
+    def _start_terminal_modes(self) -> None:
+        if self._terminal_modes_started:
+            return
+        self._terminal_modes_started = True
+        self._driver.write("\x1b[?2004h")
+        self._keyboard_protocol_pushed = True
+        self._driver.write("\x1b[>7u\x1b[?u\x1b[c")
+        self._driver.flush()
+
+    def _stop_terminal_modes(self) -> None:
+        if not self._terminal_modes_started:
+            return
+        self._terminal_modes_started = False
+        try:
+            self._driver.write("\x1b[?2004l")
+            if self._keyboard_protocol_pushed or self._input_filter.kitty_protocol_active:
+                self._driver.write("\x1b[<u")
+                self._keyboard_protocol_pushed = False
+                self._input_filter.kitty_protocol_active = False
+            self._disable_modify_other_keys()
+            self._driver.flush()
+        finally:
+            self._stdin_buffer.clear()
+            self._input_filter.clear()
+
+    def _enable_modify_other_keys(self) -> None:
+        if self._input_filter.kitty_protocol_active or self._modify_other_keys_active:
+            return
+        self._driver.write("\x1b[>4;2m")
+        self._modify_other_keys_active = True
+
+    def _disable_modify_other_keys(self) -> None:
+        if not self._modify_other_keys_active:
+            return
+        self._driver.write("\x1b[>4;0m")
+        self._modify_other_keys_active = False
 
 
 class TerminalUI:

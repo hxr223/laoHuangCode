@@ -2,14 +2,41 @@ import unittest
 
 from laohuangcode.commands import CommandRegistry, CommandSpec
 from laohuangcode.terminal_editor import (
+    BufferedInputKind,
     EditorState,
     InputAction,
     InputActionKind,
     RawInputDecoder,
+    StdinBuffer,
+    TerminalInputFilter,
 )
 
 
 class TerminalEditorTests(unittest.TestCase):
+    def _decode_buffered(
+        self,
+        chunks: tuple[bytes, ...],
+        *,
+        filter_: TerminalInputFilter | None = None,
+    ) -> tuple[InputAction, ...]:
+        buffer = StdinBuffer()
+        input_filter = filter_ or TerminalInputFilter()
+        decoder = RawInputDecoder()
+        actions: list[InputAction] = []
+        for chunk in chunks:
+            for event in buffer.feed(chunk):
+                if event.kind is BufferedInputKind.PASTE:
+                    actions.append(
+                        InputAction(
+                            InputActionKind.INSERT,
+                            event.data.decode("utf-8"),
+                        )
+                    )
+                    continue
+                for sequence in input_filter.feed(event.data):
+                    actions.extend(decoder.feed(sequence))
+        return tuple(actions)
+
     def test_decoder_distinguishes_submit_alt_enter_and_ctrl_d(self):
         decoder = RawInputDecoder()
 
@@ -43,6 +70,77 @@ class TerminalEditorTests(unittest.TestCase):
         self.assertEqual(
             decoder.flush(), (InputAction(InputActionKind.DISMISS),)
         )
+
+    def test_stdin_filter_drops_split_device_attributes_response(self):
+        actions = self._decode_buffered((b"\x1b", b"[?1;2c"))
+
+        self.assertEqual(actions, ())
+
+    def test_stdin_buffer_emits_split_bracketed_paste_as_content_only(self):
+        actions = self._decode_buffered((b"\x1b[200~hello\n", b"world\x1b[201~"))
+
+        self.assertEqual(
+            actions,
+            (InputAction(InputActionKind.INSERT, "hello\nworld"),),
+        )
+
+    def test_stdin_buffer_keeps_ordinary_arrow_keys_mapped(self):
+        actions = self._decode_buffered((b"\x1b", b"[A"))
+
+        self.assertEqual(actions, (InputAction(InputActionKind.HISTORY_UP),))
+
+    def test_stdin_buffer_flushes_standalone_escape_as_dismissal(self):
+        buffer = StdinBuffer()
+        input_filter = TerminalInputFilter()
+        decoder = RawInputDecoder()
+
+        self.assertEqual(buffer.feed(b"\x1b"), ())
+        actions: list[InputAction] = []
+        for event in buffer.flush():
+            for sequence in input_filter.feed(event.data):
+                actions.extend(decoder.feed(sequence))
+        actions.extend(decoder.flush())
+
+        self.assertEqual(tuple(actions), (InputAction(InputActionKind.DISMISS),))
+
+    def test_stdin_buffer_preserves_cjk_insert(self):
+        actions = self._decode_buffered(("你好".encode(),))
+
+        self.assertEqual(actions, (InputAction(InputActionKind.INSERT, "你好"),))
+
+    def test_bracketed_paste_newlines_insert_instead_of_submitting(self):
+        editor = EditorState()
+        actions = self._decode_buffered((b"\x1b[200~one\ntwo\x1b[201~",))
+
+        effects = [
+            editor.apply(action, runtime_active=False)
+            for action in actions
+        ]
+
+        self.assertEqual(editor.text, "one\ntwo")
+        self.assertTrue(all(effect.submit is None for effect in effects))
+
+    def test_apple_terminal_shift_enter_normalizes_to_newline(self):
+        filter_ = TerminalInputFilter(
+            is_apple_terminal=lambda: True,
+            shift_pressed=lambda: True,
+        )
+
+        actions = self._decode_buffered((b"\r",), filter_=filter_)
+
+        self.assertEqual(actions, (InputAction(InputActionKind.NEWLINE),))
+
+    def test_kitty_release_is_filtered_and_repeat_maps_to_printable(self):
+        release = self._decode_buffered((b"\x1b[65;1:3u",))
+        repeat = self._decode_buffered((b"\x1b[65;1:2u",))
+
+        self.assertEqual(release, ())
+        self.assertEqual(repeat, (InputAction(InputActionKind.INSERT, "A"),))
+
+    def test_unmodified_kitty_printable_suppresses_raw_duplicate(self):
+        actions = self._decode_buffered((b"\x1b[97u", b"a"))
+
+        self.assertEqual(actions, (InputAction(InputActionKind.INSERT, "a"),))
 
     def test_editor_keeps_slash_candidates_and_tab_accepts_first(self):
         editor = EditorState()
