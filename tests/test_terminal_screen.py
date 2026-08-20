@@ -5,9 +5,36 @@ from laohuangcode.terminal_screen import (
     PiMainScreenRenderer,
     ScreenFrame,
 )
+from tests.terminal_emulator import TerminalEmulator
 
 
 class PiMainScreenRendererTests(unittest.TestCase):
+    def test_emulator_scrolls_when_linefeed_writes_at_bottom_row(self):
+        terminal = TerminalEmulator(columns=10, rows=2)
+
+        terminal.write("top\r\nbottom\r\nnext")
+
+        self.assertEqual(terminal.scrollback, ("top",))
+        self.assertEqual(terminal.viewport_lines, ("bottom", "next"))
+        self.assertEqual(terminal.cursor_row, 1)
+        self.assertEqual(terminal.cursor_column, 4)
+        self.assertEqual(terminal.viewport_top, 1)
+
+    def test_emulator_wraps_only_after_next_printable_full_width_line(self):
+        terminal = TerminalEmulator(columns=4, rows=3)
+
+        terminal.write("abcd")
+
+        self.assertEqual(terminal.viewport_lines, ("abcd", "", ""))
+        self.assertEqual(terminal.cursor_row, 0)
+        self.assertEqual(terminal.cursor_column, 3)
+
+        terminal.write("X")
+
+        self.assertEqual(terminal.viewport_lines, ("abcd", "X", ""))
+        self.assertEqual(terminal.cursor_row, 1)
+        self.assertEqual(terminal.cursor_column, 1)
+
     def test_new_completed_lines_append_without_erasing_scrollback(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)
@@ -92,6 +119,22 @@ class PiMainScreenRendererTests(unittest.TestCase):
         self.assertEqual(terminal.writes().count("\x1b[2K"), 1)
         self.assertNotIn("\r\n", terminal.writes())
         self.assertNotIn("─" * 80, terminal.writes())
+
+    def test_full_width_separator_rows_do_not_duplicate_prompts_semantically(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=4)
+        emulator = TerminalEmulator(columns=80, rows=4)
+        renderer = PiMainScreenRenderer(terminal)
+        renderer.render(ScreenFrame(("─" * 80, "❯ a", "─" * 80), 1, 1, 3))
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+
+        renderer.render(ScreenFrame(("─" * 80, "❯ as", "─" * 80), 1, 1, 4))
+        emulator.write(terminal.writes())
+
+        rendered = "\n".join(emulator.logical_lines)
+        self.assertEqual(rendered.count("❯ "), 1)
+        self.assertEqual(emulator.viewport_lines[:3], ("─" * 80, "❯ as", "─" * 80))
+        self.assertNotIn("❯ a", emulator.logical_lines)
 
     def test_cursor_only_update_flushes_terminal_output(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)

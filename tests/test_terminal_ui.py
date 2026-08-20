@@ -15,9 +15,10 @@ from rich.console import Console
 from laohuangcode.commands import CommandRegistry, CommandSpec
 from laohuangcode.terminal_editor import EditorState, InputAction, InputActionKind
 from laohuangcode.terminal_input import PiInputSession
-from laohuangcode.terminal_screen import MemoryTerminalDriver
+from laohuangcode.terminal_screen import MemoryTerminalDriver, PiMainScreenRenderer
 from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
 from laohuangcode.ui_state import UIUpdate
+from tests.terminal_emulator import TerminalEmulator
 
 
 def event(kind: str, correlation_id: str, **payload: object) -> dict[str, object]:
@@ -104,6 +105,25 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(terminal.writes().count("\x1b[2K"), 1)
         self.assertNotIn("\r\n", terminal.writes())
         self.assertNotIn("\r\n❯ a", terminal.writes())
+
+    def test_typing_updates_editor_line_semantically_in_four_rows(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=4)
+        emulator = TerminalEmulator(columns=80, rows=4)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"a")
+        ui.drain_loop()
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"s")
+        ui.drain_loop()
+        emulator.write(terminal.writes())
+
+        rendered = "\n".join(emulator.logical_lines)
+        self.assertEqual(rendered.count("❯ "), 1)
+        self.assertIn("❯ as", emulator.viewport_lines)
+        self.assertNotIn("❯ a", emulator.logical_lines)
 
     def test_two_completed_turns_remain_in_history_without_tail_truncation(self):
         ui = TerminalUI(theme="light")
@@ -361,6 +381,45 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertEqual(sum(1 for line in frame.lines if "/exit" in line), 1)
         self.assertIn("deepseek-v4-flash", frame.lines[-1])
+
+    def test_completion_shrink_clears_stale_rows_without_clearing_scrollback(self):
+        terminal = MemoryTerminalDriver(columns=40, rows=4)
+        emulator = TerminalEmulator(columns=40, rows=4)
+        renderer_ui = TerminalUI(
+            terminal_driver=terminal,
+            command_registry=CommandRegistry(
+                [
+                    CommandSpec("/exit", "退出程序", "/exit"),
+                    CommandSpec("/help", "show help", "/help"),
+                    CommandSpec("/model", "choose model", "/model"),
+                ]
+            ),
+        )
+        renderer_ui.accept_user_input("saved scrollback")
+        renderer = PiMainScreenRenderer(terminal)
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "/"), runtime_active=False)
+        editor.set_completions(
+            renderer_ui.command_registry.complete(editor.text, state="IDLE")
+        )
+        renderer.render(renderer_ui.build_frame(width=40, editor=editor))
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+        self.assertIn("saved scrollback", "\n".join(emulator.logical_lines))
+
+        editor.apply(InputAction(InputActionKind.INSERT, "h"), runtime_active=False)
+        editor.set_completions(
+            renderer_ui.command_registry.complete(editor.text, state="IDLE")
+        )
+        renderer.render(renderer_ui.build_frame(width=40, editor=editor))
+        emulator.write(terminal.writes())
+
+        rendered = "\n".join(emulator.logical_lines)
+        viewport = "\n".join(emulator.viewport_lines)
+        self.assertIn("saved scrollback", rendered)
+        self.assertIn("/help", viewport)
+        self.assertNotIn("/exit", viewport)
+        self.assertNotIn("/model", viewport)
 
     def test_frame_grows_only_for_actual_multiline_input(self):
         ui = TerminalUI(terminal_driver=MemoryTerminalDriver(columns=80, rows=24))
