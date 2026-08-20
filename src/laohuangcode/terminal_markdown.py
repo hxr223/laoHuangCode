@@ -80,15 +80,15 @@ def render_markdown_lines(
 def _markdown_theme(theme: TerminalTheme) -> Theme:
     colors = theme.color
     styles = {
-        "markdown.paragraph": colors("text"),
+        "markdown.paragraph": "",
         "markdown.h1": f"bold {colors('heading')}",
         "markdown.h2": f"bold {colors('heading')}",
         "markdown.h3": f"bold {colors('heading')}",
         "markdown.h4": f"bold {colors('heading')}",
         "markdown.h5": f"bold {colors('heading')}",
         "markdown.h6": f"bold {colors('heading')}",
-        "markdown.strong": f"bold {colors('text')}",
-        "markdown.em": f"italic {colors('text')}",
+        "markdown.strong": "bold",
+        "markdown.em": "italic",
         "markdown.s": f"strike {colors('muted')}",
         "markdown.code": f"{colors('code')} on {colors('card')}",
         "markdown.block_quote": f"italic {colors('thinking')}",
