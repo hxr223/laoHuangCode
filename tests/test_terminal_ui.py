@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 import io
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,13 +9,15 @@ import unittest
 from prompt_toolkit import PromptSession
 from prompt_toolkit.data_structures import Size
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.layout.screen import WritePosition
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
-from laohuangcode.commands import CommandRegistry, CommandSpec
-from laohuangcode.terminal_input import PiInputSession
+from laohuangcode.commands import CommandCompleter, CommandRegistry, CommandSpec
+from laohuangcode.terminal_input import PiInputSession, PiTerminalApplication
 from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
+from laohuangcode.ui_state import UIUpdate
 
 
 class TerminalUITests(unittest.TestCase):
@@ -121,6 +124,304 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("─", rendered)
         self.assertIn("❯", rendered)
         self.assertNotIn("│", rendered)
+
+    def test_persistent_terminal_owns_transcript_and_editor_together(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=20, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        submitted = []
+        with create_pipe_input() as pipe:
+            app = PiTerminalApplication(
+                input=pipe,
+                output=output,
+                transcript=lambda _width, _height: [
+                    ("#1f2328", "`laoHuangCode` 项目根目录\n")
+                ],
+            )
+
+            def run() -> None:
+                app.run(lambda text: (submitted.append(text), app.exit()))
+
+            worker = threading.Thread(target=run)
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("hello")
+            pipe.send_bytes(b"\r")
+            worker.join(1)
+
+        self.assertEqual(submitted, ["hello"])
+        self.assertIn("`laoHuangCode` 项目根目录", output_buffer.getvalue())
+
+    def test_persistent_terminal_stays_in_the_regular_terminal_screen(self):
+        """A normal session must not switch to prompt_toolkit's alt screen."""
+
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=40, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        with create_pipe_input() as pipe:
+            app = PiTerminalApplication(
+                input=pipe,
+                output=output,
+                transcript=lambda _width, _height: [],
+            )
+            worker = threading.Thread(target=lambda: app.run(lambda _text: None))
+            worker.start()
+            time.sleep(0.05)
+            app.exit()
+            worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertNotIn("\x1b[?1049h", output_buffer.getvalue())
+
+    def test_persistent_terminal_ignores_a_repeated_exit_request(self):
+        class FakeApplication:
+            def __init__(self):
+                self.future = Future()
+                self.loop = None
+                self.exit_calls = 0
+
+            def exit(self):
+                if self.future.done():
+                    raise Exception("Return value already set")
+                self.exit_calls += 1
+                self.future.set_result(None)
+
+        terminal = PiTerminalApplication(
+            transcript=lambda _width, _height: [],
+        )
+        application = FakeApplication()
+        terminal.app = application
+        terminal._running.set()
+
+        terminal.exit()
+        terminal.exit()
+
+        self.assertEqual(application.exit_calls, 1)
+
+    def test_persistent_terminal_keeps_command_completion_compact(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=40, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        registry = CommandRegistry(
+            [CommandSpec("/exit", "退出程序", "/exit")]
+        )
+        with create_pipe_input() as pipe:
+            app = PiTerminalApplication(
+                input=pipe,
+                output=output,
+                transcript=lambda _width, _height: [],
+                completer=CommandCompleter(registry),
+                complete_while_typing=True,
+            )
+            worker = threading.Thread(target=lambda: app.run(lambda _text: None))
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("/e")
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                state = app.default_buffer.complete_state
+                values = (
+                    tuple(item.text for item in state.completions)
+                    if state is not None
+                    else ()
+                )
+                if values == ("/exit",):
+                    break
+                time.sleep(0.01)
+            app.exit()
+            worker.join(1)
+
+        rendered = output_buffer.getvalue()
+        self.assertEqual(values, ("/exit",))
+        self.assertIn("/exit", rendered)
+        self.assertLessEqual(rendered.count("\r\n"), 6)
+
+    def test_persistent_terminal_uses_only_content_rows_for_a_completion(self):
+        registry = CommandRegistry(
+            [CommandSpec("/exit", "退出程序", "/exit")]
+        )
+        with create_pipe_input() as pipe:
+            app = PiTerminalApplication(
+                input=pipe,
+                output=DummyOutput(),
+                transcript=lambda _width, _height: [
+                    ("", "header\n"),
+                    ("", "model"),
+                ],
+                footer=lambda: [("", "deepseek/deepseek-v4-flash")],
+                completer=CommandCompleter(registry),
+                complete_while_typing=True,
+            )
+            worker = threading.Thread(target=lambda: app.run(lambda _text: None))
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("/e")
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                state = app.default_buffer.complete_state
+                values = (
+                    tuple(item.text for item in state.completions)
+                    if state is not None
+                    else ()
+                )
+                if values == ("/exit",):
+                    break
+                time.sleep(0.01)
+            rows = app.app.layout.container._divide_heights(
+                WritePosition(0, 0, 80, 60)
+            )
+            app.exit()
+            worker.join(1)
+
+        self.assertEqual(values, ("/exit",))
+        self.assertEqual(rows, [2, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1])
+
+    def test_persistent_terminal_grows_only_for_actual_multiline_input(self):
+        with create_pipe_input() as pipe:
+            app = PiTerminalApplication(
+                input=pipe,
+                output=DummyOutput(),
+                transcript=lambda _width, _height: [
+                    ("", "header\n"),
+                    ("", "model"),
+                ],
+            )
+            worker = threading.Thread(target=lambda: app.run(lambda _text: None))
+            worker.start()
+            time.sleep(0.05)
+            app.default_buffer.text = "first line\nsecond line"
+            rows = app.app.layout.container._divide_heights(
+                WritePosition(0, 0, 80, 60)
+            )
+            app.exit()
+            worker.join(1)
+
+        self.assertEqual(rows, [2, 0, 1, 0, 2, 0, 1, 0, 0])
+
+    def test_persistent_terminal_reuses_editor_for_command_questions(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=20, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        with create_pipe_input() as pipe:
+            app = PiTerminalApplication(
+                input=pipe,
+                output=output,
+                transcript=lambda _width, _height: [],
+            )
+            runner = threading.Thread(target=lambda: app.run(lambda _text: None))
+            runner.start()
+            time.sleep(0.05)
+            answers = []
+            asker = threading.Thread(
+                target=lambda: answers.append(app.ask("Select model:"))
+            )
+            asker.start()
+            time.sleep(0.05)
+            pipe.send_text("1")
+            pipe.send_bytes(b"\r")
+            asker.join(1)
+            app.exit()
+            runner.join(1)
+
+        self.assertEqual(answers, ["1"])
+        self.assertIn("Select model:", output_buffer.getvalue())
+
+    def test_single_renderer_keeps_stream_text_across_tool_boundaries(self):
+        ui = TerminalUI(theme="light")
+        ui._apply_transcript_update(
+            UIUpdate("model.reasoning_delta", text="thinking", correlation_id="r1")
+        )
+        ui._apply_transcript_update(
+            UIUpdate(
+                "tool.started",
+                correlation_id="tool-1",
+                payload={"name": "bash", "arguments": {"command": "ls -la"}},
+            )
+        )
+        ui._apply_transcript_update(
+            UIUpdate(
+                "tool.finished",
+                correlation_id="tool-1",
+                payload={"status": "completed", "exit_code": 0, "duration_ms": 1},
+            )
+        )
+        ui._apply_transcript_update(
+            UIUpdate(
+                "model.text_delta",
+                text="`laoHuangCode` 项目根目录",
+                correlation_id="r2",
+            )
+        )
+
+        rendered = "".join(text for _style, text in ui._render_transcript(60, 30))
+
+        self.assertIn("laoHuangCode 项目根目录", rendered)
+        self.assertNotIn("`", rendered)
+        self.assertIn("completed · exit 0 · 1ms", rendered)
+        self.assertNotIn("very long output", rendered)
+
+    def test_single_renderer_renders_assistant_markdown(self):
+        ui = TerminalUI(theme="dark")
+        ui._apply_transcript_update(
+            UIUpdate(
+                "model.text_delta",
+                text="**加粗**、`代码`\n\n- 第一项",
+                correlation_id="response-1",
+            )
+        )
+
+        fragments = ui._render_transcript(80, 30)
+        rendered = "".join(text for _style, text in fragments)
+
+        self.assertIn("加粗", rendered)
+        self.assertIn("代码", rendered)
+        self.assertIn("第一项", rendered)
+        self.assertNotIn("**", rendered)
+        self.assertNotIn("`", rendered)
+        self.assertTrue(
+            any("bold" in style and "加粗" in text for style, text in fragments)
+        )
+        self.assertTrue(
+            any("bg:" in style and "代码" in text for style, text in fragments)
+        )
+        self.assertFalse(
+            any(
+                "\n" not in text and text.strip() == "" and len(text) > 1
+                for _style, text in fragments
+            )
+        )
 
     def test_typing_slash_opens_command_completion_immediately(self):
         calls = []

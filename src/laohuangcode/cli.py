@@ -7,7 +7,9 @@ from collections.abc import Callable, Mapping, Sequence
 import getpass
 import os
 from pathlib import Path
+from queue import Queue
 import sys
+from threading import Thread
 from typing import Any
 
 from . import __version__
@@ -106,6 +108,14 @@ def run_session_repl(
 ) -> bool:
     """Keep accepting input while AgentSession executes in the background."""
 
+    # The production TerminalUI owns a persistent prompt_toolkit application.
+    # Feed it through a coordinator queue so its UI loop never blocks on the
+    # router's optional small-model classification request.
+    if callable(getattr(ui, "run", None)):
+        return _run_persistent_session_repl(
+            session, command_handler=command_handler, ui=ui
+        )
+
     start_renderer = getattr(ui, "start_event_renderer", None)
     if callable(start_renderer):
         start_renderer()
@@ -167,6 +177,99 @@ def run_session_repl(
             flush_renderer = getattr(ui, "flush_event_renderer", None)
             if callable(flush_renderer):
                 flush_renderer()
+        ui.stop_event_renderer()
+    if clean_shutdown:
+        ui.show_goodbye()
+    else:
+        ui.show_error("Task worker did not stop before the shutdown timeout.")
+    return clean_shutdown
+
+
+def _run_persistent_session_repl(
+    session: AgentSession,
+    *,
+    command_handler: Callable[[str], bool] | None,
+    ui: TerminalUI,
+) -> bool:
+    """Drive a single-renderer terminal without writing outside its layout."""
+
+    ui.start_event_renderer()
+    ui.show_welcome()
+    submitted: Queue[str | None] = Queue()
+
+    def handle_input(user_input: str) -> bool:
+        if user_input == "/exit":
+            session.submit_input(user_input)
+            return False
+        if not user_input:
+            return True
+        if user_input.startswith("/"):
+            if user_input == "/cancel":
+                submission = session.submit_input(user_input)
+                if submission.task_id is None:
+                    session.publish_notice("No active task to cancel.")
+                return True
+            session.submit_input(user_input)
+            if command_handler is not None and command_handler(user_input):
+                return True
+            command_name = user_input.split()[0]
+            suggestion = (
+                ui.command_registry.suggest(command_name)
+                if ui.command_registry is not None
+                else None
+            )
+            suffix = f" Did you mean {suggestion}?" if suggestion else ""
+            session.publish_notice(f"Unknown command: {command_name}.{suffix}")
+            return True
+        try:
+            submission = session.submit_input(user_input)
+        except (OverflowError, RuntimeError, ValueError) as error:
+            session.publish_notice(f"Error: {error}", style="bold red")
+            return True
+        if submission.queued:
+            status = session.queue_status()
+            session.publish_notice(
+                "Message queued "
+                f"(pending {status['pending']} · held {status['held']})."
+            )
+        elif submission.rejected:
+            session.publish_notice(
+                f"Message rejected: {submission.reason}", style="bold red"
+            )
+        return True
+
+    def coordinate() -> None:
+        while True:
+            user_input = submitted.get()
+            try:
+                if user_input is None:
+                    return
+                handle_input(user_input)
+            finally:
+                submitted.task_done()
+
+    coordinator = Thread(
+        target=coordinate, name="laohuang-input-coordinator", daemon=True
+    )
+    coordinator.start()
+    clean_shutdown = False
+    try:
+        def enqueue(user_input: str) -> None:
+            submitted.put(user_input)
+            # Exit is a local UI operation and should not wait behind a slow
+            # semantic classification of an earlier queued message.
+            if user_input == "/exit":
+                ui.request_exit()
+
+        ui.run(enqueue)
+    finally:
+        submitted.put(None)
+        submitted.join()
+        coordinator.join(timeout=2)
+        clean_shutdown = session.close(wait=True, timeout=10)
+        if clean_shutdown:
+            session.event_bus.flush()
+            ui.flush_event_renderer()
         ui.stop_event_renderer()
     if clean_shutdown:
         ui.show_goodbye()

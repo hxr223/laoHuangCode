@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 
@@ -77,6 +78,46 @@ class ReplTests(unittest.TestCase):
 
         self.assertEqual(started[0], "first")
         self.assertTrue(any("Message queued" in item for item in ui.messages))
+        self.assertIn("goodbye", ui.messages)
+
+    def test_persistent_terminal_repl_exits_without_leaving_its_queue_blocked(self):
+        class PersistentUI:
+            command_registry = None
+
+            def __init__(self):
+                self.messages = []
+                self.exit_requests = 0
+
+            def start_event_renderer(self):
+                return None
+
+            def show_welcome(self):
+                self.messages.append("welcome")
+
+            def run(self, submit):
+                submit("/exit")
+                time.sleep(0.05)
+
+            def request_exit(self):
+                self.exit_requests += 1
+
+            def flush_event_renderer(self):
+                return None
+
+            def stop_event_renderer(self):
+                return None
+
+            def show_goodbye(self):
+                self.messages.append("goodbye")
+
+            def show_error(self, message):
+                self.messages.append(message)
+
+        ui = PersistentUI()
+        session = AgentSession(lambda _content: "unused")
+
+        self.assertTrue(run_session_repl(session, ui=ui))
+        self.assertEqual(ui.exit_requests, 1)
         self.assertIn("goodbye", ui.messages)
 
     def test_plain_repl_uses_agent_session_and_waits_for_pipe_eof(self):
