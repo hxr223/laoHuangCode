@@ -87,15 +87,15 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         renderer.render(ScreenFrame(("history", "❯ edit"), 1, 1, cursor_col=4))
 
-        self.assertIn("\r\x1b[4C", terminal.writes())
+        self.assertIn("\x1b[5G", terminal.writes())
 
     def test_cursor_column_uses_terminal_cells_not_python_string_length(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)
         renderer.render(ScreenFrame(("❯ 你好你",), 0, 0, cursor_col=8))
 
-        self.assertIn("\r\x1b[8C", terminal.writes())
-        self.assertNotIn("\r\x1b[5C", terminal.writes())
+        self.assertIn("\x1b[9G", terminal.writes())
+        self.assertNotIn("\x1b[6G", terminal.writes())
 
     def test_render_emits_one_atomic_terminal_write(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
@@ -107,6 +107,17 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         self.assertEqual(len(terminal.write_chunks()), 1)
         self.assertIn("\x1b[2K❯ as", terminal.writes())
+
+    def test_diff_render_uses_synchronized_output_wrappers(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        renderer = PiMainScreenRenderer(terminal)
+        renderer.render(ScreenFrame(("one", "❯ a"), 1, 1, 3))
+        terminal.clear_writes()
+
+        renderer.render(ScreenFrame(("one", "❯ as"), 1, 1, 4))
+
+        self.assertTrue(terminal.writes().startswith("\x1b[?2026h"))
+        self.assertIn("\x1b[?2026l", terminal.writes())
 
     def test_editor_only_change_does_not_repaint_unchanged_footer_rows(self):
         terminal = MemoryTerminalDriver(columns=80, rows=4)
@@ -136,6 +147,17 @@ class PiMainScreenRendererTests(unittest.TestCase):
         self.assertEqual(emulator.viewport_lines[:3], ("─" * 80, "❯ as", "─" * 80))
         self.assertNotIn("❯ a", emulator.logical_lines)
 
+    def test_changed_line_above_previous_viewport_uses_full_render(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=2)
+        renderer = PiMainScreenRenderer(terminal)
+        renderer.render(ScreenFrame(("old", "middle", "tail", "❯ "), 3, 3))
+        terminal.clear_writes()
+
+        renderer.render(ScreenFrame(("new", "middle", "tail", "❯ "), 3, 3))
+
+        self.assertIn("\x1b[2J\x1b[H\x1b[3J", terminal.writes())
+        self.assertIn("new", terminal.writes())
+
     def test_cursor_only_update_flushes_terminal_output(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)
@@ -146,7 +168,7 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         self.assertEqual(terminal.flushes, flushes_before + 1)
 
-    def test_resize_never_clears_scrollback(self):
+    def test_resize_uses_pi_full_render_clear_path(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)
         renderer.render(ScreenFrame(("saved history", "active", "❯ "), 2, 2))
@@ -155,9 +177,18 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         renderer.render(ScreenFrame(("saved history", "active", "❯ "), 2, 2))
 
-        self.assertNotIn("\x1b[3J", terminal.writes())
-        self.assertNotIn("saved history", terminal.writes())
-        self.assertIn("\x1b[2K", terminal.writes())
+        self.assertIn("\x1b[2J\x1b[H\x1b[3J", terminal.writes())
+        self.assertIn("saved history", terminal.writes())
+        self.assertNotIn("\x1b[2K", terminal.writes())
+
+    def test_over_width_line_raises_before_writing(self):
+        terminal = MemoryTerminalDriver(columns=4, rows=2)
+        renderer = PiMainScreenRenderer(terminal)
+
+        with self.assertRaisesRegex(ValueError, "exceeds terminal width"):
+            renderer.render(ScreenFrame(("12345",), 0, 0))
+
+        self.assertEqual(terminal.writes(), "")
 
     def test_close_restores_driver_and_cursor(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
