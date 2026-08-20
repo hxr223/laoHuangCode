@@ -76,6 +76,13 @@ class TerminalEditorTests(unittest.TestCase):
 
         self.assertEqual(actions, ())
 
+    def test_stdin_filter_drops_abandoned_prefix_before_real_input(self):
+        typed = self._decode_buffered((b"\x1b[?1;", b"a"))
+        arrow = self._decode_buffered((b"\x1b[?1;", b"\x1b[A"))
+
+        self.assertEqual(typed, (InputAction(InputActionKind.INSERT, "a"),))
+        self.assertEqual(arrow, (InputAction(InputActionKind.HISTORY_UP),))
+
     def test_stdin_buffer_emits_split_bracketed_paste_as_content_only(self):
         actions = self._decode_buffered((b"\x1b[200~hello\n", b"world\x1b[201~"))
 
@@ -106,7 +113,7 @@ class TerminalEditorTests(unittest.TestCase):
     def test_stdin_buffer_preserves_cjk_insert(self):
         actions = self._decode_buffered(("你好".encode(),))
 
-        self.assertEqual(actions, (InputAction(InputActionKind.INSERT, "你好"),))
+        self.assertEqual("".join(action.text for action in actions), "你好")
 
     def test_bracketed_paste_newlines_insert_instead_of_submitting(self):
         editor = EditorState()
@@ -137,8 +144,33 @@ class TerminalEditorTests(unittest.TestCase):
         self.assertEqual(release, ())
         self.assertEqual(repeat, (InputAction(InputActionKind.INSERT, "A"),))
 
+    def test_kitty_arrow_press_repeat_and_release(self):
+        press = self._decode_buffered((b"\x1b[1;1A",))
+        repeat = self._decode_buffered((b"\x1b[1;1:2C",))
+        release = self._decode_buffered((b"\x1b[1;1:3A",))
+
+        self.assertEqual(press, (InputAction(InputActionKind.HISTORY_UP),))
+        self.assertEqual(repeat, (InputAction(InputActionKind.CURSOR_RIGHT),))
+        self.assertEqual(release, ())
+
     def test_unmodified_kitty_printable_suppresses_raw_duplicate(self):
         actions = self._decode_buffered((b"\x1b[97u", b"a"))
+
+        self.assertEqual(actions, (InputAction(InputActionKind.INSERT, "a"),))
+
+    def test_unmodified_kitty_printable_suppresses_batched_raw_duplicate(self):
+        actions = self._decode_buffered((b"\x1b[97u", b"ab"))
+
+        self.assertEqual(
+            actions,
+            (
+                InputAction(InputActionKind.INSERT, "a"),
+                InputAction(InputActionKind.INSERT, "b"),
+            ),
+        )
+
+    def test_high_bit_meta_byte_is_converted_before_buffering(self):
+        actions = self._decode_buffered((bytes([0xE1]),))
 
         self.assertEqual(actions, (InputAction(InputActionKind.INSERT, "a"),))
 
