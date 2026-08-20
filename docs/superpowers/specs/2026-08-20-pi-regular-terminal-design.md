@@ -1,194 +1,245 @@
-# Pi regular-mode terminal design
+# Pi regular terminal source-behavior port
 
 ## Goal
 
-Replace laoHuangCode's persistent `prompt_toolkit` transcript window with a
-Python implementation of Pi's **regular terminal mode**. Completed
-conversation content must be append-only terminal history; only currently
-mutable UI content may be redrawn.
+Port Pi's regular-terminal TUI engine behavior into laoHuangCode's Python TUI
+layer. This is a source-behavior port, not a visual approximation.
 
-This addresses two user-visible failures in the current hybrid UI:
+Python must not execute or vendor Pi's TypeScript runtime, but the terminal
+engine state, state transitions, input buffering, width handling, and ANSI
+output strategy must correspond to the installed Pi implementation.
 
-- a completed user message disappears once later output exceeds the artificial
-  transcript viewport;
-- a later assistant response visually replaces an earlier response because the
-  same `prompt_toolkit` screen region is repainted from a tail-truncated
-  snapshot.
+Forbidden interpretations:
 
-## Scope
+- "Pi-style" as a simplified renderer with similar colors or prompt shape.
+- "Behavioral model" as permission to invent a smaller terminal model.
+- Byte-recording unit tests as proof of real-terminal correctness.
 
-Included:
+Required interpretation:
 
-- persistent interactive session rendering, raw key input, multiline editor,
-  history navigation, slash-command completion, and terminal resize handling;
-- ANSI differential rendering in the terminal's normal screen and scrollback;
-- one UI event loop as the sole terminal writer;
-- Markdown, theme, tool-card, reasoning, queue, and cancellation presentation
-  in the new line model;
-- deterministic tests for history persistence and active-region updates.
+- Treat Pi's TUI source as the reference implementation for the terminal
+  engine.
+- Reproduce the relevant state fields, state transitions, fallback paths, and
+  edge-case handling in Python.
+- Keep laoHuangCode's existing Agent, model, tool, command, event, session, and
+  provider architecture intact.
 
-Not included:
+## Reference Sources
 
-- Agent, model-stream, tool, router, event-envelope, or Web dashboard changes;
-- alternate-screen mode, mouse support, terminal image protocols, or Pi's file
-  attachment completion;
-- changing one-shot setup prompts. They may continue to use `PiInputSession`
-  and `prompt_toolkit` because they do not coexist with a live transcript.
+Installed Pi reference root:
 
-## Reference behavior
+`/Users/huangxurui/.nvm/versions/node/v22.22.2/lib/node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-tui/dist`
 
-Pi's `TuiMainScreen` (`packages/tui/src/tui-main-screen.ts`) retains
-`previousLines`, terminal dimensions, and cursor positions. It renders a new
-full logical line sequence, finds the changed range, and emits terminal ANSI
-commands only for that range. When new lines are appended, the terminal receives
-newlines and stores completed content in its native scrollback.
+Authoritative source files:
 
-The Python implementation follows this behavioral model; it does not embed or
-depend on Pi's TypeScript runtime.
-
-## Architecture
-
-```text
-raw stdin ──> key decoder ─┐
-                            ├─> InteractiveTerminalLoop ─> PiMainScreenRenderer ─> stdout
-EventBus projection ────────┘             │
-                                          ├─> TranscriptBlock store
-                                          └─> EditorState / CompletionState
-```
-
-`InteractiveTerminalLoop` is the sole owner of presentation state and the sole
-writer of terminal bytes. Agent and tool threads only enqueue projected events.
-The key decoder only enqueues input actions. No worker, command, or input
-handler may write directly to stdout.
-
-### Transcript blocks
-
-The UI represents visible material as ordered blocks, rather than one
-tail-truncated text buffer.
-
-| Block | Key | Mutable until | Final behavior |
-| --- | --- | --- | --- |
-| user | accepted input id | immediately | append-only |
-| assistant | model request id | `model.response_committed` or aborted | live delta updates, then append-only |
-| thinking | model request id | next non-thinking model phase | live delta updates, then append-only |
-| tool | tool call id | `tool.finished` | live status/error updates, then append-only |
-| notice | event id | immediately | append-only |
-
-The full ordered block sequence is always retained in the renderer's line
-model. UI memory may retain an explicit bounded cache only if it never removes
-terminal scrollback or changes an already rendered history block.
-
-### Render frames and scrollback
-
-For every UI state change, the renderer produces a complete ordered line frame:
-
-```text
-frozen history blocks
-mutable assistant/tool blocks
-editor top rule
-editor lines and cursor marker
-editor bottom rule
-completion overlay (only if candidates exist)
-footer
-```
-
-The renderer compares the frame to `previous_lines`:
-
-- If all changed lines are newly appended, it writes them after `\r\n`; the
-  terminal scrollback receives them naturally.
-- If an active block, editor, completion list, or footer changes, it moves the
-  cursor to the first changed logical row, clears/repaints only the changed
-  range, and restores the editor cursor.
-- It never implements a `lines[-N:]` transcript viewport. Terminal scrolling is
-  native terminal scrolling.
-- On width/height change, it reflows lines and performs a bounded full redraw
-  of the interactive tail while preserving already completed scrollback.
-
-The renderer maintains `previous_lines`, terminal width/height, logical cursor
-row, hardware cursor row, and the greatest previously rendered row. It uses
-ANSI cursor movement and erase-line commands, wrapped in synchronized output
-when the terminal accepts it. Unsupported synchronization sequences are safely
-ignored by normal terminals.
-
-### Input and commands
-
-The persistent session leaves `prompt_toolkit.Application`. A raw/cbreak input
-reader decodes printable characters, Enter, Alt+Enter, arrows, Tab, Ctrl+C,
-and Ctrl+D into `InputAction` values.
-
-`EditorState` owns the text buffer, cursor, editing history, and selected
-completion. The UI loop renders it as the active tail. On submission it first
-freezes and appends the user block, then invokes the existing non-blocking CLI
-enqueue callback. Routing and agent execution remain unchanged.
-
-Slash candidates are an active overlay with exactly their candidate row count;
-they disappear immediately after selection, submit, or context loss. They are
-not a flexible terminal pane and cannot consume unused screen height.
-
-### Event-to-block lifecycle
-
-```text
-submit input             → append frozen user block
-model.request_started    → create mutable assistant block for request_id
-model.text_delta         → extend that request's mutable assistant block
-tool.started/finished    → create/update mutable tool block
-response_committed       → freeze assistant block
-response_aborted/failed  → freeze partial block and append status notice
-```
-
-Correlations use the existing `request_id` and `tool_call_id`; a new request
-cannot mutate a block owned by a previous request.
-
-## File-level changes
-
-| File | Change |
+| Pi source | Ported responsibility |
 | --- | --- |
-| `src/laohuangcode/terminal_screen.py` | New ANSI regular-screen differential renderer and terminal capability adapter. |
-| `src/laohuangcode/terminal_editor.py` | New raw input decoder, editor/history state, and completion state. |
-| `src/laohuangcode/terminal_ui.py` | Reduce projected events into ordered blocks and drive the unified loop; remove transcript tail slicing and direct `Console` writes in persistent mode. |
-| `src/laohuangcode/terminal_input.py` | Retain only the one-shot `PiInputSession`; remove `PiTerminalApplication` from the persistent path. |
-| `src/laohuangcode/cli.py` | Start/stop the unified terminal loop while retaining its coordinator queue and existing session lifecycle. |
-| `src/laohuangcode/terminal_markdown.py` | Keep its in-memory Markdown-to-terminal-lines role; expose line-oriented output to the screen renderer if needed. |
-| `tests/test_terminal_ui.py` | Cover blocks, append-only history, deltas, command overlays, resize, and only-one-writer behavior. |
-| `tests/test_cli.py` | Cover session shutdown and queued input through the new terminal loop. |
+| `tui.js` | Regular-screen renderer, viewport tracking, changed-range rendering, cursor restoration, resize behavior, clear-on-shrink behavior, synchronized output. |
+| `terminal.js` | Process terminal lifecycle, raw mode, bracketed paste enable/disable, keyboard protocol negotiation, terminal-response filtering. |
+| `stdin-buffer.js` | Complete-sequence buffering for CSI, OSC, DCS, APC, SS3, meta keys, bracketed paste, and split escape sequences. |
+| `keys.js` | Key sequence interpretation after buffering, including Kitty and modifyOtherKeys forms where applicable. |
+| `utils.js` | Visible-width and truncation rules that ignore ANSI/control sequences and avoid terminal autowrap bugs. |
 
-## Failure handling
+Tracked parity matrix:
 
-- Restore terminal mode and show the hardware cursor in `finally`, including
-  keyboard interrupt, EOF, renderer error, and agent shutdown timeout.
-- A terminal write failure (including broken pipe) terminates the UI loop
-  cleanly and lets the CLI return a nonzero status rather than leaving an input
-  reader or renderer thread alive.
-- Width fallback is 80 columns when the terminal cannot report a valid size.
-- Terminal control sequences from model or tool output remain sanitized before
-  reaching the renderer.
+`docs/superpowers/specs/2026-08-20-pi-regular-terminal-parity-matrix.md`
 
-## Acceptance criteria
+Out of scope from Pi:
 
-1. After two completed conversations, both user messages and both responses
-   remain visible through normal terminal scrollback; no history is erased or
-   tail-truncated by laoHuangCode.
-2. Streaming the second answer does not change any cells belonging to the
-   frozen first answer.
-3. The editor stays compact: its height equals wrapped input rows; completion
-   height equals currently visible candidates; neither expands into free space.
-4. Slash completion remains visible while typing and accepts selection by Tab
-   or Enter.
-5. Ctrl+C cancels an active task; Ctrl+D exits only with an empty editor and no
-   active task.
-6. All production interactive stdout writes originate from the unified UI loop.
-7. Existing non-interactive/pipe output remains append-only and unchanged.
-8. Full test suite, compilation, and diff checks pass.
+- Pi's Agent/session/runtime architecture.
+- Pi's tool registry, model/provider stack, extension model, image protocols,
+  overlay stack, and exported HTML pipeline.
+- Mouse support and terminal image rendering, unless a stub is required to
+  preserve renderer behavior for non-image lines.
 
-## Migration order
+## Architecture Boundary
 
-1. Add focused failing tests for two-turn scrollback and active-block-only
-   updates.
-2. Implement line/frame data types and ANSI renderer with a fake terminal test
-   adapter.
-3. Implement editor/raw-input state and connect it to a single UI loop.
-4. Move `TerminalUI` event projection and block lifecycle onto the loop.
-5. Switch CLI persistent startup to the new loop, then delete the old
-   `PiTerminalApplication` persistent route.
-6. Run resize, completion, cancellation, shutdown, pipe-mode, and full-suite
-   regressions.
+Only the bottom terminal engine is ported:
+
+```text
+laoHuangCode Agent / Events / Tools / Commands
+                |
+                v
+TerminalUI adapter: transcript blocks + editor state -> rendered lines
+                |
+                v
+Pi-port terminal engine:
+  - renderer / viewport / hardware cursor
+  - stdin buffer / key decoder
+  - visible-width utilities
+                |
+                v
+stdin / stdout
+```
+
+The following laoHuangCode architecture must remain stable:
+
+- `AgentSession`, model streaming, cancellation, and history commit behavior.
+- Event envelopes, `UIEventReducer`, correlations, and Web dashboard logging.
+- Built-in tools and command routing.
+- CLI coordinator queue and non-TTY `PlainEventSink`.
+- `PiInputSession` for one-shot setup prompts.
+
+## Renderer Parity Requirements
+
+The Python renderer must port the relevant behavior of Pi `TUI.doRender()` and
+`positionHardwareCursor()`.
+
+Required state fields:
+
+- `previous_lines`
+- `previous_width`
+- `previous_height`
+- `previous_viewport_top`
+- `cursor_row`
+- `hardware_cursor_row`
+- `max_lines_rendered`
+- clear-on-shrink state or an explicit equivalent ruling
+
+Required render flow:
+
+1. Read current terminal width and height for every render.
+2. Render a full logical line sequence through the laoHuangCode adapter.
+3. Validate every non-image line by visible terminal width, ignoring ANSI
+   sequences.
+4. Compute `width_changed`, `height_changed`, `prev_viewport_top`,
+   `viewport_top`, and a `compute_line_diff(target_row)` equivalent.
+5. Full render without clearing on first render.
+6. Full render with clearing on width change.
+7. Full render with clearing on normal height change, except where a documented
+   environment-specific ruling says otherwise.
+8. Full render with clearing when content shrinks below the working area and the
+   selected clear-on-shrink rule requires it.
+9. Compute `first_changed` and `last_changed` over the whole line sequence.
+10. Detect `append_start` when new lines are appended after existing content.
+11. If no content changed, only update hardware cursor position.
+12. If changes are deleted lines only, clear extra rows without scrolling.
+13. If the first changed row is above the previous viewport, use full render.
+14. When `move_target_row` is below the previous viewport bottom, scroll in a
+   controlled way and update viewport state.
+15. Render only the changed range, wrapped in synchronized output
+   `ESC[?2026h` / `ESC[?2026l`.
+16. Use cursor movement relative to tracked hardware cursor state, not assumed
+   logical row access.
+17. Track final render cursor row separately from the restored hardware cursor
+   row.
+18. Restore the hardware cursor for IME/caret placement after each render.
+
+Required invariants:
+
+- No ordinary editor keystroke may repaint unchanged footer rows or full-width
+  rules.
+- No ordinary editor keystroke may emit `\r\n` unless Pi's append/scroll path
+  would emit it.
+- Completed history may enter native scrollback only once.
+- Mutable assistant/tool/editor regions may be redrawn; frozen blocks may not.
+- A line whose visible width exceeds terminal width is a renderer error, not an
+  accepted frame.
+- Full-width rules must not rely on terminal autowrap behavior.
+
+## Input Parity Requirements
+
+The Python input layer must port the relevant behavior of Pi `StdinBuffer` and
+`ProcessTerminal` keyboard negotiation before editor actions are produced.
+
+Required buffering behavior:
+
+- Buffer partial escape sequences across read chunks.
+- Emit complete CSI sequences (`ESC [`).
+- Emit complete OSC sequences (`ESC ] ... BEL` or `ESC ] ... ESC \`).
+- Emit complete DCS sequences (`ESC P ... ESC \`).
+- Emit complete APC sequences (`ESC _ ... ESC \`).
+- Emit complete SS3 sequences (`ESC O x`).
+- Treat a standalone `ESC` as a complete key only after timeout.
+- Preserve Pi's special handling for doubled escape followed by a new escape
+  sequence.
+- Detect bracketed paste start/end and emit paste content atomically.
+- Avoid duplicate printable insertion from unmodified Kitty printable
+  codepoints.
+
+Required terminal-response filtering:
+
+- Query/response sequences used for keyboard protocol negotiation must not reach
+  the editor as text.
+- `ESC[?u`, `ESC[?1;...c`, split prefixes like `ESC[` + `?1;...c`, and related
+  device-attribute fragments must be recognized and filtered or delayed exactly
+  as Pi does.
+- If an incomplete negotiation prefix times out, it may be forwarded only under
+  the same policy as Pi.
+- The raw loop must enable bracketed paste on start and disable it on close
+  with Pi-equivalent lifecycle behavior.
+- If modifyOtherKeys fallback is enabled, close must restore it so the terminal
+  does not retain keyboard protocol state after laoHuangCode exits.
+- Apple Terminal Shift+Enter normalization must match Pi's policy where the
+  platform can be detected.
+- Kitty key release/repeat events must be filtered or interpreted with the same
+  press/repeat policy as Pi; release events must not insert text.
+
+Required editor action compatibility:
+
+- Existing laoHuangCode actions remain: insert, submit, newline, complete,
+  history up/down, cursor left/right, backspace, dismiss, cancel, EOF.
+- Bracketed paste content inserts as text/newlines, not as literal control
+  wrappers.
+- Unsupported terminal control responses must never appear in the input buffer
+  as fragments like `[? s`.
+
+## Layout and Width Requirements
+
+The adapter from laoHuangCode state to terminal lines must use Pi-compatible
+width semantics:
+
+- Visible width ignores ANSI SGR, OSC, DCS, APC, and other control sequences.
+- Wrapping and truncation are based on terminal cell width, not Python string
+  length.
+- CJK and other wide glyphs use terminal cell width.
+- Lines must be truncated or wrapped before reaching the renderer; the renderer
+  still validates width as a safety gate.
+- Ordinary assistant text uses terminal default foreground unless semantic
+  styling is required.
+
+## Test Requirements
+
+Byte-recording tests are insufficient. Add a terminal semantics test adapter
+that simulates at least:
+
+- cursor row and column
+- viewport top and bottom
+- bottom scrolling
+- `CSI A/B/C/G/H`
+- `ESC[2K`
+- `ESC[2J`, `ESC[3J`, and home where used by full render
+- synchronized output wrappers as no-op wrappers
+- autowrap / pending-wrap behavior at the final column
+- small terminal heights
+
+Regression scenarios must include:
+
+- editor `a` -> `as` in a 4-row terminal does not append prompt history
+- full-width rule lines do not trigger prompt duplication
+- completion rows shrink and clear stale rows without clearing scrollback
+- frozen first turn is not rewritten while second response streams
+- appended completed blocks enter scrollback once
+- terminal width change full-renders through the documented clear path
+- terminal height change follows the Pi-compatible clear path
+- split `ESC` + `[?1;2c` does not insert `[?1;2c`
+- split bracketed paste inserts only paste content
+- close restores bracketed paste and keyboard protocol modes
+- Kitty key release/repeat events do not insert literal CSI-u text
+- Apple Terminal Shift+Enter maps to newline where platform detection applies
+- CJK cursor position uses terminal cells
+
+## Acceptance Criteria
+
+1. The spec and plan use "Pi source-behavior port" as the binding requirement;
+   "Pi-style" appears only when describing previous mistakes or historical
+   commits.
+2. A parity matrix maps every required Pi behavior above to a Python target and
+   at least one regression test.
+3. The renderer maintains Pi-equivalent viewport and hardware-cursor state.
+4. The input layer buffers and filters terminal sequences before editor actions.
+5. A real-terminal semantics test adapter catches bottom-scroll and autowrap
+   regressions that byte-only tests miss.
+6. Existing laoHuangCode Agent/session/tool/model architecture is unchanged.
+7. Non-interactive and pipe output remain append-only and unchanged.
+8. Full test suite, compilation, and `git diff --check` pass.
