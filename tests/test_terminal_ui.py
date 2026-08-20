@@ -43,6 +43,25 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("answer one", terminal.writes())
         self.assertIn("answer two", terminal.writes())
 
+    def test_second_response_does_not_rewrite_frozen_first_turn_bytes(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"one\r")
+        ui.publish_event(event("model.text_delta", "r1", text="first answer"))
+        ui.publish_event(event("model.response_committed", "r1"))
+        ui.drain_loop()
+        self.assertIn("first answer", terminal.writes())
+
+        ui.feed_input_bytes(b"two\r")
+        ui.drain_loop()
+        terminal.clear_writes()
+        ui.publish_event(event("model.text_delta", "r2", text="second answer"))
+        ui.drain_loop()
+
+        self.assertNotIn("first answer", terminal.writes())
+        self.assertIn("second answer", terminal.writes())
+
     def test_event_publication_does_not_write_before_loop_drains(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         ui = TerminalUI(terminal_driver=terminal)
