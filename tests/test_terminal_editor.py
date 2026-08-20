@@ -102,6 +102,18 @@ class TerminalEditorTests(unittest.TestCase):
         editor.apply(InputAction(InputActionKind.DISMISS), runtime_active=False)
         self.assertFalse(editor.completion_visible)
 
+    def test_text_mutation_closes_completion_before_tab_can_use_a_stale_offset(self):
+        editor = EditorState()
+        registry = CommandRegistry((CommandSpec("/echo", "回显", "/echo"),))
+        editor.apply(InputAction(InputActionKind.INSERT, "/e"), runtime_active=False)
+        editor.set_completions(registry.complete(editor.text, state="IDLE"))
+
+        editor.apply(InputAction(InputActionKind.INSERT, "x"), runtime_active=False)
+        editor.apply(InputAction(InputActionKind.COMPLETE), runtime_active=False)
+
+        self.assertEqual(editor.text, "/ex")
+        self.assertFalse(editor.completion_visible)
+
     def test_render_lines_places_cursor_on_the_newline_row(self):
         editor = EditorState()
         editor.apply(InputAction(InputActionKind.INSERT, "first\n"), runtime_active=False)
