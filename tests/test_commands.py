@@ -7,7 +7,7 @@ from prompt_toolkit.document import Document
 
 from laohuangcode.agent import CodingAgent
 from laohuangcode.cli import run_repl
-from laohuangcode.commands import CommandCompleter, SessionCommands
+from laohuangcode.commands import CommandCompleter, CommandRegistry, CommandSpec, SessionCommands
 from laohuangcode.config import Config
 from laohuangcode.credentials import CredentialStore
 from laohuangcode.model_selection import ModelSelector
@@ -15,6 +15,33 @@ from laohuangcode.tools import ToolRegistry
 
 
 class SessionCommandTests(unittest.TestCase):
+    def test_registry_completion_has_replacement_start_and_respects_state(self):
+        registry = CommandRegistry(
+            (
+                CommandSpec("/exit", "退出", "/exit"),
+                CommandSpec("/login", "登录", "/login", allowed_states=frozenset({"IDLE"})),
+                CommandSpec(
+                    "/model",
+                    "模型",
+                    "/model [provider]",
+                    allowed_states=frozenset({"IDLE"}),
+                    argument_completer=lambda _arguments: (("current", "当前模型"),),
+                ),
+            )
+        )
+
+        self.assertEqual(
+            registry.complete("/lo", state="RUNNING_MODEL"), ()
+        )
+        self.assertEqual(
+            registry.complete("/mo", state="RUNNING_MODEL")[0].value, "/model"
+        )
+        self.assertEqual(
+            registry.complete("/model ", state="RUNNING_MODEL")[0].value, "current"
+        )
+        self.assertEqual(
+            registry.complete("/ex", state="IDLE")[0].start, -3
+        )
     def _commands(self, root, *, outputs, session=None):
         credentials = CredentialStore(root / "credentials.json")
         return SessionCommands(
