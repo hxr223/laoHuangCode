@@ -40,7 +40,11 @@ class EventKind(StrEnum):
     MODEL_RESPONSE_COMMITTED = "model.response_committed"
     MODEL_RESPONSE_ABORTED = "model.response_aborted"
     MODEL_REQUEST_FAILED = "model.request_failed"
+    MODEL_RESPONSE_SUMMARY = "model.response_summary"
     MODEL_SWITCHED = "model.switched"
+
+    AGENT_GUARD_TRIGGERED = "agent.guard_triggered"
+    AGENT_GUARD_FAILED = "agent.guard_failed"
 
     TOOL_STARTED = "tool.started"
     TOOL_OUTPUT_DELTA = "tool.output_delta"
@@ -280,6 +284,7 @@ EVENT_SPECS: Mapping[EventKind, EventSpec] = MappingProxyType(
                 EventKind.MODEL_RESPONSE_COMMITTED,
                 EventKind.MODEL_RESPONSE_ABORTED,
                 EventKind.MODEL_REQUEST_FAILED,
+                EventKind.MODEL_RESPONSE_SUMMARY,
             )
         },
         EventKind.MODEL_REQUEST_STARTED: _spec(
@@ -324,6 +329,26 @@ EVENT_SPECS: Mapping[EventKind, EventSpec] = MappingProxyType(
             EventSource.SESSION,
             EventSource.SYSTEM,
         ),
+        **{
+            kind: _spec(
+                kind,
+                EventSource.SYSTEM,
+                required_payload=frozenset({"reason"}),
+                payload_types={
+                    "reason": str,
+                    "tool_rounds": int,
+                    "model_requests": int,
+                    "total_tokens": int,
+                    "elapsed_ms": int,
+                },
+                require_task_id=True,
+                max_payload_chars=100_000,
+            )
+            for kind in (
+                EventKind.AGENT_GUARD_TRIGGERED,
+                EventKind.AGENT_GUARD_FAILED,
+            )
+        },
         EventKind.UI_MESSAGE: _spec(
             EventKind.UI_MESSAGE,
             EventSource.CLI,

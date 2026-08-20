@@ -112,7 +112,7 @@ sequenceDiagram
     API-->>Agent: content/reasoning/tool_call deltas
     Agent-->>UI: model.* EventEnvelope
 
-    loop 模型返回 tool_calls（最多 20 轮）
+    loop 模型返回 tool_calls（不设置轮数硬上限）
         Agent->>Agent: 流结束后拼装并校验全部 tool calls
         par 调用默认并发执行
             Agent->>Tools: execute(call 1)
@@ -136,6 +136,13 @@ sequenceDiagram
 
 Agent 会向模型追加每个调用对应的 `tool` 角色结果，保持每个 `tool_call_id` 都有
 配对响应，再让模型解释结果或选择其他方案。
+
+运行时不限制工具轮数或模型请求次数，只限制累计 Token 和单任务耗时。相同工具、参数与
+稳定结果连续出现 3 次时会提前触发循环保护；`duration_ms` 等易变观测字段不参与结果
+指纹。触发任一保护后不再执行工具，只允许额外一次 `tool_choice=none` 的模型请求根据
+已有信息收尾。若供应商仍返回工具调用或收尾请求失败，错误会包含触发原因、工具轮数、
+模型请求数、累计 Token 与耗时。`model.response_summary` 和 `agent.guard_*` 事件会把
+每轮 usage 及保护决策同步到 Web 面板。
 
 ## 事件路由、队列与取消
 

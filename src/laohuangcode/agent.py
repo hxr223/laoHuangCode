@@ -6,6 +6,7 @@ import inspect
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from time import monotonic
 from typing import Any
 from uuid import uuid4
 
@@ -25,6 +26,12 @@ SYSTEM_PROMPT = """You are laoHuangCode, a small coding agent.
 Work inside the project root. Use read, write, edit, and bash when needed.
 Inspect relevant files before changing them and verify changes when practical.
 Keep your final response concise and explain what changed."""
+
+
+FORCED_FINAL_PROMPT = """Tool use has been stopped by the runtime safety guard.
+Do not call any tools. Give the user the best concise answer possible from the
+information already available. Clearly state any limitation caused by stopping
+tool use, but do not mention internal implementation details unless useful."""
 
 
 class AgentError(RuntimeError):
@@ -53,7 +60,9 @@ class CodingAgent:
         client: Any,
         model: str,
         tools: ToolRegistry,
-        max_tool_rounds: int = 20,
+        max_total_tokens: int = 100_000,
+        max_elapsed_seconds: float = 300,
+        repeated_tool_call_limit: int = 3,
         on_tool_event: Callable[
             [str, dict[str, Any], dict[str, Any]], None
         ]
@@ -65,7 +74,16 @@ class CodingAgent:
         self.client = client
         self.model = model
         self.tools = tools
-        self.max_tool_rounds = max_tool_rounds
+        for name, value in (
+            ("max_total_tokens", max_total_tokens),
+            ("max_elapsed_seconds", max_elapsed_seconds),
+            ("repeated_tool_call_limit", repeated_tool_call_limit),
+        ):
+            if value <= 0:
+                raise ValueError(f"{name} must be positive")
+        self.max_total_tokens = max_total_tokens
+        self.max_elapsed_seconds = max_elapsed_seconds
+        self.repeated_tool_call_limit = repeated_tool_call_limit
         self.on_tool_event = on_tool_event
         self.on_agent_event = on_agent_event
         self.provider = provider
@@ -132,6 +150,12 @@ class CodingAgent:
         self._turn += 1
         tool_rounds = 0
         model_round = 0
+        model_requests = 0
+        total_tokens = 0
+        started_at = monotonic()
+        repeated_calls: dict[str, int] = {}
+        guard_reason: str | None = None
+        guard_emitted = False
 
         try:
             user_message = {"role": "user", "content": user_input}
@@ -149,11 +173,29 @@ class CodingAgent:
             self._emit("user_message", {"content": user_input})
             while True:
                 self._raise_if_cancelled(cancel_token)
+                guard_reason = guard_reason or self._budget_guard_reason(
+                    total_tokens=total_tokens,
+                    elapsed_seconds=monotonic() - started_at,
+                )
+                force_final = guard_reason is not None
+                if force_final and not guard_emitted:
+                    guard_emitted = True
+                    self._emit(
+                        "agent_guard_triggered",
+                        self._guard_payload(
+                            reason=guard_reason,
+                            tool_rounds=tool_rounds,
+                            model_requests=model_requests,
+                            total_tokens=total_tokens,
+                            started_at=started_at,
+                        ),
+                    )
                 model_started = getattr(context, "model_started", None)
                 if callable(model_started):
                     if model_started() is False:
                         raise AgentCancelled("cancelled before model request")
                 model_round += 1
+                model_requests += 1
                 current_request_id = (
                     request_id if model_round == 1 and request_id else str(uuid4())
                 )
@@ -164,15 +206,28 @@ class CodingAgent:
                         "round": model_round,
                         "request_id": current_request_id,
                         "message_count": len(self.messages),
+                        "tool_rounds": tool_rounds,
+                        "model_requests": model_requests,
+                        "total_tokens": total_tokens,
+                        "force_final": force_final,
+                        "guard_reason": guard_reason,
                     },
                 )
+                request_messages = list(self.messages)
+                if force_final:
+                    system_message = dict(request_messages[0])
+                    system_message["content"] = (
+                        f"{system_message.get('content', '')}\n\n{FORCED_FINAL_PROMPT}"
+                    )
+                    request_messages[0] = system_message
                 try:
                     result = ChatCompletionStreamer(
                         self.client.chat.completions
                     ).complete(
                         model=self.model,
-                        messages=list(self.messages),
+                        messages=request_messages,
                         tools=self.tools.definitions,
+                        tool_choice="none" if force_final else "auto",
                         request_id=current_request_id,
                         cancel_token=cancel_token,
                         is_request_active=(
@@ -210,6 +265,23 @@ class CodingAgent:
                         self._emit_legacy("model_error", error_payload)
                     else:
                         self._emit("model_error", error_payload)
+                    if force_final:
+                        payload = self._guard_payload(
+                            reason=guard_reason or "runtime safety guard",
+                            tool_rounds=tool_rounds,
+                            model_requests=model_requests,
+                            total_tokens=total_tokens,
+                            started_at=started_at,
+                            final_error=str(error),
+                        )
+                        self._emit("agent_guard_failed", payload)
+                        message = self._guard_error_message(payload)
+                        if _is_authentication_error(error) and self.provider:
+                            message += (
+                                f" Authentication failed for {self.provider}. "
+                                f"Run /login {self.provider} to update your API key."
+                            )
+                        raise AgentError(message) from error
                     message = f"Model request failed: {error}"
                     if _is_authentication_error(error) and self.provider:
                         message += (
@@ -219,6 +291,13 @@ class CodingAgent:
                     raise AgentError(message) from error
 
                 tool_calls = list(result.tool_calls)
+                request_tokens = self._usage_total_tokens(result.usage)
+                tokens_estimated = request_tokens == 0
+                if tokens_estimated:
+                    request_tokens = self._estimate_request_tokens(
+                        request_messages, result.message_dict()
+                    )
+                total_tokens += request_tokens
                 self._emit(
                     "model_response",
                     {
@@ -229,22 +308,48 @@ class CodingAgent:
                         "tool_names": [call.function.name for call in tool_calls],
                         "tool_call_ids": [call.id for call in tool_calls],
                         "usage": result.usage,
+                        "request_tokens": request_tokens,
+                        "tokens_estimated": tokens_estimated,
+                        "total_tokens": total_tokens,
+                        "tool_rounds": tool_rounds,
+                        "model_requests": model_requests,
+                        "force_final": force_final,
                     },
                 )
-                if tool_calls and tool_rounds >= self.max_tool_rounds:
+                if force_final and tool_calls:
                     self._emit(
-                        "agent_error",
+                        "model_response_aborted",
                         {
                             "round": model_round,
-                            "error": (
-                                f"tool round limit {self.max_tool_rounds} exceeded"
-                            ),
+                            "request_id": current_request_id,
+                            "reason": "tool call returned while tools were disabled",
                         },
                     )
-                    raise AgentError(
-                        "Agent exceeded the limit of "
-                        f"{self.max_tool_rounds} tool rounds"
+                    payload = self._guard_payload(
+                        reason=guard_reason or "runtime safety guard",
+                        tool_rounds=tool_rounds,
+                        model_requests=model_requests,
+                        total_tokens=total_tokens,
+                        started_at=started_at,
                     )
+                    self._emit("agent_guard_failed", payload)
+                    raise AgentError(self._guard_error_message(payload))
+
+                post_response_guard = self._budget_guard_reason(
+                    total_tokens=total_tokens,
+                    elapsed_seconds=monotonic() - started_at,
+                )
+                if tool_calls and post_response_guard is not None:
+                    self._emit(
+                        "model_response_aborted",
+                        {
+                            "round": model_round,
+                            "request_id": current_request_id,
+                            "reason": post_response_guard,
+                        },
+                    )
+                    guard_reason = post_response_guard
+                    continue
 
                 # The complete assistant message is committed only if
                 # cancellation has not won the Session coordination race.
@@ -296,6 +401,9 @@ class CodingAgent:
                     cancel_token=cancel_token,
                     context=context,
                 )
+                repeated = self._record_repeated_tool_calls(
+                    tool_calls, tool_results, repeated_calls
+                )
                 # Every committed assistant tool call must receive one paired
                 # tool result, including calls cancelled before they start.
                 for tool_call, tool_result in zip(
@@ -311,6 +419,12 @@ class CodingAgent:
                         }
                     )
                 self._raise_if_cancelled(cancel_token)
+                if repeated is not None:
+                    guard_reason = (
+                        "repeated tool call detected "
+                        f"({repeated['name']} repeated {repeated['count']} times "
+                        "with the same arguments and result)"
+                    )
                 safe_point = getattr(context, "safe_point", None)
                 if callable(safe_point):
                     pending_batch = safe_point()
@@ -349,6 +463,149 @@ class CodingAgent:
         finally:
             self._active_request_id = None
             self._active_context = None
+
+    def _budget_guard_reason(
+        self,
+        *,
+        total_tokens: int,
+        elapsed_seconds: float,
+    ) -> str | None:
+        if total_tokens >= self.max_total_tokens:
+            return f"token budget reached ({self.max_total_tokens})"
+        if elapsed_seconds >= self.max_elapsed_seconds:
+            return (
+                "elapsed time budget reached "
+                f"({self.max_elapsed_seconds:g} seconds)"
+            )
+        return None
+
+    @staticmethod
+    def _usage_total_tokens(usage: Any) -> int:
+        if usage is None:
+            return 0
+        if isinstance(usage, dict):
+            total = usage.get("total_tokens")
+            if isinstance(total, int) and not isinstance(total, bool):
+                return max(0, total)
+            input_tokens = usage.get("prompt_tokens", usage.get("input_tokens", 0))
+            output_tokens = usage.get(
+                "completion_tokens", usage.get("output_tokens", 0)
+            )
+        else:
+            total = getattr(usage, "total_tokens", None)
+            if isinstance(total, int) and not isinstance(total, bool):
+                return max(0, total)
+            input_tokens = getattr(
+                usage, "prompt_tokens", getattr(usage, "input_tokens", 0)
+            )
+            output_tokens = getattr(
+                usage, "completion_tokens", getattr(usage, "output_tokens", 0)
+            )
+        return sum(
+            value
+            for value in (input_tokens, output_tokens)
+            if isinstance(value, int) and not isinstance(value, bool) and value > 0
+        )
+
+    @staticmethod
+    def _estimate_request_tokens(
+        messages: list[dict[str, Any]], response: dict[str, Any]
+    ) -> int:
+        serialized = json.dumps(
+            [*messages, response],
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        return max(1, (len(serialized.encode("utf-8")) + 3) // 4)
+
+    def _record_repeated_tool_calls(
+        self,
+        tool_calls: list[Any],
+        tool_results: list[dict[str, Any]],
+        counts: dict[str, int],
+    ) -> dict[str, Any] | None:
+        repeated: dict[str, Any] | None = None
+        seen: set[str] = set()
+        for tool_call, result in zip(tool_calls, tool_results, strict=True):
+            try:
+                arguments = json.loads(tool_call.function.arguments)
+            except (json.JSONDecodeError, TypeError):
+                arguments = tool_call.function.arguments
+            fingerprint = json.dumps(
+                {
+                    "name": tool_call.function.name,
+                    "arguments": arguments,
+                    "result": self._stable_tool_result(result),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            count = counts.get(fingerprint, 0) + 1
+            counts[fingerprint] = count
+            seen.add(fingerprint)
+            if repeated is None or count > repeated["count"]:
+                repeated = {
+                    "name": tool_call.function.name,
+                    "count": count,
+                }
+        for fingerprint in tuple(counts):
+            if fingerprint not in seen:
+                del counts[fingerprint]
+        return (
+            repeated
+            if repeated and repeated["count"] >= self.repeated_tool_call_limit
+            else None
+        )
+
+    @classmethod
+    def _stable_tool_result(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {
+                key: cls._stable_tool_result(item)
+                for key, item in value.items()
+                if key not in {"duration_ms"}
+            }
+        if isinstance(value, (list, tuple)):
+            return [cls._stable_tool_result(item) for item in value]
+        return value
+
+    @staticmethod
+    def _guard_payload(
+        *,
+        reason: str,
+        tool_rounds: int,
+        model_requests: int,
+        total_tokens: int,
+        started_at: float,
+        final_error: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "reason": reason,
+            "tool_rounds": tool_rounds,
+            "model_requests": model_requests,
+            "total_tokens": total_tokens,
+            "elapsed_ms": round((monotonic() - started_at) * 1000),
+        }
+        if final_error:
+            payload["final_error"] = final_error
+        return payload
+
+    @staticmethod
+    def _guard_error_message(payload: dict[str, Any]) -> str:
+        message = (
+            "Agent safety guard stopped tool use but could not produce a final "
+            f"answer: {payload['reason']}. "
+            f"Tool rounds: {payload['tool_rounds']}; "
+            f"model requests: {payload['model_requests']}; "
+            f"tokens counted: {payload['total_tokens']}; "
+            f"elapsed: {payload['elapsed_ms']}ms."
+        )
+        if payload.get("final_error"):
+            message += f" Final request failed: {payload['final_error']}"
+        return message
 
     def _commit_context_message(
         self,
@@ -635,8 +892,11 @@ class CodingAgent:
             "model_response_committed": "MODEL_RESPONSE_COMMITTED",
             "model_response_aborted": "MODEL_RESPONSE_ABORTED",
             "model_error": "MODEL_REQUEST_FAILED",
+            "model_response": "MODEL_RESPONSE_SUMMARY",
             "tool_start": "TOOL_STARTED",
             "tool_result": "TOOL_FINISHED",
+            "agent_guard_triggered": "AGENT_GUARD_TRIGGERED",
+            "agent_guard_failed": "AGENT_GUARD_FAILED",
         }
         kind_name = kind_names.get(event_type)
         if kind_name is None:
@@ -644,15 +904,27 @@ class CodingAgent:
         # Streaming Bash owns its own start/output/finish events. The Agent
         # supplies lifecycle events for the three synchronous file tools.
         is_tool_event = event_type in {"tool_start", "tool_result"}
+        is_guard_event = event_type in {
+            "agent_guard_triggered",
+            "agent_guard_failed",
+        }
         if is_tool_event and payload.get("name") == "bash":
             return
         from .events import EventKind, EventSource
 
         options = {
-            "source": EventSource.TOOL if is_tool_event else EventSource.MODEL,
+            "source": (
+                EventSource.TOOL
+                if is_tool_event
+                else EventSource.SYSTEM
+                if is_guard_event
+                else EventSource.MODEL
+            ),
             "correlation_id": (
                 payload.get("tool_call_id")
                 if is_tool_event
+                else None
+                if is_guard_event
                 else payload.get("request_id")
             ),
             "payload": payload,

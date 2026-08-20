@@ -346,6 +346,7 @@ class ChatCompletionStreamer:
         model: str,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None = None,
         request_id: str | None = None,
         cancel_token: Any | None = None,
         is_request_active: Callable[[str], bool] | None = None,
@@ -361,6 +362,8 @@ class ChatCompletionStreamer:
             "stream": True,
             "stream_options": {"include_usage": True},
         }
+        if tool_choice is not None:
+            request["tool_choice"] = tool_choice
         last_error: Exception | None = None
 
         for retry in range(max_pre_delta_retries + 1):

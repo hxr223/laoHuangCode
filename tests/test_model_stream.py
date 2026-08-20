@@ -190,6 +190,7 @@ class ModelStreamTests(unittest.TestCase):
             model="deepseek-reasoner",
             messages=[],
             tools=[],
+            tool_choice="none",
             on_delta=lambda kind, payload: events.append((kind, payload)),
         )
 
@@ -206,6 +207,7 @@ class ModelStreamTests(unittest.TestCase):
             completions.requests[0]["stream_options"],
             {"include_usage": True},
         )
+        self.assertEqual(completions.requests[0]["tool_choice"], "none")
         self.assertTrue(any(kind == "model_reasoning_delta" for kind, _ in events))
         self.assertTrue(any(kind == "model_tool_call_delta" for kind, _ in events))
 
@@ -447,6 +449,7 @@ class ModelStreamTests(unittest.TestCase):
                 EventKind.MODEL_REQUEST_STARTED,
                 EventKind.MODEL_TEXT_DELTA,
                 EventKind.MODEL_RESPONSE_VALIDATING,
+                EventKind.MODEL_RESPONSE_SUMMARY,
                 EventKind.MODEL_RESPONSE_COMMITTED,
             ],
         )
