@@ -20,10 +20,13 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.text import Text
 
 from .commands import CommandCompleter, CommandRegistry
+from .terminal_input import PiInputSession
+from .terminal_theme import TerminalTheme, resolve_terminal_theme
 from .ui_state import UIEventReducer, UIState, UIUpdate
 
 
@@ -245,16 +248,19 @@ class TerminalUI:
         self,
         *,
         console: Console | None = None,
-        session_factory: Callable[..., Any] = PromptSession,
+        session_factory: Callable[..., Any] | None = None,
         project_root: Path | None = None,
         provider: str | None = None,
         model: str | None = None,
         dashboard_url: str | None = None,
         command_registry: CommandRegistry | None = None,
         cancel_callback: Callable[[], None] | None = None,
+        theme: str | None = None,
     ) -> None:
         self.console = console or Console()
-        self._session_factory = session_factory
+        self._session_factory = session_factory or PiInputSession
+        self._question_session_factory = session_factory or PromptSession
+        self._uses_pi_input = session_factory is None
         self._session: Any | None = None
         self._question_session: Any | None = None
         self._secret_session: Any | None = None
@@ -264,6 +270,7 @@ class TerminalUI:
         self.dashboard_url = dashboard_url
         self.command_registry = command_registry
         self.cancel_callback = cancel_callback
+        self.theme: TerminalTheme = resolve_terminal_theme(theme)
         self.runtime_running_callback: Callable[[], bool] | None = None
         self.state = UIState(provider=provider or "", model=model or "")
         self.reducer = UIEventReducer(self.state)
@@ -276,6 +283,7 @@ class TerminalUI:
         self._render_error: Exception | None = None
         self._render_lock = threading.RLock()
         self._streaming_response = False
+        self._streaming_thinking = False
         self._tool_line_start: dict[tuple[str, str], bool] = {}
 
     def prompt(self, message: str | None = None) -> str:
@@ -296,62 +304,70 @@ class TerminalUI:
 
     def _echo_submitted_input(self, text: str) -> None:
         """Retain accepted input after PromptSession erases its editor frame."""
-        lines = text.splitlines() or [text]
-        echo = Text("❯ ", style="bold ansicyan")
-        echo.append(lines[0])
-        for line in lines[1:]:
-            echo.append("\n  ", style="dim")
-            echo.append(line)
         with self._render_lock:
             # A user may submit the next message while the prior model response
             # is streaming. Finish that visual line before recording the input.
             if self._streaming_response:
                 self.console.print()
                 self._streaming_response = False
-            self.console.print(echo)
+            self.console.print(
+                Padding(
+                    Markdown(text),
+                    (0, 1),
+                    style=(
+                        f"on {self.theme.color('user_bg')} "
+                        f"{self.theme.color('text')}"
+                    ),
+                    expand=False,
+                )
+            )
 
     def _create_question_session(self) -> Any:
-        return self._session_factory(
+        return self._question_session_factory(
             multiline=False,
             history=DummyHistory(),
-            style=Style.from_dict({"question": "bold ansicyan"}),
+            style=Style.from_dict(
+                {"question": f"bold {self.theme.color('accent')}"}
+            ),
         )
 
     def prompt_secret(self, message: str) -> str:
         with patch_stdout(raw=True):
             if self._secret_session is None:
-                self._secret_session = self._session_factory(
+                self._secret_session = self._question_session_factory(
                     multiline=False,
                     history=DummyHistory(),
                     is_password=True,
-                    style=Style.from_dict({"question": "bold ansicyan"}),
+                    style=Style.from_dict(
+                        {"question": f"bold {self.theme.color('accent')}"}
+                    ),
                 )
             return self._secret_session.prompt(
                 message=[("class:question", message)]
             )
 
     def _create_session(self) -> Any:
-        return self._session_factory(
-            message=self._input_prompt,
-            multiline=True,
-            show_frame=True,
+        options: dict[str, Any] = {
+            "message": self._input_prompt,
+            "multiline": True,
+            "show_frame": True,
             # Keep the frame as an affordance while typing, then erase it on
             # submit. ``_echo_submitted_input`` records the accepted message
             # as ordinary transcript text instead of a stack of empty frames.
-            erase_when_done=True,
-            prompt_continuation=HTML("<input-padding>  </input-padding>"),
-            history=InMemoryHistory(),
+            "erase_when_done": True,
+            "prompt_continuation": HTML("<input-padding>  </input-padding>"),
+            "history": InMemoryHistory(),
             # PromptSession disables complete_while_typing whenever history
             # search is enabled. Ordinary Up/Down history navigation remains
             # available without this prefix-search mode.
-            enable_history_search=False,
-            auto_suggest=AutoSuggestFromHistory(),
-            key_bindings=_input_bindings(
+            "enable_history_search": False,
+            "auto_suggest": AutoSuggestFromHistory(),
+            "key_bindings": _input_bindings(
                 is_running=self._is_running,
                 cancel=self._cancel_from_keybinding,
                 notify=self.write,
             ),
-            completer=(
+            "completer": (
                 CommandCompleter(
                     self.command_registry,
                     state_fn=lambda: (
@@ -366,20 +382,31 @@ class TerminalUI:
             # Keep Pi-style command hints live only while the input is a slash
             # command. Limiting the filter also keeps the framed editor compact
             # for ordinary messages instead of reserving menu rows constantly.
-            complete_while_typing=Condition(self._slash_completion_context),
-            reserve_space_for_menu=6,
-            style=Style.from_dict(
-                {
-                    "frame.border": "#9b6aa0",
-                    "input-padding": "",
-                    "prompt": "bold ansicyan",
-                    "completion-menu.completion": "bg:#191d27 #d0d7e2",
-                    "completion-menu.completion.current": "bg:#69456f #ffffff",
-                    "completion-menu.meta.completion": "bg:#191d27 #8993a4",
-                    "completion-menu.meta.completion.current": "bg:#69456f #ffffff",
-                }
-            ),
-        )
+            "complete_while_typing": Condition(self._slash_completion_context),
+            "reserve_space_for_menu": 6,
+            "style": self.theme.prompt_style(),
+        }
+        if self._uses_pi_input:
+            options["footer"] = self._footer_text
+        return self._session_factory(**options)
+
+    def _footer_text(self) -> list[tuple[str, str]]:
+        details: list[str] = []
+        if self.project_root is not None:
+            details.append(str(self.project_root))
+        if self.state.pending_count or self.state.held_count:
+            details.append(
+                f"queue {self.state.pending_count} pending / {self.state.held_count} held"
+            )
+        if self.state.total_tokens:
+            details.append(
+                f"↑{self.state.input_tokens} ↓{self.state.output_tokens}"
+            )
+        model = self.state.model or self.model
+        if model:
+            provider = self.state.provider or self.provider
+            details.append(f"{provider}/{model}" if provider else model)
+        return [("class:footer", " · ".join(details))]
 
     def _slash_completion_context(self) -> bool:
         session = self._session
@@ -522,13 +549,24 @@ class TerminalUI:
             )
             return
         if update.kind == "model.text_delta":
+            if self._streaming_thinking:
+                self.console.print()
+                self._streaming_thinking = False
             self.console.print(Text(update.text), end="")
             self._streaming_response = True
+            return
+        if update.kind == "model.reasoning_delta":
+            self.console.print(
+                Text(update.text, style=f"italic {self.theme.color('thinking')}"),
+                end="",
+            )
+            self._streaming_thinking = True
             return
         if update.kind == "model.response_committed":
             if self._streaming_response:
                 self.console.print()
             self._streaming_response = False
+            self._streaming_thinking = False
             return
         if update.kind in {"model.response_aborted", "model.request_failed"}:
             if self._streaming_response:
@@ -545,9 +583,14 @@ class TerminalUI:
             if isinstance(arguments, dict):
                 subject = str(arguments.get("command") or arguments.get("path") or "")
             short_id = update.correlation_id[-8:] or "unknown"
-            self.console.print(
-                Text(f"● {name} [{short_id}]  {self._clip(subject, 180)}", style="cyan")
-            )
+            self.console.print(self._tool_card(
+                name=name,
+                subject=subject,
+                detail="Running…",
+                background="tool_pending_bg",
+                accent="accent",
+                call_id=short_id,
+            ))
             return
         if update.kind == "tool.output_delta":
             self._render_tool_delta(update, "yellow")
@@ -560,8 +603,18 @@ class TerminalUI:
             detail = f" · exit {exit_code}" if exit_code is not None else ""
             if duration is not None:
                 detail += f" · {duration}ms"
-            style = "green" if status == "completed" else "yellow"
-            self.console.print(Text(f"✓ [{short_id}] {status}{detail}", style=style))
+            background = (
+                "tool_success_bg" if status == "completed" else "tool_error_bg"
+            )
+            accent = "success" if status == "completed" else "warning"
+            self.console.print(self._tool_card(
+                name="tool",
+                subject="",
+                detail=f"{status}{detail}",
+                background=background,
+                accent=accent,
+                call_id=short_id,
+            ))
             self._tool_line_start.pop(
                 (update.correlation_id, "stdout"), None
             )
@@ -598,42 +651,63 @@ class TerminalUI:
         self.console.print(Markdown(response))
 
     def show_welcome(self) -> None:
-        details = Text()
+        heading = Text("laoHuangCode", style=f"bold {self.theme.color('accent')}")
+        heading.append("  ", style="")
+        heading.append("/help for commands", style=self.theme.color("dim"))
+        self.console.print(heading)
+        details: list[str] = []
         if self.project_root is not None:
-            details.append("project  ", style="dim")
             details.append(str(self.project_root))
         if self.provider and self.model:
-            if details:
-                details.append("\n")
-            details.append("model    ", style="dim")
-            details.append(f"{self.provider} / {self.model}")
+            details.append(f"{self.provider}/{self.model}")
         if self.dashboard_url:
-            if details:
-                details.append("\n")
-            details.append("trace    ", style="dim")
-            details.append(self.dashboard_url, style="cyan underline")
-        self.console.print(
-            Panel(
-                details,
-                title="[bold cyan]laoHuangCode[/]",
-                subtitle="[dim]/help 查看命令 · /exit 退出[/]",
-                border_style="cyan",
-                padding=(0, 1),
+            details.append(f"trace: {self.dashboard_url}")
+        if details:
+            self.console.print(
+                Text(" · ".join(details), style=self.theme.color("dim"))
             )
-        )
 
     def write(self, message: str) -> None:
         self._write_local(message)
 
     def show_error(self, message: str) -> None:
-        self._write_local(f"Error: {message}", "bold red")
+        self._write_local(
+            f"Error: {message}", f"bold {self.theme.color('error')}"
+        )
 
     def show_interrupted(self, *, operation: bool = False) -> None:
         message = "Operation interrupted." if operation else "Interrupted."
-        self._write_local(message, "yellow")
+        self._write_local(message, self.theme.color("warning"))
 
     def show_goodbye(self) -> None:
-        self.console.print("[dim]Goodbye.[/]")
+        self.console.print(Text("Goodbye.", style=self.theme.color("dim")))
+
+    def _tool_card(
+        self,
+        *,
+        name: str,
+        subject: str,
+        detail: str,
+        background: str,
+        accent: str,
+        call_id: str,
+    ) -> Padding:
+        heading = Text("● ", style=f"bold {self.theme.color(accent)}")
+        heading.append(name, style=f"bold {self.theme.color('text')}")
+        if subject:
+            heading.append("  ")
+            heading.append(self._clip(subject, 180), style=self.theme.color("muted"))
+        heading.append(f"  [{call_id}]", style=self.theme.color("dim"))
+        heading.append("\n")
+        heading.append(detail, style=self.theme.color("muted"))
+        return Padding(
+            heading,
+            (0, 1),
+            style=(
+                f"on {self.theme.color(background)} {self.theme.color('text')}"
+            ),
+            expand=False,
+        )
 
     def _write_local(self, message: str, style: str = "") -> None:
         renderer = self._event_thread

@@ -274,6 +274,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model", help="model override for this session")
     parser.add_argument("--base-url", help="API base URL override for this session")
     parser.add_argument(
+        "--theme",
+        choices=("auto", "dark", "light"),
+        default="auto",
+        help="interactive terminal theme (default: auto)",
+    )
+    parser.add_argument(
         "--web",
         action="store_true",
         help="start the local agent trace dashboard",
@@ -327,7 +333,7 @@ def main(
     project_root = Path.cwd()
     terminal_ui: TerminalUI | None = None
     if _supports_terminal_ui(input_fn=input_fn, output_fn=output_fn):
-        terminal_ui = TerminalUI(project_root=project_root)
+        terminal_ui = TerminalUI(project_root=project_root, theme=args.theme)
         input_fn = terminal_ui.prompt
         output_fn = terminal_ui.write
 

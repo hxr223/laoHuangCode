@@ -519,8 +519,6 @@ class EventProjector:
         if audience not in self.AUDIENCES:
             raise ValueError(f"unknown event audience: {audience}")
         payload = _project_value(event.payload)
-        if audience == "terminal" and event.kind is EventKind.MODEL_REASONING_DELTA:
-            payload = {key: "[HIDDEN]" for key in payload}
         return {
             "event_id": event.event_id,
             "kind": event.kind.value,

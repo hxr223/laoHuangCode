@@ -32,6 +32,9 @@ class UIState:
     held_count: int = 0
     provider: str = ""
     model: str = ""
+    total_tokens: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +105,27 @@ class UIEventReducer:
             if self.state.active_response is not None:
                 self.state.active_response.status = "aborted"
             return UIUpdate(kind=kind, correlation_id=correlation_id, payload=payload)
+        if kind == "model.response_summary":
+            usage = payload.get("usage", {})
+            if isinstance(usage, Mapping):
+                self.state.input_tokens += int(
+                    usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0
+                )
+                self.state.output_tokens += int(
+                    usage.get("completion_tokens", usage.get("output_tokens", 0))
+                    or 0
+                )
+            self.state.total_tokens = int(
+                payload.get("total_tokens", self.state.total_tokens) or 0
+            )
+            return UIUpdate(kind=kind, correlation_id=correlation_id, payload=payload)
+        if kind == "model.reasoning_delta":
+            return UIUpdate(
+                kind=kind,
+                text=str(payload.get("text", "")),
+                correlation_id=correlation_id,
+                payload=payload,
+            )
 
         if kind == "tool.started":
             name = str(payload.get("name", "tool"))

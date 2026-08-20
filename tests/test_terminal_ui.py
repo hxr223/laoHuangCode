@@ -13,6 +13,7 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
 from laohuangcode.commands import CommandRegistry, CommandSpec
+from laohuangcode.terminal_input import PiInputSession
 from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
 
 
@@ -92,6 +93,34 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("└", rendered)
         self.assertIn("│", rendered)
         self.assertLessEqual(rendered.count("\r\n"), 3)
+
+    def test_pi_input_session_uses_horizontal_borders_without_side_edges(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=20, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        with create_pipe_input() as pipe:
+            session = PiInputSession(input=pipe, output=output)
+            result = []
+            worker = threading.Thread(target=lambda: result.append(session.prompt()))
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("hello")
+            pipe.send_bytes(b"\r")
+            worker.join(1)
+
+        rendered = output_buffer.getvalue()
+        self.assertEqual(result, ["hello"])
+        self.assertIn("─", rendered)
+        self.assertIn("❯", rendered)
+        self.assertNotIn("│", rendered)
 
     def test_typing_slash_opens_command_completion_immediately(self):
         calls = []
@@ -259,7 +288,7 @@ class TerminalUITests(unittest.TestCase):
         self.assertTrue(options["multiline"])
         self.assertTrue(options["show_frame"])
         self.assertTrue(options["erase_when_done"])
-        self.assertIn("❯ first line", stream.getvalue())
+        self.assertIn("first line", stream.getvalue())
         self.assertIn("second line", stream.getvalue())
         self.assertFalse(options["enable_history_search"])
         self.assertIn("❯", str(options["message"]()))
@@ -439,7 +468,7 @@ class TerminalUITests(unittest.TestCase):
         rendered = stream.getvalue()
         self.assertIn("laoHuangCode", rendered)
         self.assertIn("/tmp/demo", rendered)
-        self.assertIn("deepseek / deepseek-v4-pro", rendered)
+        self.assertIn("deepseek/deepseek-v4-pro", rendered)
         self.assertIn("http://127.0.0.1:8765/", rendered)
 
 
