@@ -239,6 +239,7 @@ class EditorState:
         elif action.kind is InputActionKind.INSERT:
             self._insert(action.text)
         elif action.kind is InputActionKind.BACKSPACE and self.cursor:
+            self._clear_completions()
             self.text = self.text[: self.cursor - 1] + self.text[self.cursor :]
             self.cursor -= 1
         elif action.kind is InputActionKind.CURSOR_LEFT:
@@ -257,6 +258,7 @@ class EditorState:
         return EditorEffect()
 
     def _insert(self, text: str) -> None:
+        self._clear_completions()
         self.text = self.text[: self.cursor] + text + self.text[self.cursor :]
         self.cursor += len(text)
         self.history_index = None
