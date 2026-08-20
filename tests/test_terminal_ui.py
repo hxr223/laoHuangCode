@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.data_structures import Size
@@ -356,6 +357,50 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(submitted, ["one\ntwo"])
         self.assertNotIn("[200~", terminal.writes())
         self.assertNotIn("[201~", terminal.writes())
+
+    def test_raw_loop_apple_shift_enter_uses_native_shift_detector(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        submitted = []
+        with (
+            patch("laohuangcode.terminal_editor.platform.system", return_value="Darwin"),
+            patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}),
+            patch("laohuangcode.terminal_ui._is_native_shift_pressed", return_value=True),
+        ):
+            ui = TerminalUI(terminal_driver=terminal)
+            ui.start_loop(submitted.append)
+            ui.feed_input_bytes(b"\r")
+            ui.drain_loop()
+
+        self.assertEqual(submitted, [])
+        self.assertIsNotNone(ui._interactive_loop)
+        if ui._interactive_loop is not None:
+            self.assertEqual(ui._interactive_loop._editor.text, "\n")
+
+    def test_run_enters_raw_mode_before_keyboard_protocol_query(self):
+        class OrderedDriver(MemoryTerminalDriver):
+            def __init__(self) -> None:
+                super().__init__(columns=80, rows=24)
+                self.events: list[str] = []
+
+            def enter_raw_mode(self) -> None:
+                self.events.append("raw")
+
+            def write(self, data: str) -> None:
+                if "\x1b[>7u\x1b[?u\x1b[c" in data:
+                    self.events.append("query")
+                super().write(data)
+
+        terminal = OrderedDriver()
+        ui = TerminalUI(terminal_driver=terminal)
+        loop = ui._interactive_loop
+        self.assertIsNotNone(loop)
+        if loop is None:
+            return
+        loop.start(lambda _text: None)
+        loop._exit_requested = True
+        loop.run()
+
+        self.assertLess(terminal.events.index("raw"), terminal.events.index("query"))
 
     def test_raw_loop_goodbye_uses_loop_writer_not_console(self):
         stream = io.StringIO()

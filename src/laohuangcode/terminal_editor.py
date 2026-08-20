@@ -72,6 +72,8 @@ class StdinBuffer:
     def feed(self, data: bytes) -> tuple[BufferedInput, ...]:
         if not data:
             return ()
+        if len(data) == 1 and data[0] > 127:
+            data = _ESC + bytes([data[0] - 128])
         self._buffer.extend(data)
         events: list[BufferedInput] = []
         self._process_buffer(events)
@@ -184,10 +186,12 @@ class TerminalInputFilter:
             if self._is_negotiation_prefix(combined):
                 self._pending_negotiation_prefix = combined
                 return ()
-            pending = self._pending_negotiation_prefix
             self._pending_negotiation_prefix = b""
-            return (pending, *self.feed(sequence))
+            return self.feed(sequence)
 
+        abandoned_tail = self._abandoned_negotiation_tail(sequence)
+        if abandoned_tail is not None:
+            return self.feed(abandoned_tail)
         if self._handle_negotiation(sequence):
             return ()
         if self._is_negotiation_prefix(sequence):
@@ -223,6 +227,13 @@ class TerminalInputFilter:
 
     def _is_negotiation_prefix(self, sequence: bytes) -> bool:
         return sequence == b"\x1b[" or self._PREFIX_RE.match(sequence) is not None
+
+    @staticmethod
+    def _abandoned_negotiation_tail(sequence: bytes) -> bytes | None:
+        match = re.match(rb"^\x1b\[\?[\d;]*([A-Za-z])$", sequence)
+        if match is None or match.group(1) in {b"c", b"u"}:
+            return None
+        return match.group(1)
 
     def _normalize_platform_input(self, sequence: bytes) -> bytes:
         if (
@@ -335,6 +346,10 @@ class RawInputDecoder:
             if _is_kitty_release(sequence):
                 del self._buffer[: final + 1]
                 return False
+            arrow = _decode_kitty_arrow_action(sequence)
+            if arrow is not None:
+                del self._buffer[: final + 1]
+                return arrow
             special = _decode_special_escape_action(sequence)
             if special is not None:
                 del self._buffer[: final + 1]
@@ -362,6 +377,11 @@ def _extract_complete_sequences(buffer: bytes) -> tuple[tuple[bytes, ...], bytes
     while position < len(buffer):
         remaining = buffer[position:]
         if remaining.startswith(_ESC):
+            if remaining.startswith(b"\x1b[?"):
+                nested_escape = remaining.find(_ESC, 2)
+                if nested_escape != -1:
+                    position += nested_escape
+                    continue
             sequence_end = 1
             while sequence_end <= len(remaining):
                 candidate = remaining[:sequence_end]
@@ -388,14 +408,51 @@ def _extract_complete_sequences(buffer: bytes) -> tuple[tuple[bytes, ...], bytes
 
         next_escape = remaining.find(_ESC)
         if next_escape == -1:
-            sequences.append(remaining)
+            plain, remainder = _extract_plain_sequences(remaining)
+            sequences.extend(plain)
             position = len(buffer)
+            if remainder:
+                return tuple(sequences), remainder
         elif next_escape == 0:
             continue
         else:
-            sequences.append(remaining[:next_escape])
+            plain, remainder = _extract_plain_sequences(remaining[:next_escape])
+            sequences.extend(plain)
+            if remainder:
+                return tuple(sequences), remainder + remaining[next_escape:]
             position += next_escape
     return tuple(sequences), b""
+
+
+def _extract_plain_sequences(data: bytes) -> tuple[tuple[bytes, ...], bytes]:
+    sequences: list[bytes] = []
+    position = 0
+    while position < len(data):
+        length = _utf8_sequence_length(data[position])
+        chunk = data[position : position + length]
+        if len(chunk) < length:
+            return tuple(sequences), data[position:]
+        try:
+            chunk.decode("utf-8")
+        except UnicodeDecodeError:
+            sequences.append(data[position : position + 1])
+            position += 1
+            continue
+        sequences.append(chunk)
+        position += length
+    return tuple(sequences), b""
+
+
+def _utf8_sequence_length(first_byte: int) -> int:
+    if first_byte < 0x80:
+        return 1
+    if 0xC0 <= first_byte <= 0xDF:
+        return 2
+    if 0xE0 <= first_byte <= 0xEF:
+        return 3
+    if 0xF0 <= first_byte <= 0xF7:
+        return 4
+    return 1
 
 
 def _complete_sequence_status(data: bytes) -> str:
@@ -480,6 +537,27 @@ def _is_kitty_release(sequence: bytes) -> bool:
             b":3F",
         )
     )
+
+
+def _decode_kitty_arrow_action(sequence: bytes) -> InputAction | None:
+    match = re.match(rb"^\x1b\[1;(\d+)(?::(\d+))?([ABCD])$", sequence)
+    if match is None:
+        return None
+    modifier = int(match.group(1)) - 1
+    if modifier != 0:
+        return None
+    event_type = int(match.group(2) or b"1")
+    if event_type == 3:
+        return None
+    key = match.group(3)
+    mapping = {
+        b"A": InputActionKind.HISTORY_UP,
+        b"B": InputActionKind.HISTORY_DOWN,
+        b"C": InputActionKind.CURSOR_RIGHT,
+        b"D": InputActionKind.CURSOR_LEFT,
+    }
+    kind = mapping.get(key)
+    return InputAction(kind) if kind is not None else None
 
 
 def _decode_special_escape_action(sequence: bytes) -> InputAction | None:

@@ -327,6 +327,25 @@ class _StdTerminalDriver:
             self._saved_mode = None
 
 
+def _is_native_shift_pressed() -> bool:
+    if sys.platform != "darwin":
+        return False
+    try:
+        import ctypes
+        import ctypes.util
+
+        path = ctypes.util.find_library("ApplicationServices")
+        if not path:
+            return False
+        app_services = ctypes.CDLL(path)
+        app_services.CGEventSourceFlagsState.argtypes = [ctypes.c_uint32]
+        app_services.CGEventSourceFlagsState.restype = ctypes.c_uint64
+        flags = app_services.CGEventSourceFlagsState(1)
+    except Exception:
+        return False
+    return bool(flags & (1 << 17))
+
+
 class InteractiveTerminalLoop:
     """Serialize stdin, UI events, and all terminal writes in one loop."""
 
@@ -338,6 +357,7 @@ class InteractiveTerminalLoop:
         self._work: Queue[tuple[str, Any]] = Queue(maxsize=4_096)
         self._stdin_buffer = StdinBuffer()
         self._input_filter = TerminalInputFilter(
+            shift_pressed=_is_native_shift_pressed,
             enable_modify_other_keys=self._enable_modify_other_keys,
             disable_modify_other_keys=self._disable_modify_other_keys,
         )
@@ -365,7 +385,6 @@ class InteractiveTerminalLoop:
         self._on_submit = on_submit
         self._exit_requested = False
         self._input_closed = False
-        self._start_terminal_modes()
         self._running.set()
 
     def publish_event(self, event: Any) -> None:
@@ -403,6 +422,7 @@ class InteractiveTerminalLoop:
         enter_raw = getattr(self._driver, "enter_raw_mode", None)
         if callable(enter_raw):
             enter_raw()
+        self._start_terminal_modes()
         try:
             while not self._exit_requested:
                 self.drain()
@@ -805,6 +825,7 @@ class TerminalUI:
         if self._interactive_loop is None:
             raise RuntimeError("a terminal driver is required")
         self._interactive_loop.start(on_submit)
+        self._interactive_loop._start_terminal_modes()
 
     def feed_input_bytes(self, data: bytes) -> None:
         if self._interactive_loop is None:
