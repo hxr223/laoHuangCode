@@ -145,10 +145,9 @@ class PiMainScreenRenderer:
             return
         target = min(max(frame.cursor_row, 0), len(frame.lines) - 1)
         self._move_to_row(target)
-        column = min(max(frame.cursor_col, 0), len(frame.lines[target]))
-        self._terminal.write("\r")
-        if column:
-            self._terminal.write(f"\x1b[{column}C")
+        size = self._previous_size or self._terminal.get_size()
+        column = min(max(frame.cursor_col, 0), max(size.columns - 1, 0))
+        self._terminal.write(f"\x1b[{column + 1}G")
 
     def _move_to_row(self, target: int) -> None:
         delta = target - self._hardware_row

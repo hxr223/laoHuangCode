@@ -119,6 +119,17 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertIn("one", frame.lines[frame.active_start])
 
+    def test_raw_frame_preserves_non_markdown_block_styles(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))
+        ui.apply_projected_event(event("tool.started", "tool-1", name="bash"))
+
+        rendered = "\n".join(ui.build_history_lines(width=80))
+
+        self.assertIn("\x1b[3;38;2;128;128;128mthinking  plan", rendered)
+        self.assertIn("\x1b[48;2;40;40;50;38;2;212;212;212m", rendered)
+        self.assertIn("● bash", rendered)
+
     def test_tool_start_freezes_superseded_reasoning(self):
         ui = TerminalUI(theme="dark")
         ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))

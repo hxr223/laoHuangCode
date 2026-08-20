@@ -60,7 +60,15 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         renderer.render(ScreenFrame(("history", "❯ edit"), 1, 1, cursor_col=4))
 
-        self.assertIn("\r\x1b[4C", terminal.writes())
+        self.assertIn("\x1b[5G", terminal.writes())
+
+    def test_cursor_column_uses_terminal_cells_not_python_string_length(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        renderer = PiMainScreenRenderer(terminal)
+        renderer.render(ScreenFrame(("❯ 你好你",), 0, 0, cursor_col=8))
+
+        self.assertIn("\x1b[9G", terminal.writes())
+        self.assertNotIn("\x1b[6G", terminal.writes())
 
     def test_cursor_only_update_flushes_terminal_output(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)

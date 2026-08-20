@@ -854,8 +854,8 @@ class TerminalUI:
                 lines.extend(render_markdown_lines(block.text, usable_width, self.theme))
             else:
                 lines.extend(
-                    text.rstrip("\n")
-                    for _style, text in self._render_transcript_item(block, usable_width)
+                    self._ansi_styled_text(style, text.rstrip("\n"))
+                    for style, text in self._render_transcript_item(block, usable_width)
                 )
         return lines, active_start
 
@@ -937,6 +937,73 @@ class TerminalUI:
     @staticmethod
     def _pad_line(line: str, width: int) -> str:
         return line + " " * max(0, width - get_cwidth(line))
+
+    @classmethod
+    def _ansi_styled_text(cls, style: str, text: str) -> str:
+        if not style or not text:
+            return text
+        codes = cls._ansi_codes(style)
+        if not codes:
+            return text
+        return f"\x1b[{';'.join(codes)}m{text}\x1b[0m"
+
+    @staticmethod
+    def _ansi_codes(style: str) -> list[str]:
+        color_codes = {
+            "black": "30",
+            "red": "31",
+            "green": "32",
+            "yellow": "33",
+            "blue": "34",
+            "magenta": "35",
+            "cyan": "36",
+            "white": "37",
+        }
+        codes: list[str] = []
+        next_color_is_background = False
+        for token in style.replace("bg:", " bg:").split():
+            if token == "bold":
+                codes.append("1")
+            elif token == "dim":
+                codes.append("2")
+            elif token == "italic":
+                codes.append("3")
+            elif token == "underline":
+                codes.append("4")
+            elif token == "on":
+                next_color_is_background = True
+            elif token.startswith("bg:#") and len(token) == 10:
+                rgb = TerminalUI._hex_to_rgb(token[3:])
+                if rgb is not None:
+                    codes.append(f"48;2;{rgb[0]};{rgb[1]};{rgb[2]}")
+            elif token.startswith("#") and len(token) == 7:
+                rgb = TerminalUI._hex_to_rgb(token)
+                if rgb is not None:
+                    prefix = "48" if next_color_is_background else "38"
+                    codes.append(f"{prefix};2;{rgb[0]};{rgb[1]};{rgb[2]}")
+                next_color_is_background = False
+            elif token in color_codes:
+                code = color_codes[token]
+                if next_color_is_background:
+                    code = str(int(code) + 10)
+                codes.append(code)
+                next_color_is_background = False
+            else:
+                next_color_is_background = False
+        return codes
+
+    @staticmethod
+    def _hex_to_rgb(value: str) -> tuple[int, int, int] | None:
+        if not value.startswith("#") or len(value) != 7:
+            return None
+        try:
+            return (
+                int(value[1:3], 16),
+                int(value[3:5], 16),
+                int(value[5:7], 16),
+            )
+        except ValueError:
+            return None
 
     def _echo_submitted_input(self, text: str) -> None:
         """Retain accepted input after PromptSession erases its editor frame."""
