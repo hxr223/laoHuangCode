@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from prompt_toolkit.utils import get_cwidth
+
 from .commands import CompletionItem
 
 
@@ -185,7 +187,7 @@ class EditorState:
         mask: bool = False,
     ) -> tuple[tuple[str, ...], int, int]:
         width = max(3, width)
-        prompt_width = max(1, len(prompt))
+        prompt_width = max(1, get_cwidth(prompt))
         content_width = max(1, width - prompt_width)
         display_text = "*" * len(self.text) if mask else self.text
         source_lines = display_text.split("\n")
@@ -195,32 +197,60 @@ class EditorState:
         if (
             display_text
             and not display_text.endswith("\n")
-            and len(source_lines[-1]) % content_width == 0
+            and self._display_width(source_lines[-1]) % content_width == 0
         ):
             rows.append("")
         rendered = tuple(
             (prompt if index == 0 else " " * prompt_width) + row
             for index, row in enumerate(rows)
         )
-        before = self.text[: self.cursor]
-        prior, current = before.rsplit("\n", 1) if "\n" in before else ("", before)
-        prior_rows = (
-            0
-            if not prior
-            else sum(
-                len(self._wrap(line, content_width))
-                for line in prior.split("\n")
-            )
+        before = display_text[: self.cursor]
+        before_lines = before.split("\n")
+        prior_rows = sum(
+            len(self._wrap(line, content_width))
+            for line in before_lines[:-1]
         )
-        if "\n" in before:
-            prior_rows += 1
-        cursor_row = prior_rows + len(current) // content_width
-        cursor_column = prompt_width + len(current) % content_width
+        current = before_lines[-1]
+        current_row, current_column = self._cursor_position(current, content_width)
+        cursor_row = prior_rows + current_row
+        cursor_column = prompt_width + current_column
         return rendered, min(cursor_row, len(rendered) - 1), min(cursor_column, width - 1)
 
     @staticmethod
     def _wrap(text: str, width: int) -> list[str]:
-        return [text[index : index + width] for index in range(0, len(text), width)] or [""]
+        rows: list[str] = []
+        row = ""
+        row_width = 0
+        for char in text:
+            char_width = max(1, get_cwidth(char))
+            if row and row_width + char_width > width:
+                rows.append(row)
+                row = ""
+                row_width = 0
+            row += char
+            row_width += char_width
+        if row or not rows:
+            rows.append(row)
+        return rows
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        return sum(max(1, get_cwidth(char)) for char in text)
+
+    @classmethod
+    def _cursor_position(cls, text: str, width: int) -> tuple[int, int]:
+        row = 0
+        column = 0
+        for char in text:
+            char_width = max(1, get_cwidth(char))
+            if column and column + char_width > width:
+                row += 1
+                column = 0
+            column += char_width
+            if column == width:
+                row += 1
+                column = 0
+        return row, column
 
     def _submit(self) -> EditorEffect:
         submitted = self.text

@@ -282,22 +282,40 @@ def _run_persistent_session_repl(
         submitted.put(None)
         coordinator.join(timeout=2 if queue_drained else 0.05)
         coordinator_alive = coordinator.is_alive()
-        if coordinator_alive or coordinator_errors:
-            clean_shutdown = False
-        else:
-            clean_shutdown = session.close(wait=True, timeout=10)
+        session_stopped = session.close(wait=True, timeout=10)
+        if coordinator_alive:
+            coordinator.join(timeout=0.25)
+            coordinator_alive = coordinator.is_alive()
+        clean_shutdown = (
+            session_stopped
+            and not coordinator_alive
+            and not coordinator_errors
+        )
         if clean_shutdown:
             session.event_bus.flush()
             flush_renderer = getattr(ui, "flush_event_renderer", None)
             if callable(flush_renderer):
                 flush_renderer()
-        close = getattr(ui, "close", None)
-        if callable(close):
-            close()
+        render_error = getattr(ui, "render_error", None)
+        try:
+            if not clean_shutdown and render_error is None:
+                if coordinator_alive:
+                    shutdown_message = (
+                        "Input coordinator did not stop before the shutdown timeout."
+                    )
+                elif coordinator_errors:
+                    shutdown_message = "Input coordinator failed during shutdown."
+                else:
+                    shutdown_message = (
+                        "Task worker did not stop before the shutdown timeout."
+                    )
+                ui.show_error(shutdown_message)
+        finally:
+            close = getattr(ui, "close", None)
+            if callable(close):
+                close()
     render_error = getattr(ui, "render_error", None)
     clean = clean_shutdown and render_error is None
-    if not clean and render_error is None and not coordinator_alive:
-        ui.show_error("Task worker did not stop before the shutdown timeout.")
     return clean
 
 

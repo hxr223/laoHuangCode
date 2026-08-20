@@ -10,7 +10,8 @@
 顺序发出，回传模型的 `tool` 消息保持原始调用顺序。只要一个批次包含 `write` 或
 `edit`，Agent 会保守地串行执行整个批次，避免读写或多次修改之间出现竞态。
 
-交互终端采用后台 AgentSession：模型回复和 Bash 的 stdout/stderr 会实时显示，
+交互终端采用后台 AgentSession：模型回复和 Bash 的 stderr/状态会实时显示，stdout
+会保留在工具结果中但默认不刷到终端，
 Agent 运行时仍可继续输入。后续输入由事件路由器放入 pending/held 队列，并在安全点
 成批交给模型；当前任务可以通过 `/cancel` 或运行中的 `Ctrl+C` 协作式取消。
 连续重复的工具调用和 Token、耗时预算会触发安全保护；保护触发后
@@ -104,7 +105,7 @@ laohuang
 - Agent 空闲且输入非空时按 `Ctrl+C`：清空输入。
 - `Ctrl+D`：退出。
 
-模型文本和 Bash 输出采用 append-only inline 流式展示，工具输出按 tool call 分组；
+模型文本和 Bash stderr/状态采用 append-only inline 流式展示，工具输出按 tool call 分组；
 被取消或截断的半条模型回复会保留在屏幕上并标记“未加入上下文”。完整的逐轮事件仍可
 通过 Web 日志面板查看。输出被重定向或由程序调用 CLI 时，会自动回退到稳定的纯文本
 格式。
