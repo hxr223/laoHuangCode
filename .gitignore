@@ -10,3 +10,4 @@ node_modules/
 *.tgz
 npm/vendor/*.whl
 .pytest_cache/
+.worktrees/
