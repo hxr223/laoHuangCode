@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+import re
 
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.formatted_text.base import StyleAndTextTuples
@@ -25,6 +26,24 @@ def render_markdown(
     helper never writes to the user's terminal.  That preserves the
     single-renderer invariant while retaining Markdown formatting during
     streaming updates.
+    """
+
+    return _trim_line_padding(
+        to_formatted_text(ANSI("\n".join(render_markdown_lines(text, width, theme))))
+    )
+
+
+_OSC8 = re.compile(r"\x1b]8;[^\x1b\x07]*(?:\x1b\\|\x07)")
+
+
+def render_markdown_lines(
+    text: str, width: int, theme: TerminalTheme
+) -> tuple[str, ...]:
+    """Return Rich-rendered ANSI logical lines without terminal I/O.
+
+    The output deliberately retains SGR styling for the regular-terminal
+    renderer, while removing OSC-8 control sequences that it cannot safely
+    replay.  Each returned item is one logical line and has no newline.
     """
 
     output = StringIO()
@@ -52,7 +71,10 @@ def render_markdown(
         ),
         end="",
     )
-    return _trim_line_padding(to_formatted_text(ANSI(output.getvalue())))
+    rendered = _OSC8.sub("", output.getvalue()).replace("\r\n", "\n")
+    if rendered.endswith("\n"):
+        rendered = rendered[:-1]
+    return tuple(rendered.split("\n")) if rendered else ()
 
 
 def _markdown_theme(theme: TerminalTheme) -> Theme:

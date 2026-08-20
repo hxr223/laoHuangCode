@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -27,7 +27,9 @@ from rich.text import Text
 
 from .commands import CommandCompleter, CommandRegistry
 from .terminal_input import PiInputSession, PiTerminalApplication
-from .terminal_markdown import render_markdown
+from .terminal_markdown import render_markdown, render_markdown_lines
+from .terminal_editor import EditorState
+from .terminal_screen import ScreenFrame
 from .terminal_theme import TerminalTheme, resolve_terminal_theme
 from .ui_state import UIEventReducer, UIState, UIUpdate
 
@@ -107,12 +109,13 @@ class _LocalMessage:
 
 
 @dataclass(slots=True)
-class _TranscriptItem:
-    """A stable piece of the single-renderer terminal transcript."""
+class TranscriptBlock:
+    """An append-only transcript unit, mutable only while it streams."""
 
     kind: str
+    key: str
     text: str = ""
-    correlation_id: str = ""
+    mutable: bool = False
     name: str = ""
     subject: str = ""
     status: str = ""
@@ -120,6 +123,11 @@ class _TranscriptItem:
     duration_ms: int | None = None
     stream_error: str = ""
     style: str = ""
+
+    @property
+    def correlation_id(self) -> str:
+        """Compatibility name for existing prompt_toolkit rendering helpers."""
+        return self.key
 
 
 class PlainEventSink:
@@ -294,8 +302,9 @@ class TerminalUI:
         # a small legacy/testing escape hatch and keeps setup prompts simple.
         self._single_renderer = console is None and session_factory is None
         self._terminal_app: PiTerminalApplication | None = None
-        self._transcript: list[_TranscriptItem] = []
-        self._transcript_by_correlation: dict[tuple[str, str], _TranscriptItem] = {}
+        self._transcript: list[TranscriptBlock] = []
+        self._transcript_by_correlation: dict[tuple[str, str], TranscriptBlock] = {}
+        self._next_block_id = 0
         self._transcript_lock = threading.RLock()
         self.runtime_running_callback: Callable[[], bool] | None = None
         self.state = UIState(provider=provider or "", model=model or "")
@@ -358,7 +367,7 @@ class TerminalUI:
             )
 
         def submit(text: str) -> None:
-            self._append_transcript(_TranscriptItem("user", text=text))
+            self.accept_user_input(text)
             on_submit(text)
 
         self._terminal_app.run(submit)
@@ -379,22 +388,26 @@ class TerminalUI:
             ),
         )
 
-    def _append_transcript(self, item: _TranscriptItem) -> None:
+    def _new_block_id(self) -> str:
+        self._next_block_id += 1
+        return f"local-{self._next_block_id}"
+
+    def _append_block(self, block: TranscriptBlock) -> None:
         with self._transcript_lock:
-            self._transcript.append(item)
-            if item.correlation_id:
-                self._transcript_by_correlation[(item.kind, item.correlation_id)] = item
-            # Keep UI memory bounded.  Tool/model source data remains in the
-            # agent history and Web trace; this is only the visible viewport.
-            if len(self._transcript) > 800:
-                removed = self._transcript[:200]
-                del self._transcript[:200]
-                for old in removed:
-                    if old.correlation_id:
-                        self._transcript_by_correlation.pop(
-                            (old.kind, old.correlation_id), None
-                        )
+            self._transcript.append(block)
+            if block.key:
+                self._transcript_by_correlation[(block.kind, block.key)] = block
         self._invalidate_prompt()
+
+    def _append_transcript(self, item: TranscriptBlock) -> None:
+        """Compatibility bridge for the legacy prompt_toolkit path."""
+        self._append_block(item)
+
+    def accept_user_input(self, text: str) -> None:
+        self._append_block(TranscriptBlock("user", self._new_block_id(), text=text))
+
+    def block_for(self, kind: str, key: str) -> TranscriptBlock:
+        return self._transcript_by_correlation[(kind, key)]
 
     def _render_transcript(
         self, width: int, height: int
@@ -407,13 +420,10 @@ class TerminalUI:
         lines: list[tuple[str, str]] = []
         for item in items:
             lines.extend(self._render_transcript_item(item, usable_width))
-        # Leave a small blank breathing area above the editor and show the
-        # newest material when the transcript exceeds the available viewport.
-        visible = max(1, height - 10)
-        return lines[-visible:] if len(lines) > visible else lines
+        return lines
 
     def _render_transcript_item(
-        self, item: _TranscriptItem, width: int
+        self, item: TranscriptBlock, width: int
     ) -> list[tuple[str, str]]:
         if item.kind == "user":
             return self._background_lines(
@@ -470,6 +480,38 @@ class TerminalUI:
             return rendered
         return self._plain_lines(item.text, width, item.style or self.theme.color("text"))
 
+    def build_history_lines(self, width: int) -> tuple[str, ...]:
+        """Build every persisted transcript line; never crop history here."""
+        usable_width = max(12, width)
+        with self._transcript_lock:
+            blocks = tuple(self._transcript)
+        lines: list[str] = []
+        for block in blocks:
+            if block.kind == "assistant":
+                lines.extend(render_markdown_lines(block.text, usable_width, self.theme))
+            else:
+                lines.extend(
+                    text.rstrip("\n")
+                    for _style, text in self._render_transcript_item(block, usable_width)
+                )
+        return tuple(lines)
+
+    def build_frame(self, *, width: int, editor: EditorState) -> ScreenFrame:
+        history = self.build_history_lines(width)
+        editor_lines, cursor_row, cursor_column = editor.render_lines(width)
+        completion = self._completion_lines(width)
+        footer = self._footer_line(width)
+        rows = (*history, "─" * width, *editor_lines, "─" * width, *completion, footer)
+        lines = tuple(row for row in rows if row is not None)
+        return ScreenFrame(lines, len(history) + 1, len(history) + 1 + cursor_row, cursor_column)
+
+    def _completion_lines(self, width: int) -> tuple[str, ...]:
+        return ()
+
+    def _footer_line(self, width: int) -> str | None:
+        values = self._footer_text()
+        return values[0][1] if values and values[0][1] else None
+
     def _background_lines(
         self,
         text: str,
@@ -513,7 +555,7 @@ class TerminalUI:
     def _echo_submitted_input(self, text: str) -> None:
         """Retain accepted input after PromptSession erases its editor frame."""
         if self._single_renderer and self._terminal_app is not None:
-            self._append_transcript(_TranscriptItem("user", text=text))
+            self.accept_user_input(text)
             return
         with self._render_lock:
             # A user may submit the next message while the prior model response
@@ -717,7 +759,7 @@ class TerminalUI:
         if isinstance(event, _LocalMessage):
             if self._single_renderer:
                 self._append_transcript(
-                    _TranscriptItem("notice", text=event.text, style=event.style)
+                    TranscriptBlock("notice", self._new_block_id(), text=event.text, style=event.style)
                 )
                 return
             with self._render_lock:
@@ -733,8 +775,9 @@ class TerminalUI:
         if dropped:
             if self._single_renderer:
                 self._append_transcript(
-                    _TranscriptItem(
+                    TranscriptBlock(
                         "notice",
+                        self._new_block_id(),
                         text=f"… 省略了 {dropped} 个流式展示事件；Agent 仍继续运行。",
                         style="yellow",
                     )
@@ -750,12 +793,11 @@ class TerminalUI:
                         )
                     )
                 self._streaming_response = False
+        if self._single_renderer:
+            self.apply_projected_event(event)
+            return
         update = self.reducer.apply(event)
         if update is None:
-            return
-        if self._single_renderer:
-            self._apply_transcript_update(update)
-            self._invalidate_prompt()
             return
         with self._render_lock:
             self._render_update(update)
@@ -768,8 +810,9 @@ class TerminalUI:
         correlation_id = update.correlation_id
         if kind == "ui.message":
             self._append_transcript(
-                _TranscriptItem(
+                TranscriptBlock(
                     "notice",
+                    self._new_block_id(),
                     text=update.text,
                     style=str(update.payload.get("style", "")),
                 )
@@ -780,29 +823,43 @@ class TerminalUI:
             with self._transcript_lock:
                 item = self._transcript_by_correlation.get(key)
                 if item is None:
-                    item = _TranscriptItem("assistant", correlation_id=correlation_id)
+                    item = TranscriptBlock("assistant", correlation_id, mutable=True)
                     self._transcript.append(item)
                     self._transcript_by_correlation[key] = item
-                item.text += update.text
+                if item.mutable:
+                    item.text += update.text
             return
         if kind == "model.reasoning_delta":
             key = ("thinking", correlation_id)
             with self._transcript_lock:
                 item = self._transcript_by_correlation.get(key)
                 if item is None:
-                    item = _TranscriptItem("thinking", correlation_id=correlation_id)
+                    item = TranscriptBlock("thinking", correlation_id, mutable=True)
                     self._transcript.append(item)
                     self._transcript_by_correlation[key] = item
-                item.text += update.text
+                if item.mutable:
+                    item.text += update.text
+            return
+        if kind in {
+            "model.response_committed",
+            "model.response_aborted",
+            "model.request_failed",
+        }:
+            with self._transcript_lock:
+                for block_kind in ("assistant", "thinking"):
+                    block = self._transcript_by_correlation.get((block_kind, correlation_id))
+                    if block is not None:
+                        block.mutable = False
             return
         if kind == "tool.started":
             arguments = update.payload.get("arguments", {})
             subject = ""
             if isinstance(arguments, dict):
                 subject = str(arguments.get("command") or arguments.get("path") or "")
-            item = _TranscriptItem(
+            item = TranscriptBlock(
                 "tool",
-                correlation_id=correlation_id,
+                correlation_id,
+                mutable=True,
                 name=str(update.payload.get("name", "tool")),
                 subject=subject,
                 status="running",
@@ -819,7 +876,7 @@ class TerminalUI:
             with self._transcript_lock:
                 item = self._transcript_by_correlation.get(("tool", correlation_id))
                 if item is None:
-                    item = _TranscriptItem("tool", correlation_id=correlation_id)
+                    item = TranscriptBlock("tool", correlation_id)
                     self._transcript.append(item)
                     self._transcript_by_correlation[("tool", correlation_id)] = item
                 item.status = str(update.payload.get("status", "completed"))
@@ -827,20 +884,31 @@ class TerminalUI:
                 item.exit_code = raw_exit_code if isinstance(raw_exit_code, int) else None
                 raw_duration = update.payload.get("duration_ms")
                 item.duration_ms = raw_duration if isinstance(raw_duration, int) else None
+                item.mutable = False
             return
         if kind == "task.cancelled":
             self._append_transcript(
-                _TranscriptItem("notice", text="任务已取消；已经完成的文件修改不会自动撤销。", style="yellow")
+                TranscriptBlock("notice", self._new_block_id(), text="任务已取消；已经完成的文件修改不会自动撤销。", style="yellow")
             )
             return
         if kind == "task.failed":
             self._append_transcript(
-                _TranscriptItem(
+                TranscriptBlock(
                     "notice",
+                    self._new_block_id(),
                     text=f"Error: {update.payload.get('error', 'Task failed')}",
                     style=f"bold {self.theme.color('error')}",
                 )
             )
+
+    def apply_projected_event(self, event: Mapping[str, Any]) -> None:
+        """Reduce a projected event and apply its append-only block change."""
+        if _is_hidden_tool_stdout(event):
+            return
+        update = self.reducer.apply(event)
+        if update is not None:
+            self._apply_transcript_update(update)
+            self._invalidate_prompt()
 
     def _invalidate_prompt(self) -> None:
         if self._terminal_app is not None:
@@ -956,7 +1024,7 @@ class TerminalUI:
 
     def show_assistant(self, response: str) -> None:
         if self._single_renderer:
-            self._append_transcript(_TranscriptItem("assistant", text=response))
+            self._append_transcript(TranscriptBlock("assistant", self._new_block_id(), text=response))
             return
         self.console.print()
         self.console.print(Markdown(response))
@@ -971,11 +1039,11 @@ class TerminalUI:
             if self.dashboard_url:
                 details.append(f"trace: {self.dashboard_url}")
             self._append_transcript(
-                _TranscriptItem("notice", text="laoHuangCode  /help for commands", style=f"bold {self.theme.color('accent')}")
+                TranscriptBlock("notice", self._new_block_id(), text="laoHuangCode  /help for commands", style=f"bold {self.theme.color('accent')}")
             )
             if details:
                 self._append_transcript(
-                    _TranscriptItem("notice", text=" · ".join(details), style=self.theme.color("dim"))
+                    TranscriptBlock("notice", self._new_block_id(), text=" · ".join(details), style=self.theme.color("dim"))
                 )
             return
         heading = Text("laoHuangCode", style=f"bold {self.theme.color('accent')}")
