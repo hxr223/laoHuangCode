@@ -101,6 +101,8 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertEqual(len(terminal.write_chunks()), 1)
         self.assertIn("\r\x1b[2K❯ as", terminal.writes())
+        self.assertEqual(terminal.writes().count("\x1b[2K"), 1)
+        self.assertNotIn("\r\n", terminal.writes())
         self.assertNotIn("\r\n❯ a", terminal.writes())
 
     def test_two_completed_turns_remain_in_history_without_tail_truncation(self):

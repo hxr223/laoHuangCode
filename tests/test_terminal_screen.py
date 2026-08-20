@@ -81,6 +81,18 @@ class PiMainScreenRendererTests(unittest.TestCase):
         self.assertEqual(len(terminal.write_chunks()), 1)
         self.assertIn("\x1b[2K❯ as", terminal.writes())
 
+    def test_editor_only_change_does_not_repaint_unchanged_footer_rows(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=4)
+        renderer = PiMainScreenRenderer(terminal)
+        renderer.render(ScreenFrame(("─" * 80, "❯ a", "─" * 80), 1, 1, 3))
+        terminal.clear_writes()
+
+        renderer.render(ScreenFrame(("─" * 80, "❯ as", "─" * 80), 1, 1, 4))
+
+        self.assertEqual(terminal.writes().count("\x1b[2K"), 1)
+        self.assertNotIn("\r\n", terminal.writes())
+        self.assertNotIn("─" * 80, terminal.writes())
+
     def test_cursor_only_update_flushes_terminal_output(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)

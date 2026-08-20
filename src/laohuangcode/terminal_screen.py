@@ -86,17 +86,22 @@ class PiMainScreenRenderer:
         self._pending = []
         try:
             size = self._terminal.get_size()
-            first = self._first_changed(self._previous_lines, frame.lines)
+            changed = self._changed_range(self._previous_lines, frame.lines)
+            first = changed[0] if changed is not None else None
+            last = changed[1] if changed is not None else None
             if self._previous_size is not None and size != self._previous_size:
                 first = frame.active_start
+                last = max(len(self._previous_lines), len(frame.lines))
             elif (
                 self._previous_lines
                 and frame.active_start > self._previous_active_start
             ):
+                changed_first = first if first is not None else len(frame.lines)
                 first = min(
-                    first if first is not None else len(frame.lines),
+                    changed_first,
                     self._previous_active_start,
                 )
+                last = max(last if last is not None else first, len(frame.lines))
             if first is None:
                 self._place_cursor(frame)
                 self._emit_pending()
@@ -104,7 +109,7 @@ class PiMainScreenRenderer:
             if first == len(self._previous_lines):
                 self._append(frame.lines[first:])
             else:
-                self._rewrite(first, frame.lines)
+                self._rewrite(first, last if last is not None else first + 1, frame.lines)
             self._previous_lines = frame.lines
             self._previous_active_start = frame.active_start
             self._previous_size = size
@@ -125,13 +130,22 @@ class PiMainScreenRenderer:
             self._terminal.restore()
 
     @staticmethod
-    def _first_changed(previous: tuple[str, ...], current: tuple[str, ...]) -> int | None:
-        for index, (old, new) in enumerate(zip(previous, current)):
-            if old != new:
-                return index
-        if len(previous) != len(current):
-            return min(len(previous), len(current))
-        return None
+    def _changed_range(
+        previous: tuple[str, ...], current: tuple[str, ...]
+    ) -> tuple[int, int] | None:
+        first: int | None = None
+        last = 0
+        for index in range(max(len(previous), len(current))):
+            old = previous[index] if index < len(previous) else ""
+            new = current[index] if index < len(current) else ""
+            if old == new:
+                continue
+            if first is None:
+                first = index
+            last = index + 1
+        if first is None:
+            return None
+        return first, last
 
     def _append(self, lines: tuple[str, ...]) -> None:
         for index, line in enumerate(lines):
@@ -140,15 +154,14 @@ class PiMainScreenRenderer:
                 self._hardware_row += 1
             self._write(line)
 
-    def _rewrite(self, first: int, lines: tuple[str, ...]) -> None:
+    def _rewrite(self, first: int, last: int, lines: tuple[str, ...]) -> None:
         self._move_to_row(first)
-        last = max(len(self._previous_lines), len(lines))
         for index in range(first, last):
             self._write("\r\x1b[2K")
             if index < len(lines):
                 self._write(lines[index])
             if index < last - 1:
-                self._write("\r\n")
+                self._write("\x1b[1B\r")
                 self._hardware_row += 1
 
     def _place_cursor(self, frame: ScreenFrame) -> None:
