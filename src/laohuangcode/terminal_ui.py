@@ -819,6 +819,7 @@ class TerminalUI:
             )
             return
         if kind == "model.text_delta":
+            self._freeze_thinking()
             key = ("assistant", correlation_id)
             with self._transcript_lock:
                 item = self._transcript_by_correlation.get(key)
@@ -852,6 +853,7 @@ class TerminalUI:
                         block.mutable = False
             return
         if kind == "tool.started":
+            self._freeze_thinking()
             arguments = update.payload.get("arguments", {})
             subject = ""
             if isinstance(arguments, dict):
@@ -900,6 +902,13 @@ class TerminalUI:
                     style=f"bold {self.theme.color('error')}",
                 )
             )
+
+    def _freeze_thinking(self) -> None:
+        """Close reasoning blocks once the transcript enters its next phase."""
+        with self._transcript_lock:
+            for block in self._transcript:
+                if block.kind == "thinking":
+                    block.mutable = False
 
     def apply_projected_event(self, event: Mapping[str, Any]) -> None:
         """Reduce a projected event and apply its append-only block change."""
