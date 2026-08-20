@@ -81,6 +81,7 @@ class TerminalUITests(unittest.TestCase):
         ui = TerminalUI(terminal_driver=terminal)
         submitted = []
         ui.start_loop(submitted.append)
+        terminal.clear_writes()
 
         ui.feed_input_bytes(b"queued input\r")
 
@@ -312,6 +313,49 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertNotIn("\x1b[?1049h", terminal.writes())
         self.assertNotIn("\x1b[2J", terminal.writes())
+
+    def test_raw_loop_bracketed_paste_lifecycle_writes_start_and_close(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+
+        ui.start_loop(lambda _text: None)
+        self.assertIn("\x1b[?2004h", terminal.writes())
+
+        ui.close()
+
+        self.assertIn("\x1b[?2004l", terminal.writes())
+
+    def test_raw_loop_restores_modify_other_keys_on_close(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"\x1b[?1;2c")
+        ui.drain_loop()
+        self.assertIn("\x1b[>4;2m", terminal.writes())
+
+        terminal.clear_writes()
+        ui.close()
+
+        self.assertIn("\x1b[>4;0m", terminal.writes())
+
+    def test_raw_loop_split_paste_submits_multiline_content_only(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        submitted = []
+        ui.start_loop(submitted.append)
+
+        ui.feed_input_bytes(b"\x1b[200~one\n")
+        ui.drain_loop()
+        ui.feed_input_bytes(b"two\x1b[201~")
+        ui.drain_loop()
+        ui.feed_input_bytes(b"\r")
+        ui.drain_loop()
+
+        self.assertEqual(submitted, ["one\ntwo"])
+        self.assertNotIn("[200~", terminal.writes())
+        self.assertNotIn("[201~", terminal.writes())
 
     def test_raw_loop_goodbye_uses_loop_writer_not_console(self):
         stream = io.StringIO()
