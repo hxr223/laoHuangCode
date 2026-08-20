@@ -70,7 +70,7 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(decision.decision.destination, RouteDestination.HELD)
         self.assertEqual(decision.decision.timing, RouteTiming.AFTER_CANCEL)
 
-    def test_pending_queue_drains_one_compatible_snapshot_in_order(self):
+    def test_pending_queue_drains_all_task_messages_in_order(self):
         queue = PendingQueue()
         router = EventRouter(self.registry)
         first = router.route(user_event("first", strategy="steer"))
@@ -83,12 +83,9 @@ class RouterTests(unittest.TestCase):
 
         self.assertEqual(
             [item.event.payload["content"] for item in drained],
-            ["first", "second"],
+            ["first", "later", "second"],
         )
-        self.assertEqual(
-            [item.event.payload["content"] for item in queue.snapshot()],
-            ["later"],
-        )
+        self.assertEqual(queue.snapshot(), ())
 
     def test_queues_are_bounded(self):
         queue = PendingQueue(max_items=1)

@@ -515,13 +515,11 @@ class EventRouter:
         return decision
 
 
-def _compatibility_key(routed: RoutedEvent) -> tuple[str, str | None, str, str]:
+def _compatibility_key(routed: RoutedEvent) -> tuple[str, str | None]:
     decision = routed.decision
     return (
         routed.event.session_id,
         decision.task_id,
-        decision.strategy.value,
-        decision.timing.value,
     )
 
 
@@ -576,15 +574,18 @@ class PendingQueue:
             if pivot is None:
                 return ()
             key = _compatibility_key(pivot)
-            if strategy is not None:
-                key = (key[0], key[1], strategy.value, key[3])
-            if timing is not None:
-                key = (key[0], key[1], key[2], timing.value)
             drained: list[RoutedEvent] = []
             retained: deque[RoutedEvent] = deque()
             while self._items:
                 item = self._items.popleft()
-                if _compatibility_key(item) == key:
+                compatible = _compatibility_key(item) == key
+                if strategy is not None:
+                    compatible = (
+                        compatible and item.decision.strategy is strategy
+                    )
+                if timing is not None:
+                    compatible = compatible and item.decision.timing is timing
+                if compatible:
                     drained.append(item)
                 else:
                     retained.append(item)

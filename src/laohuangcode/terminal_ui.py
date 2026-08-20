@@ -117,6 +117,7 @@ class PlainEventSink:
         )
         self._stopped = False
         self._render_error: Exception | None = None
+        self._model_buffers: dict[str, list[str]] = {}
         self._thread.start()
 
     def publish_event(self, event: Any) -> None:
@@ -198,7 +199,16 @@ class PlainEventSink:
         if kind == "model.text_delta":
             text = str(payload.get("text", payload.get("chunk", "")))
             if text:
+                self._model_buffers.setdefault(correlation_id, []).append(text)
+        elif kind == "model.response_committed":
+            text = "".join(self._model_buffers.pop(correlation_id, ()))
+            if text:
                 self.output_fn(text)
+        elif kind in {"model.response_aborted", "model.request_failed"}:
+            text = "".join(self._model_buffers.pop(correlation_id, ()))
+            if text:
+                self.output_fn(text)
+                self.output_fn("[response interrupted; not added to context]")
         elif kind == "ui.message":
             self.output_fn(str(payload.get("text", "")))
         elif kind == "tool.started":

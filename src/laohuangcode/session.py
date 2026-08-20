@@ -680,11 +680,26 @@ class AgentSession:
                         },
                     )
         finally:
-            if self.state is not SessionState.STOPPED:
-                self._set_session_state(SessionState.IDLE)
-            self._idle.set()
-            if self._close_requested:
-                self._finalize_stop()
+            self._settle_worker(current_thread())
+
+    def _settle_worker(self, worker: Thread) -> None:
+        """Publish idle only when ``worker`` still owns the Session."""
+
+        should_finalize = False
+        with self._coordination_lock:
+            # A follow-up task may start after this task transitions to a
+            # terminal TaskState but before its worker returns. Only the
+            # worker which still owns the Session may publish the shared idle
+            # state; an older worker must not clobber its successor.
+            owns_session = self._worker is worker
+            no_active_task = self.task_registry.active() is None
+            if owns_session and no_active_task:
+                if self.state is not SessionState.STOPPED:
+                    self._set_session_state(SessionState.IDLE)
+                self._idle.set()
+                should_finalize = self._close_requested
+        if should_finalize:
+            self._finalize_stop()
 
     def _finish_cancelled(self, task_id: str) -> None:
         with self._coordination_lock:

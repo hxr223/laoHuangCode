@@ -24,7 +24,7 @@ class AgentSessionTests(unittest.TestCase):
         submission = session.submit_input("first")
         self.assertTrue(entered.wait(1))
         session.submit_input("second", strategy="steer")
-        session.submit_input("third", strategy="steer")
+        session.submit_input("third", strategy="follow_up")
         release.set()
 
         self.assertTrue(session.wait_for_idle(1))
@@ -37,6 +37,28 @@ class AgentSessionTests(unittest.TestCase):
             session.task_registry.get(submission.task_id).state,
             TaskState.COMPLETED,
         )
+
+    def test_stale_worker_cannot_mark_replacement_task_idle(self):
+        entered = threading.Event()
+        release = threading.Event()
+
+        def runner(_content, *, context):
+            entered.set()
+            self.assertTrue(release.wait(1))
+            return "done"
+
+        session = AgentSession(runner, session_id="session-1")
+        session.submit_input("replacement task")
+        self.assertTrue(entered.wait(1))
+
+        session._settle_worker(threading.Thread())
+
+        self.assertIsNotNone(session.active_task)
+        self.assertEqual(session.state.value, "running")
+        self.assertFalse(session.wait_for_idle(0))
+        release.set()
+        self.assertTrue(session.wait_for_idle(1))
+        session.close()
 
     def test_cancel_stops_task_and_moves_pending_to_held(self):
         entered = threading.Event()

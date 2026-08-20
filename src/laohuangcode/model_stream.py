@@ -380,7 +380,28 @@ class ChatCompletionStreamer:
                         "cancelled before model request acknowledgement"
                     )
                 if _is_non_stream_response(stream):
-                    return self._from_non_stream(stream, request_id)
+                    result = self._from_non_stream(stream, request_id)
+                    _ensure_active(cancel_token, is_request_active, request_id)
+                    if result.content:
+                        deltas.emit(
+                            "model_text_delta",
+                            {"request_id": request_id, "text": result.content},
+                        )
+                    if result.reasoning_content:
+                        deltas.emit(
+                            "model_reasoning_delta",
+                            {
+                                "request_id": request_id,
+                                "text": result.reasoning_content,
+                            },
+                        )
+                    deltas.flush()
+                    if on_delta is not None:
+                        on_delta(
+                            "model_response_validating",
+                            {"request_id": request_id},
+                        )
+                    return result
                 register = getattr(cancel_token, "register", None)
                 if callable(register):
                     unregister_cancel = register(

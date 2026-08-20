@@ -13,10 +13,46 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
 from laohuangcode.commands import CommandRegistry, CommandSpec
-from laohuangcode.terminal_ui import TerminalUI, _input_bindings
+from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
 
 
 class TerminalUITests(unittest.TestCase):
+    def test_plain_sink_outputs_one_complete_model_response(self):
+        output = []
+        sink = PlainEventSink(output.append)
+        base = {
+            "source": "model",
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "correlation_id": "request-1",
+            "sequence": 1,
+        }
+        sink.publish_event(
+            {
+                **base,
+                "kind": "model.text_delta",
+                "payload": {"text": "hello "},
+            }
+        )
+        sink.publish_event(
+            {
+                **base,
+                "kind": "model.text_delta",
+                "payload": {"text": "world"},
+            }
+        )
+        sink.publish_event(
+            {
+                **base,
+                "kind": "model.response_committed",
+                "payload": {},
+            }
+        )
+        sink.flush()
+        sink.stop()
+
+        self.assertEqual(output, ["hello world"])
+
     def test_real_prompt_frame_is_compact_and_has_both_borders(self):
         class TTYBuffer(io.StringIO):
             def isatty(self):

@@ -97,6 +97,36 @@ class CancellingTools:
 
 
 class ModelStreamTests(unittest.TestCase):
+    def test_non_stream_response_emits_text_and_validation_events(self):
+        response = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(
+                        content="complete answer",
+                        reasoning_content=None,
+                        tool_calls=[],
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+        )
+        events = []
+
+        result = ChatCompletionStreamer(FakeCompletions(response)).complete(
+            model="model",
+            messages=[],
+            tools=[],
+            on_delta=lambda kind, payload: events.append((kind, payload)),
+        )
+
+        self.assertEqual(result.content, "complete answer")
+        self.assertEqual(
+            [kind for kind, _payload in events],
+            ["model_text_delta", "model_response_validating"],
+        )
+        self.assertEqual(events[0][1]["text"], "complete answer")
+
     def test_text_deltas_are_coalesced_before_publication(self):
         events = []
         stream = FakeStream(
