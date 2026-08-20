@@ -48,6 +48,22 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(ui.block_for("assistant", "r1").text, "one")
         self.assertEqual(ui.block_for("assistant", "r2").text, "two")
 
+    def test_tool_start_freezes_superseded_reasoning(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))
+        ui.apply_projected_event(event("tool.started", "tool-1", name="bash"))
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text=" late"))
+
+        self.assertEqual(ui.block_for("thinking", "r1").text, "plan")
+
+    def test_text_response_freezes_superseded_reasoning(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))
+        ui.apply_projected_event(event("model.text_delta", "r1", text="answer"))
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text=" late"))
+
+        self.assertEqual(ui.block_for("thinking", "r1").text, "plan")
+
     def test_plain_sink_outputs_one_complete_model_response(self):
         output = []
         sink = PlainEventSink(output.append)
