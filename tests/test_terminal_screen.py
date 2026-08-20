@@ -60,15 +60,26 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         renderer.render(ScreenFrame(("history", "❯ edit"), 1, 1, cursor_col=4))
 
-        self.assertIn("\x1b[5G", terminal.writes())
+        self.assertIn("\r\x1b[4C", terminal.writes())
 
     def test_cursor_column_uses_terminal_cells_not_python_string_length(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)
         renderer.render(ScreenFrame(("❯ 你好你",), 0, 0, cursor_col=8))
 
-        self.assertIn("\x1b[9G", terminal.writes())
-        self.assertNotIn("\x1b[6G", terminal.writes())
+        self.assertIn("\r\x1b[8C", terminal.writes())
+        self.assertNotIn("\r\x1b[5C", terminal.writes())
+
+    def test_render_emits_one_atomic_terminal_write(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        renderer = PiMainScreenRenderer(terminal)
+        renderer.render(ScreenFrame(("─" * 80, "❯ a", "─" * 80), 1, 1, 3))
+        terminal.clear_writes()
+
+        renderer.render(ScreenFrame(("─" * 80, "❯ as", "─" * 80), 1, 1, 4))
+
+        self.assertEqual(len(terminal.write_chunks()), 1)
+        self.assertIn("\x1b[2K❯ as", terminal.writes())
 
     def test_cursor_only_update_flushes_terminal_output(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)

@@ -88,6 +88,21 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(submitted, ["queued input"])
         self.assertIn("queued input", terminal.writes())
 
+    def test_typing_updates_editor_line_without_appending_prompt_history(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"a")
+        ui.drain_loop()
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"s")
+        ui.drain_loop()
+
+        self.assertEqual(len(terminal.write_chunks()), 1)
+        self.assertIn("\r\x1b[2K❯ as", terminal.writes())
+        self.assertNotIn("\r\n❯ a", terminal.writes())
+
     def test_two_completed_turns_remain_in_history_without_tail_truncation(self):
         ui = TerminalUI(theme="light")
         ui.accept_user_input("first question")

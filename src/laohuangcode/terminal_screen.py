@@ -59,6 +59,9 @@ class MemoryTerminalDriver:
     def writes(self) -> str:
         return "".join(self._writes)
 
+    def write_chunks(self) -> tuple[str, ...]:
+        return tuple(self._writes)
+
     def clear_writes(self) -> None:
         self._writes.clear()
 
@@ -74,34 +77,42 @@ class PiMainScreenRenderer:
         self._hardware_row = 0
         self._max_rows = 0
         self._closed = False
+        self._pending: list[str] | None = None
 
     def render(self, frame: ScreenFrame) -> None:
         if self._closed:
             return
 
-        size = self._terminal.get_size()
-        first = self._first_changed(self._previous_lines, frame.lines)
-        if self._previous_size is not None and size != self._previous_size:
-            first = frame.active_start
-        elif self._previous_lines and frame.active_start > self._previous_active_start:
-            first = min(
-                first if first is not None else len(frame.lines),
-                self._previous_active_start,
-            )
-        if first is None:
+        self._pending = []
+        try:
+            size = self._terminal.get_size()
+            first = self._first_changed(self._previous_lines, frame.lines)
+            if self._previous_size is not None and size != self._previous_size:
+                first = frame.active_start
+            elif (
+                self._previous_lines
+                and frame.active_start > self._previous_active_start
+            ):
+                first = min(
+                    first if first is not None else len(frame.lines),
+                    self._previous_active_start,
+                )
+            if first is None:
+                self._place_cursor(frame)
+                self._emit_pending()
+                return
+            if first == len(self._previous_lines):
+                self._append(frame.lines[first:])
+            else:
+                self._rewrite(first, frame.lines)
+            self._previous_lines = frame.lines
+            self._previous_active_start = frame.active_start
+            self._previous_size = size
+            self._max_rows = max(self._max_rows, len(frame.lines))
             self._place_cursor(frame)
-            self._terminal.flush()
-            return
-        if first == len(self._previous_lines):
-            self._append(frame.lines[first:])
-        else:
-            self._rewrite(first, frame.lines)
-        self._previous_lines = frame.lines
-        self._previous_active_start = frame.active_start
-        self._previous_size = size
-        self._max_rows = max(self._max_rows, len(frame.lines))
-        self._place_cursor(frame)
-        self._terminal.flush()
+            self._emit_pending()
+        finally:
+            self._pending = None
 
     def close(self) -> None:
         if self._closed:
@@ -125,19 +136,19 @@ class PiMainScreenRenderer:
     def _append(self, lines: tuple[str, ...]) -> None:
         for index, line in enumerate(lines):
             if self._previous_lines or index:
-                self._terminal.write("\r\n")
+                self._write("\r\n")
                 self._hardware_row += 1
-            self._terminal.write(line)
+            self._write(line)
 
     def _rewrite(self, first: int, lines: tuple[str, ...]) -> None:
         self._move_to_row(first)
         last = max(len(self._previous_lines), len(lines))
         for index in range(first, last):
-            self._terminal.write("\r\x1b[2K")
+            self._write("\r\x1b[2K")
             if index < len(lines):
-                self._terminal.write(lines[index])
+                self._write(lines[index])
             if index < last - 1:
-                self._terminal.write("\r\n")
+                self._write("\r\n")
                 self._hardware_row += 1
 
     def _place_cursor(self, frame: ScreenFrame) -> None:
@@ -147,14 +158,28 @@ class PiMainScreenRenderer:
         self._move_to_row(target)
         size = self._previous_size or self._terminal.get_size()
         column = min(max(frame.cursor_col, 0), max(size.columns - 1, 0))
-        self._terminal.write(f"\x1b[{column + 1}G")
+        self._write("\r")
+        if column:
+            self._write(f"\x1b[{column}C")
 
     def _move_to_row(self, target: int) -> None:
         delta = target - self._hardware_row
         if delta < 0:
-            self._terminal.write(f"\x1b[{-delta}A")
+            self._write(f"\x1b[{-delta}A")
         elif delta > 0:
-            self._terminal.write(f"\x1b[{delta}B")
+            self._write(f"\x1b[{delta}B")
         if delta:
-            self._terminal.write("\r")
+            self._write("\r")
             self._hardware_row = target
+
+    def _write(self, data: str) -> None:
+        if self._pending is None:
+            self._terminal.write(data)
+        else:
+            self._pending.append(data)
+
+    def _emit_pending(self) -> None:
+        output = "".join(self._pending or ())
+        if output:
+            self._terminal.write(output)
+        self._terminal.flush()
