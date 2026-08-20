@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import re
+import unicodedata
 from typing import Protocol
 
 from prompt_toolkit.utils import get_cwidth
@@ -335,16 +335,98 @@ class PiMainScreenRenderer:
                 )
 
 
-_ANSI_RE = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]"
-    r"|\x1b\][^\x07]*(?:\x07|\x1b\\)"
-    r"|\x1b[P_].*?\x1b\\",
-    re.DOTALL,
-)
-
-
 def _visible_width(text: str) -> int:
     if not text:
         return 0
-    stripped = _ANSI_RE.sub("", text).replace("\t", "   ")
-    return sum(max(0, get_cwidth(char)) for char in stripped)
+    stripped = _strip_terminal_controls(text).replace("\t", "   ")
+    return sum(_grapheme_width(cluster) for cluster in _grapheme_clusters(stripped))
+
+
+def _strip_terminal_controls(text: str) -> str:
+    result: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "\x1b":
+            result.append(text[index])
+            index += 1
+            continue
+        index = _consume_escape_sequence(text, index)
+    return "".join(result)
+
+
+def _consume_escape_sequence(text: str, start: int) -> int:
+    if start + 1 >= len(text):
+        return start + 1
+    marker = text[start + 1]
+    if marker == "[":
+        index = start + 2
+        while index < len(text):
+            if 0x40 <= ord(text[index]) <= 0x7E:
+                return index + 1
+            index += 1
+        return len(text)
+    if marker == "]":
+        return _consume_string_sequence(text, start + 2, allow_bel=True)
+    if marker in {"P", "_"}:
+        return _consume_string_sequence(text, start + 2, allow_bel=False)
+    return start + 2
+
+
+def _consume_string_sequence(text: str, start: int, *, allow_bel: bool) -> int:
+    index = start
+    while index < len(text):
+        if allow_bel and text[index] == "\x07":
+            return index + 1
+        if text[index : index + 2] == "\x1b\\":
+            return index + 2
+        index += 1
+    return len(text)
+
+
+def _grapheme_clusters(text: str) -> tuple[str, ...]:
+    clusters: list[str] = []
+    index = 0
+    while index < len(text):
+        cluster = text[index]
+        index += 1
+        if _is_regional_indicator(cluster):
+            if index < len(text) and _is_regional_indicator(text[index]):
+                cluster += text[index]
+                index += 1
+            clusters.append(cluster)
+            continue
+        while index < len(text):
+            char = text[index]
+            if char == "\u200d" and index + 1 < len(text):
+                cluster += char + text[index + 1]
+                index += 2
+                continue
+            if _is_grapheme_extension(char):
+                cluster += char
+                index += 1
+                continue
+            break
+        clusters.append(cluster)
+    return tuple(clusters)
+
+
+def _grapheme_width(cluster: str) -> int:
+    if not cluster:
+        return 0
+    if "\u200d" in cluster or any(_is_regional_indicator(char) for char in cluster):
+        return 2
+    return max(0, get_cwidth(cluster))
+
+
+def _is_grapheme_extension(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        unicodedata.category(char).startswith("M")
+        or 0xFE00 <= codepoint <= 0xFE0F
+        or 0x1F3FB <= codepoint <= 0x1F3FF
+    )
+
+
+def _is_regional_indicator(char: str) -> bool:
+    codepoint = ord(char)
+    return 0x1F1E6 <= codepoint <= 0x1F1FF

@@ -190,6 +190,32 @@ class PiMainScreenRendererTests(unittest.TestCase):
 
         self.assertEqual(terminal.writes(), "")
 
+    def test_osc8_visible_text_counts_toward_width(self):
+        terminal = MemoryTerminalDriver(columns=4, rows=2)
+        renderer = PiMainScreenRenderer(terminal)
+        linked = "\x1b]8;;https://example.test\x1b\\12345\x1b]8;;\x1b\\"
+
+        with self.assertRaisesRegex(ValueError, "exceeds terminal width"):
+            renderer.render(ScreenFrame((linked,), 0, 0))
+
+        self.assertEqual(terminal.writes(), "")
+
+    def test_zwj_emoji_cluster_uses_terminal_cell_width(self):
+        terminal = MemoryTerminalDriver(columns=2, rows=2)
+        renderer = PiMainScreenRenderer(terminal)
+
+        renderer.render(ScreenFrame(("👨‍👩‍👧‍👦",), 0, 0))
+
+        self.assertIn("👨‍👩‍👧‍👦", terminal.writes())
+
+    def test_flag_emoji_cluster_uses_terminal_cell_width(self):
+        terminal = MemoryTerminalDriver(columns=2, rows=2)
+        renderer = PiMainScreenRenderer(terminal)
+
+        renderer.render(ScreenFrame(("🇨🇳",), 0, 0))
+
+        self.assertIn("🇨🇳", terminal.writes())
+
     def test_close_restores_driver_and_cursor(self):
         terminal = MemoryTerminalDriver(columns=80, rows=24)
         renderer = PiMainScreenRenderer(terminal)
