@@ -59,6 +59,27 @@ class UIEventReducerTests(unittest.TestCase):
             reducer.state.active_tools["call-2"].stderr, "warning"
         )
 
+    def test_stdout_is_not_retained_in_user_facing_state(self):
+        reducer = UIEventReducer()
+        reducer.apply(
+            {
+                "kind": "tool.started",
+                "correlation_id": "call-1",
+                "payload": {"name": "bash", "arguments": {}},
+            }
+        )
+
+        update = reducer.apply(
+            {
+                "kind": "tool.output_delta",
+                "correlation_id": "call-1",
+                "payload": {"stream": "stdout", "text": "large output"},
+            }
+        )
+
+        self.assertIsNone(update)
+        self.assertEqual(reducer.state.active_tools["call-1"].stdout, "")
+
 
 if __name__ == "__main__":
     unittest.main()

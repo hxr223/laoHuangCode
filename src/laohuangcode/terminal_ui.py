@@ -12,6 +12,7 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import DummyHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
@@ -121,7 +122,7 @@ class PlainEventSink:
         self._thread.start()
 
     def publish_event(self, event: Any) -> None:
-        if not self._stopped:
+        if not self._stopped and not _is_hidden_tool_stdout(event):
             self._enqueue(event)
 
     def write(self, message: str) -> None:
@@ -189,6 +190,11 @@ class PlainEventSink:
         payload = event.get("payload", {})
         if not isinstance(payload, dict):
             payload = {}
+        if (
+            kind == "tool.output_delta"
+            and payload.get("stream", "stdout") == "stdout"
+        ):
+            return
         dropped = int(payload.get("_projection_dropped", 0) or 0)
         if dropped:
             self.output_fn(
@@ -311,7 +317,10 @@ class TerminalUI:
             show_frame=True,
             prompt_continuation=HTML("<input-padding>  </input-padding>"),
             history=InMemoryHistory(),
-            enable_history_search=True,
+            # PromptSession disables complete_while_typing whenever history
+            # search is enabled. Ordinary Up/Down history navigation remains
+            # available without this prefix-search mode.
+            enable_history_search=False,
             auto_suggest=AutoSuggestFromHistory(),
             key_bindings=_input_bindings(
                 is_running=self._is_running,
@@ -330,16 +339,31 @@ class TerminalUI:
                 if self.command_registry is not None
                 else None
             ),
-            complete_while_typing=self.command_registry is not None,
+            # Keep Pi-style command hints live only while the input is a slash
+            # command. Limiting the filter also keeps the framed editor compact
+            # for ordinary messages instead of reserving menu rows constantly.
+            complete_while_typing=Condition(self._slash_completion_context),
             reserve_space_for_menu=6,
             style=Style.from_dict(
                 {
                     "frame.border": "#9b6aa0",
                     "input-padding": "",
                     "prompt": "bold ansicyan",
+                    "completion-menu.completion": "bg:#191d27 #d0d7e2",
+                    "completion-menu.completion.current": "bg:#69456f #ffffff",
+                    "completion-menu.meta.completion": "bg:#191d27 #8993a4",
+                    "completion-menu.meta.completion.current": "bg:#69456f #ffffff",
                 }
             ),
         )
+
+    def _slash_completion_context(self) -> bool:
+        session = self._session
+        if self.command_registry is None or session is None:
+            return False
+        buffer = getattr(session, "default_buffer", None)
+        text = str(getattr(buffer, "text", ""))
+        return text.startswith("/") and "\n" not in text
 
     def set_command_registry(self, registry: CommandRegistry) -> None:
         self.command_registry = registry
@@ -397,7 +421,7 @@ class TerminalUI:
 
     def publish_event(self, event: Any) -> None:
         """Queue a projected event; the renderer thread is the sole event writer."""
-        if self._renderer_closed:
+        if self._renderer_closed or _is_hidden_tool_stdout(event):
             return
         self.start_event_renderer()
         kind = str(event.get("kind", "")) if isinstance(event, dict) else ""
@@ -502,8 +526,7 @@ class TerminalUI:
             )
             return
         if update.kind == "tool.output_delta":
-            style = "yellow" if update.stream == "stderr" else "dim"
-            self._render_tool_delta(update, style)
+            self._render_tool_delta(update, "yellow")
             return
         if update.kind == "tool.finished":
             short_id = update.correlation_id[-8:] or "unknown"
@@ -627,10 +650,7 @@ class TerminalUI:
             self.console.print(
                 Text(f"  └─ exit {result.get('exit_code', 0)}", style="dim")
             )
-            stdout = result.get("stdout")
             stderr = result.get("stderr")
-            if isinstance(stdout, str) and stdout.strip():
-                self.console.print(Text(self._clip(stdout.strip(), 1_200), style="dim"))
             if isinstance(stderr, str) and stderr.strip():
                 self.console.print(
                     Text(self._clip(stderr.strip(), 1_200), style="yellow")
@@ -649,3 +669,16 @@ class TerminalUI:
         if len(value) <= limit:
             return value
         return value[:limit] + "…"
+
+
+def _is_hidden_tool_stdout(event: Any) -> bool:
+    """Keep captured tool stdout out of user-facing terminal render queues."""
+    if not isinstance(event, dict):
+        return False
+    if str(event.get("kind", "")) != "tool.output_delta":
+        return False
+    payload = event.get("payload", {})
+    return (
+        isinstance(payload, dict)
+        and payload.get("stream", "stdout") == "stdout"
+    )

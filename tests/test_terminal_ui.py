@@ -119,6 +119,105 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(buffer.text, "/")
         self.assertEqual(calls, [False])
 
+    def test_real_prompt_keeps_slash_completions_live_while_typing(self):
+        registry = CommandRegistry(
+            [
+                CommandSpec("/help", "show help", "/help"),
+                CommandSpec(
+                    "/model",
+                    "choose model",
+                    "/model",
+                    argument_completer=lambda _arguments: (
+                        ("deepseek", "model provider"),
+                        ("openai", "model provider"),
+                    ),
+                ),
+            ]
+        )
+        with create_pipe_input() as pipe:
+            ui = TerminalUI(
+                console=Console(file=io.StringIO(), force_terminal=False),
+                command_registry=registry,
+                session_factory=lambda **options: PromptSession(
+                    input=pipe,
+                    output=DummyOutput(),
+                    **options,
+                ),
+            )
+            errors = []
+
+            def prompt() -> None:
+                try:
+                    ui.prompt()
+                except EOFError:
+                    pass
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=prompt)
+            worker.start()
+            time.sleep(0.05)
+
+            snapshots = []
+            for text in ("/", "h", "e"):
+                pipe.send_text(text)
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    state = ui._session.default_buffer.complete_state
+                    values = (
+                        tuple(item.text for item in state.completions)
+                        if state is not None
+                        else ()
+                    )
+                    expected = ("/help", "/model") if text == "/" else ("/help",)
+                    if values == expected:
+                        break
+                    time.sleep(0.01)
+                snapshots.append(values)
+
+            pipe.send_bytes(b"\x7f")
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                state = ui._session.default_buffer.complete_state
+                backspace_values = (
+                    tuple(item.text for item in state.completions)
+                    if state is not None
+                    else ()
+                )
+                if backspace_values == ("/help",):
+                    break
+                time.sleep(0.01)
+
+            pipe.send_bytes(b"\x15")
+            pipe.send_text("/model d")
+            deadline = time.monotonic() + 1
+            argument_values = ()
+            argument_meta = ""
+            while time.monotonic() < deadline:
+                state = ui._session.default_buffer.complete_state
+                argument_values = (
+                    tuple(item.text for item in state.completions)
+                    if state is not None
+                    else ()
+                )
+                if argument_values == ("deepseek",):
+                    argument_meta = str(state.completions[0].display_meta)
+                    break
+                time.sleep(0.01)
+
+            pipe.send_bytes(b"\x15")
+            pipe.send_bytes(b"\x04")
+            worker.join(1)
+
+        self.assertFalse(errors)
+        self.assertEqual(
+            snapshots,
+            [("/help", "/model"), ("/help",), ("/help",)],
+        )
+        self.assertEqual(backspace_values, ("/help",))
+        self.assertEqual(argument_values, ("deepseek",))
+        self.assertIn("model provider", argument_meta)
+
     def test_assistant_response_is_rendered_as_markdown_without_chat_prefix(self):
         stream = io.StringIO()
         ui = TerminalUI(
@@ -158,7 +257,7 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(value, "first line\nsecond line")
         self.assertTrue(options["multiline"])
         self.assertTrue(options["show_frame"])
-        self.assertTrue(options["enable_history_search"])
+        self.assertFalse(options["enable_history_search"])
         self.assertIn("❯", str(options["message"]()))
         self.assertNotIn("bottom_toolbar", options)
         self.assertIsNotNone(options["history"])
@@ -232,7 +331,7 @@ class TerminalUITests(unittest.TestCase):
         self.assertFalse(errors)
         self.assertEqual(result, ["/help"])
 
-    def test_tool_call_is_rendered_as_a_compact_result_card(self):
+    def test_tool_call_hides_stdout_but_keeps_stderr_in_result_card(self):
         stream = io.StringIO()
         ui = TerminalUI(
             console=Console(
@@ -250,7 +349,7 @@ class TerminalUITests(unittest.TestCase):
                 "ok": True,
                 "exit_code": 0,
                 "stdout": "24 tests passed",
-                "stderr": "",
+                "stderr": "test warning",
             },
         )
 
@@ -258,7 +357,63 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("● bash", rendered)
         self.assertIn("python -m unittest", rendered)
         self.assertIn("exit 0", rendered)
-        self.assertIn("24 tests passed", rendered)
+        self.assertNotIn("24 tests passed", rendered)
+        self.assertIn("test warning", rendered)
+
+    def test_event_sinks_hide_stdout_but_render_stderr_and_status(self):
+        base = {
+            "source": "tool",
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "correlation_id": "call-1",
+            "sequence": 1,
+        }
+        events = [
+            {**base, "kind": "tool.started", "payload": {"name": "bash"}},
+            {
+                **base,
+                "kind": "tool.output_delta",
+                "payload": {"stream": "stdout", "text": "very long output"},
+            },
+            {
+                **base,
+                "kind": "tool.output_delta",
+                "payload": {"stream": "stderr", "text": "warning\n"},
+            },
+            {
+                **base,
+                "kind": "tool.finished",
+                "payload": {"status": "completed", "exit_code": 0},
+            },
+        ]
+
+        plain_output = []
+        plain = PlainEventSink(plain_output.append)
+        for event in events:
+            plain.publish_event(event)
+        plain.flush()
+        plain.stop()
+
+        stream = io.StringIO()
+        ui = TerminalUI(
+            console=Console(
+                file=stream,
+                color_system=None,
+                force_terminal=False,
+                width=100,
+            )
+        )
+        for event in events:
+            ui.publish_event(event)
+        ui.flush_event_renderer()
+        ui.stop_event_renderer()
+
+        plain_rendered = "\n".join(plain_output)
+        terminal_rendered = stream.getvalue()
+        for rendered in (plain_rendered, terminal_rendered):
+            self.assertNotIn("very long output", rendered)
+            self.assertIn("warning", rendered)
+            self.assertIn("completed", rendered)
 
     def test_welcome_panel_shows_session_context(self):
         stream = io.StringIO()

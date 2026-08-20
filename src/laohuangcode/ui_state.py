@@ -115,13 +115,14 @@ class UIEventReducer:
             return UIUpdate(kind=kind, correlation_id=correlation_id, payload=payload)
         if kind == "tool.output_delta":
             stream = str(payload.get("stream", "stdout"))
+            if stream == "stdout":
+                # Stdout remains available to the model in the tool result,
+                # but it is intentionally absent from user-facing UI state.
+                return None
             text = str(payload.get("text", payload.get("chunk", "")))
             tool = self.state.active_tools.get(correlation_id)
             if tool is not None:
-                if stream == "stderr":
-                    tool.stderr = (tool.stderr + text)[-self._TOOL_BUFFER_LIMIT :]
-                else:
-                    tool.stdout = (tool.stdout + text)[-self._TOOL_BUFFER_LIMIT :]
+                tool.stderr = (tool.stderr + text)[-self._TOOL_BUFFER_LIMIT :]
             return UIUpdate(
                 kind=kind,
                 text=text,
