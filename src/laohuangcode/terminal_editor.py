@@ -177,26 +177,45 @@ class EditorState:
             return EditorEffect()
         return self._apply_edit_action(action)
 
-    def render_lines(self, width: int) -> tuple[tuple[str, ...], int, int]:
+    def render_lines(
+        self,
+        width: int,
+        *,
+        prompt: str = "❯ ",
+        mask: bool = False,
+    ) -> tuple[tuple[str, ...], int, int]:
         width = max(3, width)
-        content_width = width - 2
-        source_lines = self.text.split("\n")
+        prompt_width = max(1, len(prompt))
+        content_width = max(1, width - prompt_width)
+        display_text = "*" * len(self.text) if mask else self.text
+        source_lines = display_text.split("\n")
         rows: list[str] = []
         for source in source_lines:
             rows.extend(self._wrap(source, content_width))
-        if self.text and not self.text.endswith("\n") and len(source_lines[-1]) % content_width == 0:
+        if (
+            display_text
+            and not display_text.endswith("\n")
+            and len(source_lines[-1]) % content_width == 0
+        ):
             rows.append("")
         rendered = tuple(
-            ("❯ " if index == 0 else "  ") + row
+            (prompt if index == 0 else " " * prompt_width) + row
             for index, row in enumerate(rows)
         )
         before = self.text[: self.cursor]
         prior, current = before.rsplit("\n", 1) if "\n" in before else ("", before)
-        prior_rows = 0 if not prior else sum(len(self._wrap(line, content_width)) for line in prior.split("\n"))
+        prior_rows = (
+            0
+            if not prior
+            else sum(
+                len(self._wrap(line, content_width))
+                for line in prior.split("\n")
+            )
+        )
         if "\n" in before:
             prior_rows += 1
         cursor_row = prior_rows + len(current) // content_width
-        cursor_column = 2 + len(current) % content_width
+        cursor_column = prompt_width + len(current) % content_width
         return rendered, min(cursor_row, len(rendered) - 1), min(cursor_column, width - 1)
 
     @staticmethod

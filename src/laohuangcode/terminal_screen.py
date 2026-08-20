@@ -107,9 +107,11 @@ class PiMainScreenRenderer:
         if self._closed:
             return
         self._closed = True
-        self._terminal.write("\x1b[?25h")
-        self._terminal.flush()
-        self._terminal.restore()
+        try:
+            self._terminal.write("\x1b[?25h")
+            self._terminal.flush()
+        finally:
+            self._terminal.restore()
 
     @staticmethod
     def _first_changed(previous: tuple[str, ...], current: tuple[str, ...]) -> int | None:
