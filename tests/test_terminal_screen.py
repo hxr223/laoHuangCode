@@ -95,6 +95,19 @@ class PiMainScreenRendererTests(unittest.TestCase):
         renderer.close()
         self.assertEqual(terminal.restore_calls, 1)
 
+    def test_close_restores_driver_when_cursor_write_fails(self):
+        class BrokenWriteTerminal(MemoryTerminalDriver):
+            def write(self, data: str) -> None:
+                raise BrokenPipeError("closed")
+
+        terminal = BrokenWriteTerminal(columns=80, rows=24)
+        renderer = PiMainScreenRenderer(terminal)
+
+        with self.assertRaises(BrokenPipeError):
+            renderer.close()
+
+        self.assertTrue(terminal.restored)
+
 
 if __name__ == "__main__":
     unittest.main()

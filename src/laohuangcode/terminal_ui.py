@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
+import os
 from pathlib import Path
 from queue import Empty, Full, Queue
+import selectors
+import shutil
+import sys
 import threading
 from typing import Any
 
@@ -26,10 +30,16 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .commands import CommandCompleter, CommandRegistry
-from .terminal_input import PiInputSession, PiTerminalApplication
+from .terminal_input import PiInputSession
 from .terminal_markdown import render_markdown, render_markdown_lines
-from .terminal_editor import EditorState
-from .terminal_screen import ScreenFrame
+from .terminal_editor import (
+    EditorEffect,
+    EditorState,
+    InputAction,
+    InputActionKind,
+    RawInputDecoder,
+)
+from .terminal_screen import PiMainScreenRenderer, ScreenFrame, TerminalDriver, TerminalSize
 from .terminal_theme import TerminalTheme, resolve_terminal_theme
 from .ui_state import UIEventReducer, UIState, UIUpdate
 
@@ -106,6 +116,14 @@ def _input_bindings(
 class _LocalMessage:
     text: str
     style: str = ""
+
+
+@dataclass(slots=True)
+class _LoopQuestion:
+    message: str
+    secret: bool = False
+    answered: threading.Event = field(default_factory=threading.Event)
+    answer: str = ""
 
 
 @dataclass(slots=True)
@@ -267,6 +285,325 @@ class PlainEventSink:
             )
 
 
+class _StdTerminalDriver:
+    """The small POSIX adapter used by the regular-screen loop."""
+
+    def __init__(self) -> None:
+        self._input_fd = sys.stdin.fileno()
+        self._output_fd = sys.stdout.fileno()
+        self._saved_mode: list[Any] | None = None
+
+    @property
+    def input_fd(self) -> int:
+        return self._input_fd
+
+    def enter_raw_mode(self) -> None:
+        if not os.isatty(self._input_fd):
+            return
+        import tty
+        import termios
+
+        self._saved_mode = termios.tcgetattr(self._input_fd)
+        tty.setraw(self._input_fd)
+
+    def write(self, data: str) -> None:
+        os.write(self._output_fd, data.encode())
+
+    def flush(self) -> None:
+        return
+
+    def get_size(self) -> TerminalSize:
+        size = shutil.get_terminal_size(fallback=(80, 24))
+        return TerminalSize(size.columns, size.lines)
+
+    def restore(self) -> None:
+        if self._saved_mode is not None:
+            import termios
+
+            termios.tcsetattr(self._input_fd, termios.TCSADRAIN, self._saved_mode)
+            self._saved_mode = None
+
+
+class InteractiveTerminalLoop:
+    """Serialize stdin, UI events, and all terminal writes in one loop."""
+
+    _ESCAPE_TIMEOUT = 0.05
+
+    def __init__(self, ui: "TerminalUI", driver: TerminalDriver) -> None:
+        self._ui = ui
+        self._driver = driver
+        self._work: Queue[tuple[str, Any]] = Queue(maxsize=4_096)
+        self._decoder = RawInputDecoder()
+        self._editor = EditorState()
+        self._renderer = PiMainScreenRenderer(driver)
+        self._wake_read, self._wake_write = os.pipe()
+        os.set_blocking(self._wake_read, False)
+        os.set_blocking(self._wake_write, False)
+        self._selector: selectors.BaseSelector | None = None
+        self._on_submit: Callable[[str], None] = lambda _text: None
+        self._exit_requested = False
+        self._closed = False
+        self._input_closed = False
+        self._running = threading.Event()
+        self._question_lock = threading.Lock()
+        self._question: _LoopQuestion | None = None
+        self.write_error: Exception | None = None
+        self._needs_render = True
+
+    def start(self, on_submit: Callable[[str], None]) -> None:
+        self._on_submit = on_submit
+        self._exit_requested = False
+        self._input_closed = False
+        self._running.set()
+
+    def publish_event(self, event: Any) -> None:
+        if self._closed or _is_hidden_tool_stdout(event):
+            return
+        kind = str(event.get("kind", "")) if isinstance(event, dict) else ""
+        try:
+            self._work.put_nowait(("event", event))
+        except Full:
+            if kind not in {"model.reasoning_delta", "model.tool_call_delta", "tool.output_delta"}:
+                self._work.put(("event", event))
+            else:
+                return
+        self._wake()
+
+    def feed_input_bytes(self, data: bytes) -> None:
+        if self._closed:
+            return
+        self._work.put(("input", data))
+        self._wake()
+
+    def drain(self) -> None:
+        """Synchronously consume queued work; this is also the test hook."""
+        self._drain_wake()
+        changed = self._drain_work()
+        if changed or self._needs_render:
+            self._render()
+
+    def run(self) -> None:
+        input_fd = getattr(self._driver, "input_fd", None)
+        self._selector = selectors.DefaultSelector()
+        self._selector.register(self._wake_read, selectors.EVENT_READ, "wake")
+        if isinstance(input_fd, int):
+            self._selector.register(input_fd, selectors.EVENT_READ, "input")
+        enter_raw = getattr(self._driver, "enter_raw_mode", None)
+        if callable(enter_raw):
+            enter_raw()
+        try:
+            while not self._exit_requested:
+                self.drain()
+                ready = self._selector.select(self._ESCAPE_TIMEOUT)
+                if not ready:
+                    self._apply_actions(self._decoder.flush())
+                    continue
+                for key, _mask in ready:
+                    if key.data == "wake":
+                        self._drain_wake()
+                    else:
+                        data = os.read(key.fd, 4_096)
+                        if data:
+                            self.feed_input_bytes(data)
+                        else:
+                            self._close_input_registration(key.fd)
+                            self._apply_actions(((self._decoder.flush()) + ()))
+                            self._apply_eof()
+        except Exception as error:
+            self.write_error = error
+        finally:
+            self.close()
+
+    def ask(self, message: str, *, secret: bool = False) -> str:
+        question = _LoopQuestion(message=message, secret=secret)
+        with self._question_lock:
+            if self._closed or not self._running.is_set():
+                return ""
+            self._question = question
+            self._reset_editor()
+        self._needs_render = True
+        self._wake()
+        question.answered.wait()
+        return question.answer
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._running.clear()
+        with self._question_lock:
+            question = self._question
+            self._question = None
+        if question is not None:
+            question.answered.set()
+        if self._selector is not None:
+            self._selector.close()
+        for fd in (self._wake_read, self._wake_write):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            self._renderer.close()
+        except Exception as error:
+            if self.write_error is None:
+                self.write_error = error
+
+    def _apply_actions(self, actions: tuple[Any, ...]) -> None:
+        for action in actions:
+            if self._apply_question_action(action):
+                self._needs_render = True
+                continue
+            effect = self._editor.apply(action, runtime_active=self._ui._is_running())
+            self._apply_effect(effect)
+            self._refresh_completions()
+            self._needs_render = True
+
+    def _apply_eof(self) -> None:
+        effect = self._editor.apply(
+            InputAction(InputActionKind.EOF),
+            runtime_active=self._ui._is_running(),
+        )
+        self._apply_effect(effect)
+
+    def _close_input_registration(self, fd: int) -> None:
+        if self._input_closed:
+            return
+        self._input_closed = True
+        if self._selector is not None:
+            try:
+                self._selector.unregister(fd)
+            except Exception:
+                pass
+
+    def _apply_effect(self, effect: EditorEffect) -> None:
+        if effect.submit is not None:
+            self._ui.accept_user_input(effect.submit)
+            self._on_submit(effect.submit)
+        if effect.cancel_requested:
+            self._ui._cancel_from_keybinding()
+        if effect.notice:
+            self._ui._append_transcript(
+                TranscriptBlock(
+                    "notice",
+                    self._ui._new_block_id(),
+                    text=effect.notice,
+                    style="yellow",
+                )
+            )
+        if effect.exit_requested:
+            self._exit_requested = True
+
+    def _apply_question_action(self, action: InputAction) -> bool:
+        with self._question_lock:
+            question = self._question
+        if question is None:
+            return False
+        if action.kind is InputActionKind.SUBMIT:
+            answer = self._editor.text
+            with self._question_lock:
+                if self._question is question:
+                    question.answer = answer
+                    self._question = None
+            self._reset_editor()
+            question.answered.set()
+            return True
+        if action.kind in {InputActionKind.CANCEL, InputActionKind.EOF}:
+            with self._question_lock:
+                if self._question is question:
+                    self._question = None
+            self._reset_editor()
+            question.answered.set()
+            return True
+        effect = self._editor.apply(action, runtime_active=False)
+        if effect.notice:
+            self._ui._append_transcript(
+                TranscriptBlock(
+                    "notice",
+                    self._ui._new_block_id(),
+                    text=effect.notice,
+                    style="yellow",
+                )
+            )
+        return True
+
+    def _reset_editor(self) -> None:
+        self._editor.text = ""
+        self._editor.cursor = 0
+        self._editor.history_index = None
+        self._editor.completions = ()
+        self._editor.selected_completion = None
+
+    def _refresh_completions(self) -> None:
+        with self._question_lock:
+            if self._question is not None:
+                self._editor.set_completions(())
+                return
+        if self._ui.command_registry is not None:
+            self._editor.set_completions(self._ui.command_registry.complete(
+                self._editor.text,
+                state="RUNNING_MODEL" if self._ui._is_running() else self._ui.state.session_state,
+            ))
+
+    def _drain_work(self) -> bool:
+        changed = False
+        while True:
+            try:
+                kind, payload = self._work.get_nowait()
+            except Empty:
+                return changed
+            try:
+                if kind == "input":
+                    self._apply_actions(self._decoder.feed(payload))
+                    changed = True
+                elif isinstance(payload, _LocalMessage):
+                    self._ui._append_transcript(
+                        TranscriptBlock(
+                            "notice",
+                            self._ui._new_block_id(),
+                            text=payload.text,
+                            style=payload.style,
+                        )
+                    )
+                else:
+                    self._ui.apply_projected_event(payload)
+                    changed = True
+            finally:
+                self._work.task_done()
+
+    def _render(self) -> None:
+        self._needs_render = False
+        try:
+            with self._question_lock:
+                question = self._question
+            self._renderer.render(
+                self._ui.build_frame(
+                    width=self._driver.get_size().columns,
+                    editor=self._editor,
+                    prompt=f"{question.message} " if question is not None else "❯ ",
+                    secret=bool(question and question.secret),
+                )
+            )
+        except Exception as error:
+            self.write_error = error
+            self._exit_requested = True
+
+    def _wake(self) -> None:
+        try:
+            os.write(self._wake_write, b"e")
+        except BlockingIOError:
+            pass
+        except OSError:
+            pass
+
+    def _drain_wake(self) -> None:
+        try:
+            while os.read(self._wake_read, 4_096):
+                pass
+        except BlockingIOError:
+            pass
+
+
 class TerminalUI:
     """Render interactive agent sessions with Rich and prompt_toolkit."""
 
@@ -282,6 +619,7 @@ class TerminalUI:
         command_registry: CommandRegistry | None = None,
         cancel_callback: Callable[[], None] | None = None,
         theme: str | None = None,
+        terminal_driver: TerminalDriver | None = None,
     ) -> None:
         self.console = console or Console()
         self._session_factory = session_factory or PiInputSession
@@ -297,11 +635,17 @@ class TerminalUI:
         self.command_registry = command_registry
         self.cancel_callback = cancel_callback
         self.theme: TerminalTheme = resolve_terminal_theme(theme)
-        # Production interactive sessions use one persistent prompt_toolkit
-        # application.  Supplying a Console or custom session factory remains
-        # a small legacy/testing escape hatch and keeps setup prompts simple.
+        # Setup questions retain their one-shot prompt_toolkit compatibility;
+        # a live session always goes through the regular-screen raw loop.
         self._single_renderer = console is None and session_factory is None
-        self._terminal_app: PiTerminalApplication | None = None
+        self._terminal_driver = terminal_driver or (
+            _StdTerminalDriver() if self._single_renderer else None
+        )
+        self._interactive_loop: InteractiveTerminalLoop | None = (
+            InteractiveTerminalLoop(self, self._terminal_driver)
+            if self._terminal_driver is not None
+            else None
+        )
         self._transcript: list[TranscriptBlock] = []
         self._transcript_by_correlation: dict[tuple[str, str], TranscriptBlock] = {}
         self._next_block_id = 0
@@ -322,8 +666,11 @@ class TerminalUI:
         self._tool_line_start: dict[tuple[str, str], bool] = {}
 
     def prompt(self, message: str | None = None) -> str:
-        if self._terminal_app is not None and self._terminal_app.running:
-            return self._terminal_app.ask(message or "Input:")
+        if (
+            self._interactive_loop is not None
+            and self._interactive_loop._running.is_set()
+        ):
+            return self._interactive_loop.ask(message or "Input:")
         with patch_stdout(raw=True):
             if message is not None:
                 if self._question_session is None:
@@ -346,35 +693,44 @@ class TerminalUI:
         it must not synchronously call the semantic router from the UI loop.
         """
 
-        if not self._single_renderer:
+        if self._interactive_loop is None:
             raise RuntimeError("single-renderer mode is unavailable for this UI")
-        if self._terminal_app is None:
-            self._terminal_app = PiTerminalApplication(
-                history=InMemoryHistory(),
-                style=self.theme.prompt_style(),
-                key_bindings=_input_bindings(
-                    is_running=self._is_running,
-                    cancel=self._cancel_from_keybinding,
-                    notify=self.write,
-                ),
-                completer=self._command_completer(),
-                complete_while_typing=Condition(self._slash_completion_context),
-                auto_suggest=AutoSuggestFromHistory(),
-                enable_history_search=False,
-                reserve_space_for_menu=6,
-                transcript=self._render_transcript,
-                footer=self._footer_text,
-            )
-
-        def submit(text: str) -> None:
-            self.accept_user_input(text)
-            on_submit(text)
-
-        self._terminal_app.run(submit)
+        self._interactive_loop.start(on_submit)
+        self._interactive_loop.run()
 
     def request_exit(self) -> None:
-        if self._terminal_app is not None:
-            self._terminal_app.exit()
+        if self._interactive_loop is not None:
+            self._interactive_loop._exit_requested = True
+            self._interactive_loop._wake()
+
+    def close(self) -> None:
+        if self._interactive_loop is not None:
+            self._interactive_loop.close()
+            return
+        self.stop_event_renderer()
+
+    @property
+    def render_error(self) -> Exception | None:
+        if (
+            self._interactive_loop is not None
+            and self._interactive_loop.write_error is not None
+        ):
+            return self._interactive_loop.write_error
+        return self._render_error
+
+    def start_loop(self, on_submit: Callable[[str], None]) -> None:
+        if self._interactive_loop is None:
+            raise RuntimeError("a terminal driver is required")
+        self._interactive_loop.start(on_submit)
+
+    def feed_input_bytes(self, data: bytes) -> None:
+        if self._interactive_loop is None:
+            raise RuntimeError("a terminal driver is required")
+        self._interactive_loop.feed_input_bytes(data)
+
+    def drain_loop(self) -> None:
+        if self._interactive_loop is not None:
+            self._interactive_loop.drain()
 
     def _command_completer(self) -> CommandCompleter | None:
         if self.command_registry is None:
@@ -482,11 +838,18 @@ class TerminalUI:
 
     def build_history_lines(self, width: int) -> tuple[str, ...]:
         """Build every persisted transcript line; never crop history here."""
+        lines, _active_start = self._build_history_frame_parts(width)
+        return tuple(lines)
+
+    def _build_history_frame_parts(self, width: int) -> tuple[list[str], int | None]:
         usable_width = max(12, width)
         with self._transcript_lock:
             blocks = tuple(self._transcript)
         lines: list[str] = []
+        active_start: int | None = None
         for block in blocks:
+            if block.mutable and active_start is None:
+                active_start = len(lines)
             if block.kind == "assistant":
                 lines.extend(render_markdown_lines(block.text, usable_width, self.theme))
             else:
@@ -494,19 +857,42 @@ class TerminalUI:
                     text.rstrip("\n")
                     for _style, text in self._render_transcript_item(block, usable_width)
                 )
-        return tuple(lines)
+        return lines, active_start
 
-    def build_frame(self, *, width: int, editor: EditorState) -> ScreenFrame:
-        history = self.build_history_lines(width)
-        editor_lines, cursor_row, cursor_column = editor.render_lines(width)
-        completion = self._completion_lines(width)
+    def build_frame(
+        self,
+        *,
+        width: int,
+        editor: EditorState,
+        prompt: str = "❯ ",
+        secret: bool = False,
+    ) -> ScreenFrame:
+        history_lines, active_start = self._build_history_frame_parts(width)
+        history = tuple(history_lines)
+        editor_lines, cursor_row, cursor_column = editor.render_lines(
+            width,
+            prompt=prompt,
+            mask=secret,
+        )
+        completion = self._completion_lines(width, editor)
         footer = self._footer_line(width)
         rows = (*history, "─" * width, *editor_lines, "─" * width, *completion, footer)
         lines = tuple(row for row in rows if row is not None)
-        return ScreenFrame(lines, len(history) + 1, len(history) + 1 + cursor_row, cursor_column)
+        editor_start = len(history) + 1
+        return ScreenFrame(
+            lines,
+            active_start if active_start is not None else editor_start,
+            editor_start + cursor_row,
+            cursor_column,
+        )
 
-    def _completion_lines(self, width: int) -> tuple[str, ...]:
-        return ()
+    def _completion_lines(self, width: int, editor: EditorState) -> tuple[str, ...]:
+        rows: list[str] = []
+        for index, item in enumerate(editor.completions[:6]):
+            marker = "›" if index == editor.selected_completion else " "
+            text = f"{marker} {item.value}  {item.description}".rstrip()
+            rows.append(self._clip(text, width))
+        return tuple(rows)
 
     def _footer_line(self, width: int) -> str | None:
         values = self._footer_text()
@@ -554,7 +940,7 @@ class TerminalUI:
 
     def _echo_submitted_input(self, text: str) -> None:
         """Retain accepted input after PromptSession erases its editor frame."""
-        if self._single_renderer and self._terminal_app is not None:
+        if self._interactive_loop is not None:
             self.accept_user_input(text)
             return
         with self._render_lock:
@@ -585,8 +971,11 @@ class TerminalUI:
         )
 
     def prompt_secret(self, message: str) -> str:
-        if self._terminal_app is not None and self._terminal_app.running:
-            return self._terminal_app.ask(message, secret=True)
+        if (
+            self._interactive_loop is not None
+            and self._interactive_loop._running.is_set()
+        ):
+            return self._interactive_loop.ask(message, secret=True)
         with patch_stdout(raw=True):
             if self._secret_session is None:
                 self._secret_session = self._question_session_factory(
@@ -653,7 +1042,7 @@ class TerminalUI:
         return [("class:footer", " · ".join(details))]
 
     def _slash_completion_context(self) -> bool:
-        session = self._terminal_app or self._session
+        session = self._session
         if self.command_registry is None or session is None:
             return False
         buffer = getattr(session, "default_buffer", None)
@@ -663,11 +1052,6 @@ class TerminalUI:
     def set_command_registry(self, registry: CommandRegistry) -> None:
         self.command_registry = registry
         self._session = None
-        # The persistent editor is created after commands are registered in
-        # normal CLI startup.  Recreate it only if a caller changes the
-        # registry before the UI is running.
-        if self._terminal_app is not None and not self._terminal_app.running:
-            self._terminal_app = None
 
     def set_cancel_callback(self, callback: Callable[[], None]) -> None:
         self.cancel_callback = callback
@@ -696,6 +1080,8 @@ class TerminalUI:
         return HTML("<prompt>❯ </prompt>")
 
     def start_event_renderer(self) -> None:
+        if self._interactive_loop is not None:
+            return
         if self._renderer_closed or self._event_thread is not None:
             return
         self._event_stop.clear()
@@ -707,6 +1093,8 @@ class TerminalUI:
         self._event_thread.start()
 
     def stop_event_renderer(self) -> None:
+        if self._interactive_loop is not None:
+            return
         thread = self._event_thread
         if thread is None:
             return
@@ -721,6 +1109,9 @@ class TerminalUI:
 
     def publish_event(self, event: Any) -> None:
         """Queue a projected event; the renderer thread is the sole event writer."""
+        if self._interactive_loop is not None:
+            self._interactive_loop.publish_event(event)
+            return
         if self._renderer_closed or _is_hidden_tool_stdout(event):
             return
         self.start_event_renderer()
@@ -804,7 +1195,7 @@ class TerminalUI:
         self._invalidate_prompt()
 
     def _apply_transcript_update(self, update: UIUpdate) -> None:
-        """Mutate UI state only; ``PiTerminalApplication`` paints it later."""
+        """Mutate transcript state; the raw loop paints it later."""
 
         kind = update.kind
         correlation_id = update.correlation_id
@@ -920,8 +1311,6 @@ class TerminalUI:
             self._invalidate_prompt()
 
     def _invalidate_prompt(self) -> None:
-        if self._terminal_app is not None:
-            self._terminal_app.invalidate()
         app = getattr(self._session, "app", None)
         invalidate = getattr(app, "invalidate", None)
         if callable(invalidate):
@@ -1028,18 +1417,27 @@ class TerminalUI:
         self._tool_line_start[key] = at_line_start
 
     def flush_event_renderer(self) -> None:
+        if self._interactive_loop is not None:
+            self._interactive_loop.drain()
+            return
         if self._event_thread is not None:
             self._event_queue.join()
 
     def show_assistant(self, response: str) -> None:
-        if self._single_renderer:
-            self._append_transcript(TranscriptBlock("assistant", self._new_block_id(), text=response))
+        if self._interactive_loop is not None:
+            self._append_transcript(
+                TranscriptBlock(
+                    "assistant",
+                    self._new_block_id(),
+                    text=response,
+                )
+            )
             return
         self.console.print()
         self.console.print(Markdown(response))
 
     def show_welcome(self) -> None:
-        if self._single_renderer:
+        if self._interactive_loop is not None:
             details: list[str] = []
             if self.project_root is not None:
                 details.append(str(self.project_root))
@@ -1048,11 +1446,21 @@ class TerminalUI:
             if self.dashboard_url:
                 details.append(f"trace: {self.dashboard_url}")
             self._append_transcript(
-                TranscriptBlock("notice", self._new_block_id(), text="laoHuangCode  /help for commands", style=f"bold {self.theme.color('accent')}")
+                TranscriptBlock(
+                    "notice",
+                    self._new_block_id(),
+                    text="laoHuangCode  /help for commands",
+                    style=f"bold {self.theme.color('accent')}",
+                )
             )
             if details:
                 self._append_transcript(
-                    TranscriptBlock("notice", self._new_block_id(), text=" · ".join(details), style=self.theme.color("dim"))
+                    TranscriptBlock(
+                        "notice",
+                        self._new_block_id(),
+                        text=" · ".join(details),
+                        style=self.theme.color("dim"),
+                    )
                 )
             return
         heading = Text("laoHuangCode", style=f"bold {self.theme.color('accent')}")
@@ -1084,6 +1492,11 @@ class TerminalUI:
         self._write_local(message, self.theme.color("warning"))
 
     def show_goodbye(self) -> None:
+        if self._interactive_loop is not None:
+            if not self._interactive_loop._closed:
+                self._write_local("Goodbye.", self.theme.color("dim"))
+                self.flush_event_renderer()
+            return
         self.console.print(Text("Goodbye.", style=self.theme.color("dim")))
 
     def _tool_card(
@@ -1114,6 +1527,9 @@ class TerminalUI:
         )
 
     def _write_local(self, message: str, style: str = "") -> None:
+        if self._interactive_loop is not None:
+            self._interactive_loop.publish_event(_LocalMessage(message, style))
+            return
         renderer = self._event_thread
         if renderer is not None and threading.current_thread() is not renderer:
             self.publish_event(_LocalMessage(message, style))
