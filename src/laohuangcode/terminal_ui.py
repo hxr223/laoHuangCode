@@ -18,6 +18,7 @@ from prompt_toolkit.history import DummyHistory, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.padding import Padding
@@ -25,7 +26,8 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .commands import CommandCompleter, CommandRegistry
-from .terminal_input import PiInputSession
+from .terminal_input import PiInputSession, PiTerminalApplication
+from .terminal_markdown import render_markdown
 from .terminal_theme import TerminalTheme, resolve_terminal_theme
 from .ui_state import UIEventReducer, UIState, UIUpdate
 
@@ -101,6 +103,22 @@ def _input_bindings(
 @dataclass(frozen=True, slots=True)
 class _LocalMessage:
     text: str
+    style: str = ""
+
+
+@dataclass(slots=True)
+class _TranscriptItem:
+    """A stable piece of the single-renderer terminal transcript."""
+
+    kind: str
+    text: str = ""
+    correlation_id: str = ""
+    name: str = ""
+    subject: str = ""
+    status: str = ""
+    exit_code: int | None = None
+    duration_ms: int | None = None
+    stream_error: str = ""
     style: str = ""
 
 
@@ -271,6 +289,14 @@ class TerminalUI:
         self.command_registry = command_registry
         self.cancel_callback = cancel_callback
         self.theme: TerminalTheme = resolve_terminal_theme(theme)
+        # Production interactive sessions use one persistent prompt_toolkit
+        # application.  Supplying a Console or custom session factory remains
+        # a small legacy/testing escape hatch and keeps setup prompts simple.
+        self._single_renderer = console is None and session_factory is None
+        self._terminal_app: PiTerminalApplication | None = None
+        self._transcript: list[_TranscriptItem] = []
+        self._transcript_by_correlation: dict[tuple[str, str], _TranscriptItem] = {}
+        self._transcript_lock = threading.RLock()
         self.runtime_running_callback: Callable[[], bool] | None = None
         self.state = UIState(provider=provider or "", model=model or "")
         self.reducer = UIEventReducer(self.state)
@@ -287,6 +313,8 @@ class TerminalUI:
         self._tool_line_start: dict[tuple[str, str], bool] = {}
 
     def prompt(self, message: str | None = None) -> str:
+        if self._terminal_app is not None and self._terminal_app.running:
+            return self._terminal_app.ask(message or "Input:")
         with patch_stdout(raw=True):
             if message is not None:
                 if self._question_session is None:
@@ -302,8 +330,191 @@ class TerminalUI:
                 self._echo_submitted_input(submitted)
             return response
 
+    def run(self, on_submit: Callable[[str], None]) -> None:
+        """Run the single-owner interactive terminal for the whole session.
+
+        ``on_submit`` is intentionally a queueing callback owned by the CLI;
+        it must not synchronously call the semantic router from the UI loop.
+        """
+
+        if not self._single_renderer:
+            raise RuntimeError("single-renderer mode is unavailable for this UI")
+        if self._terminal_app is None:
+            self._terminal_app = PiTerminalApplication(
+                history=InMemoryHistory(),
+                style=self.theme.prompt_style(),
+                key_bindings=_input_bindings(
+                    is_running=self._is_running,
+                    cancel=self._cancel_from_keybinding,
+                    notify=self.write,
+                ),
+                completer=self._command_completer(),
+                complete_while_typing=Condition(self._slash_completion_context),
+                auto_suggest=AutoSuggestFromHistory(),
+                enable_history_search=False,
+                reserve_space_for_menu=6,
+                transcript=self._render_transcript,
+                footer=self._footer_text,
+            )
+
+        def submit(text: str) -> None:
+            self._append_transcript(_TranscriptItem("user", text=text))
+            on_submit(text)
+
+        self._terminal_app.run(submit)
+
+    def request_exit(self) -> None:
+        if self._terminal_app is not None:
+            self._terminal_app.exit()
+
+    def _command_completer(self) -> CommandCompleter | None:
+        if self.command_registry is None:
+            return None
+        return CommandCompleter(
+            self.command_registry,
+            state_fn=lambda: (
+                self.state.session_state
+                if not self._is_running()
+                else "RUNNING_MODEL"
+            ),
+        )
+
+    def _append_transcript(self, item: _TranscriptItem) -> None:
+        with self._transcript_lock:
+            self._transcript.append(item)
+            if item.correlation_id:
+                self._transcript_by_correlation[(item.kind, item.correlation_id)] = item
+            # Keep UI memory bounded.  Tool/model source data remains in the
+            # agent history and Web trace; this is only the visible viewport.
+            if len(self._transcript) > 800:
+                removed = self._transcript[:200]
+                del self._transcript[:200]
+                for old in removed:
+                    if old.correlation_id:
+                        self._transcript_by_correlation.pop(
+                            (old.kind, old.correlation_id), None
+                        )
+        self._invalidate_prompt()
+
+    def _render_transcript(
+        self, width: int, height: int
+    ) -> list[tuple[str, str]]:
+        """Render immutable transcript state; this is the sole UI writer."""
+
+        usable_width = max(12, width)
+        with self._transcript_lock:
+            items = tuple(self._transcript)
+        lines: list[tuple[str, str]] = []
+        for item in items:
+            lines.extend(self._render_transcript_item(item, usable_width))
+        # Leave a small blank breathing area above the editor and show the
+        # newest material when the transcript exceeds the available viewport.
+        visible = max(1, height - 10)
+        return lines[-visible:] if len(lines) > visible else lines
+
+    def _render_transcript_item(
+        self, item: _TranscriptItem, width: int
+    ) -> list[tuple[str, str]]:
+        if item.kind == "user":
+            return self._background_lines(
+                item.text,
+                width,
+                background="user_bg",
+                foreground="text",
+            )
+        if item.kind == "assistant":
+            return render_markdown(item.text, width, self.theme)
+        if item.kind == "thinking":
+            return self._plain_lines(
+                f"thinking  {item.text}",
+                width,
+                f"italic {self.theme.color('thinking')}",
+            )
+        if item.kind == "tool":
+            status = item.status or "running"
+            is_running = status == "running"
+            background = (
+                "tool_pending_bg"
+                if is_running
+                else "tool_success_bg"
+                if status == "completed"
+                else "tool_error_bg"
+            )
+            accent = (
+                "accent" if is_running else "success" if status == "completed" else "warning"
+            )
+            title = f"● {item.name or 'tool'}"
+            if item.subject:
+                title += f"  {self._clip(item.subject, 180)}"
+            if item.correlation_id:
+                title += f"  [{item.correlation_id[-8:]}]"
+            detail = "Running…" if is_running else status
+            if item.exit_code is not None:
+                detail += f" · exit {item.exit_code}"
+            if item.duration_ms is not None:
+                detail += f" · {item.duration_ms}ms"
+            if item.stream_error:
+                detail += f"\n{self._clip(item.stream_error, 1_200)}"
+            rendered = self._background_lines(
+                f"{title}\n{detail}",
+                width,
+                background=background,
+                foreground="text",
+            )
+            if rendered:
+                first_style, first_text = rendered[0]
+                rendered[0] = (
+                    first_style.replace(self.theme.color("text"), self.theme.color(accent)),
+                    first_text,
+                )
+            return rendered
+        return self._plain_lines(item.text, width, item.style or self.theme.color("text"))
+
+    def _background_lines(
+        self,
+        text: str,
+        width: int,
+        *,
+        background: str,
+        foreground: str,
+    ) -> list[tuple[str, str]]:
+        style = f"bg:{self.theme.color(background)} {self.theme.color(foreground)}"
+        return [
+            (style, self._pad_line(line, width) + "\n")
+            for line in self._wrap_lines(text, width)
+        ]
+
+    def _plain_lines(
+        self, text: str, width: int, style: str
+    ) -> list[tuple[str, str]]:
+        return [(style, line + "\n") for line in self._wrap_lines(text, width)]
+
+    @staticmethod
+    def _wrap_lines(text: str, width: int) -> list[str]:
+        result: list[str] = []
+        for source_line in text.splitlines() or [""]:
+            line = ""
+            line_width = 0
+            for char in source_line:
+                char_width = max(1, get_cwidth(char))
+                if line and line_width + char_width > width:
+                    result.append(line)
+                    line = ""
+                    line_width = 0
+                line += char
+                line_width += char_width
+            result.append(line)
+        return result
+
+    @staticmethod
+    def _pad_line(line: str, width: int) -> str:
+        return line + " " * max(0, width - get_cwidth(line))
+
     def _echo_submitted_input(self, text: str) -> None:
         """Retain accepted input after PromptSession erases its editor frame."""
+        if self._single_renderer and self._terminal_app is not None:
+            self._append_transcript(_TranscriptItem("user", text=text))
+            return
         with self._render_lock:
             # A user may submit the next message while the prior model response
             # is streaming. Finish that visual line before recording the input.
@@ -332,6 +543,8 @@ class TerminalUI:
         )
 
     def prompt_secret(self, message: str) -> str:
+        if self._terminal_app is not None and self._terminal_app.running:
+            return self._terminal_app.ask(message, secret=True)
         with patch_stdout(raw=True):
             if self._secret_session is None:
                 self._secret_session = self._question_session_factory(
@@ -367,18 +580,7 @@ class TerminalUI:
                 cancel=self._cancel_from_keybinding,
                 notify=self.write,
             ),
-            "completer": (
-                CommandCompleter(
-                    self.command_registry,
-                    state_fn=lambda: (
-                        self.state.session_state
-                        if not self._is_running()
-                        else "RUNNING_MODEL"
-                    ),
-                )
-                if self.command_registry is not None
-                else None
-            ),
+            "completer": self._command_completer(),
             # Keep Pi-style command hints live only while the input is a slash
             # command. Limiting the filter also keeps the framed editor compact
             # for ordinary messages instead of reserving menu rows constantly.
@@ -409,7 +611,7 @@ class TerminalUI:
         return [("class:footer", " · ".join(details))]
 
     def _slash_completion_context(self) -> bool:
-        session = self._session
+        session = self._terminal_app or self._session
         if self.command_registry is None or session is None:
             return False
         buffer = getattr(session, "default_buffer", None)
@@ -419,6 +621,11 @@ class TerminalUI:
     def set_command_registry(self, registry: CommandRegistry) -> None:
         self.command_registry = registry
         self._session = None
+        # The persistent editor is created after commands are registered in
+        # normal CLI startup.  Recreate it only if a caller changes the
+        # registry before the UI is running.
+        if self._terminal_app is not None and not self._terminal_app.running:
+            self._terminal_app = None
 
     def set_cancel_callback(self, callback: Callable[[], None]) -> None:
         self.cancel_callback = callback
@@ -508,6 +715,11 @@ class TerminalUI:
 
     def _render_event(self, event: Any) -> None:
         if isinstance(event, _LocalMessage):
+            if self._single_renderer:
+                self._append_transcript(
+                    _TranscriptItem("notice", text=event.text, style=event.style)
+                )
+                return
             with self._render_lock:
                 self.console.print(Text(event.text, style=event.style))
             self._invalidate_prompt()
@@ -519,24 +731,120 @@ class TerminalUI:
             else 0
         )
         if dropped:
-            with self._render_lock:
-                if self._streaming_response:
-                    self.console.print()
-                self.console.print(
-                    Text(
-                        f"… 省略了 {dropped} 个流式展示事件；Agent 仍继续运行。",
+            if self._single_renderer:
+                self._append_transcript(
+                    _TranscriptItem(
+                        "notice",
+                        text=f"… 省略了 {dropped} 个流式展示事件；Agent 仍继续运行。",
                         style="yellow",
                     )
                 )
-            self._streaming_response = False
+            else:
+                with self._render_lock:
+                    if self._streaming_response:
+                        self.console.print()
+                    self.console.print(
+                        Text(
+                            f"… 省略了 {dropped} 个流式展示事件；Agent 仍继续运行。",
+                            style="yellow",
+                        )
+                    )
+                self._streaming_response = False
         update = self.reducer.apply(event)
         if update is None:
+            return
+        if self._single_renderer:
+            self._apply_transcript_update(update)
+            self._invalidate_prompt()
             return
         with self._render_lock:
             self._render_update(update)
         self._invalidate_prompt()
 
+    def _apply_transcript_update(self, update: UIUpdate) -> None:
+        """Mutate UI state only; ``PiTerminalApplication`` paints it later."""
+
+        kind = update.kind
+        correlation_id = update.correlation_id
+        if kind == "ui.message":
+            self._append_transcript(
+                _TranscriptItem(
+                    "notice",
+                    text=update.text,
+                    style=str(update.payload.get("style", "")),
+                )
+            )
+            return
+        if kind == "model.text_delta":
+            key = ("assistant", correlation_id)
+            with self._transcript_lock:
+                item = self._transcript_by_correlation.get(key)
+                if item is None:
+                    item = _TranscriptItem("assistant", correlation_id=correlation_id)
+                    self._transcript.append(item)
+                    self._transcript_by_correlation[key] = item
+                item.text += update.text
+            return
+        if kind == "model.reasoning_delta":
+            key = ("thinking", correlation_id)
+            with self._transcript_lock:
+                item = self._transcript_by_correlation.get(key)
+                if item is None:
+                    item = _TranscriptItem("thinking", correlation_id=correlation_id)
+                    self._transcript.append(item)
+                    self._transcript_by_correlation[key] = item
+                item.text += update.text
+            return
+        if kind == "tool.started":
+            arguments = update.payload.get("arguments", {})
+            subject = ""
+            if isinstance(arguments, dict):
+                subject = str(arguments.get("command") or arguments.get("path") or "")
+            item = _TranscriptItem(
+                "tool",
+                correlation_id=correlation_id,
+                name=str(update.payload.get("name", "tool")),
+                subject=subject,
+                status="running",
+            )
+            self._append_transcript(item)
+            return
+        if kind == "tool.output_delta" and update.stream == "stderr":
+            with self._transcript_lock:
+                item = self._transcript_by_correlation.get(("tool", correlation_id))
+                if item is not None:
+                    item.stream_error = (item.stream_error + update.text)[-20_000:]
+            return
+        if kind == "tool.finished":
+            with self._transcript_lock:
+                item = self._transcript_by_correlation.get(("tool", correlation_id))
+                if item is None:
+                    item = _TranscriptItem("tool", correlation_id=correlation_id)
+                    self._transcript.append(item)
+                    self._transcript_by_correlation[("tool", correlation_id)] = item
+                item.status = str(update.payload.get("status", "completed"))
+                raw_exit_code = update.payload.get("exit_code")
+                item.exit_code = raw_exit_code if isinstance(raw_exit_code, int) else None
+                raw_duration = update.payload.get("duration_ms")
+                item.duration_ms = raw_duration if isinstance(raw_duration, int) else None
+            return
+        if kind == "task.cancelled":
+            self._append_transcript(
+                _TranscriptItem("notice", text="任务已取消；已经完成的文件修改不会自动撤销。", style="yellow")
+            )
+            return
+        if kind == "task.failed":
+            self._append_transcript(
+                _TranscriptItem(
+                    "notice",
+                    text=f"Error: {update.payload.get('error', 'Task failed')}",
+                    style=f"bold {self.theme.color('error')}",
+                )
+            )
+
     def _invalidate_prompt(self) -> None:
+        if self._terminal_app is not None:
+            self._terminal_app.invalidate()
         app = getattr(self._session, "app", None)
         invalidate = getattr(app, "invalidate", None)
         if callable(invalidate):
@@ -647,10 +955,29 @@ class TerminalUI:
             self._event_queue.join()
 
     def show_assistant(self, response: str) -> None:
+        if self._single_renderer:
+            self._append_transcript(_TranscriptItem("assistant", text=response))
+            return
         self.console.print()
         self.console.print(Markdown(response))
 
     def show_welcome(self) -> None:
+        if self._single_renderer:
+            details: list[str] = []
+            if self.project_root is not None:
+                details.append(str(self.project_root))
+            if self.provider and self.model:
+                details.append(f"{self.provider}/{self.model}")
+            if self.dashboard_url:
+                details.append(f"trace: {self.dashboard_url}")
+            self._append_transcript(
+                _TranscriptItem("notice", text="laoHuangCode  /help for commands", style=f"bold {self.theme.color('accent')}")
+            )
+            if details:
+                self._append_transcript(
+                    _TranscriptItem("notice", text=" · ".join(details), style=self.theme.color("dim"))
+                )
+            return
         heading = Text("laoHuangCode", style=f"bold {self.theme.color('accent')}")
         heading.append("  ", style="")
         heading.append("/help for commands", style=self.theme.color("dim"))
