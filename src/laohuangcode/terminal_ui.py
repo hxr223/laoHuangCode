@@ -288,7 +288,27 @@ class TerminalUI:
                 )
             if self._session is None:
                 self._session = self._create_session()
-            return self._session.prompt()
+            response = self._session.prompt()
+            submitted = response.strip()
+            if submitted:
+                self._echo_submitted_input(submitted)
+            return response
+
+    def _echo_submitted_input(self, text: str) -> None:
+        """Retain accepted input after PromptSession erases its editor frame."""
+        lines = text.splitlines() or [text]
+        echo = Text("❯ ", style="bold ansicyan")
+        echo.append(lines[0])
+        for line in lines[1:]:
+            echo.append("\n  ", style="dim")
+            echo.append(line)
+        with self._render_lock:
+            # A user may submit the next message while the prior model response
+            # is streaming. Finish that visual line before recording the input.
+            if self._streaming_response:
+                self.console.print()
+                self._streaming_response = False
+            self.console.print(echo)
 
     def _create_question_session(self) -> Any:
         return self._session_factory(
@@ -315,6 +335,10 @@ class TerminalUI:
             message=self._input_prompt,
             multiline=True,
             show_frame=True,
+            # Keep the frame as an affordance while typing, then erase it on
+            # submit. ``_echo_submitted_input`` records the accepted message
+            # as ordinary transcript text instead of a stack of empty frames.
+            erase_when_done=True,
             prompt_continuation=HTML("<input-padding>  </input-padding>"),
             history=InMemoryHistory(),
             # PromptSession disables complete_while_typing whenever history

@@ -238,6 +238,7 @@ class TerminalUITests(unittest.TestCase):
 
     def test_prompt_uses_multiline_editing_and_session_history(self):
         options = {}
+        stream = io.StringIO()
 
         class FakeSession:
             def prompt(self):
@@ -248,7 +249,7 @@ class TerminalUITests(unittest.TestCase):
             return FakeSession()
 
         ui = TerminalUI(
-            console=Console(file=io.StringIO(), force_terminal=False),
+            console=Console(file=stream, force_terminal=False),
             session_factory=session_factory,
         )
 
@@ -257,6 +258,9 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(value, "first line\nsecond line")
         self.assertTrue(options["multiline"])
         self.assertTrue(options["show_frame"])
+        self.assertTrue(options["erase_when_done"])
+        self.assertIn("❯ first line", stream.getvalue())
+        self.assertIn("second line", stream.getvalue())
         self.assertFalse(options["enable_history_search"])
         self.assertIn("❯", str(options["message"]()))
         self.assertNotIn("bottom_toolbar", options)
