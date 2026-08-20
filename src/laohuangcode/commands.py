@@ -36,6 +36,15 @@ class CommandSpec:
     argument_completer: ArgumentCompleter | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class CompletionItem:
+    """A completion independent of any particular input widget."""
+
+    value: str
+    description: str
+    start: int
+
+
 class CommandRegistry:
     """Store slash commands without coupling prompt rendering to handlers."""
 
@@ -58,6 +67,47 @@ class CommandRegistry:
     def suggest(self, name: str) -> str | None:
         matches = difflib.get_close_matches(name, self._specs, n=1, cutoff=0.55)
         return matches[0] if matches else None
+
+    def complete(self, text: str, *, state: str) -> tuple[CompletionItem, ...]:
+        """Return slash-command and argument candidates without prompt_toolkit."""
+        if not text.startswith("/") or "\n" in text:
+            return ()
+
+        if " " not in text:
+            return tuple(
+                CompletionItem(spec.name, spec.description, -len(text))
+                for spec in self.all()
+                if spec.name.startswith(text) and self._available(spec, state)
+            )
+
+        command_name, raw_arguments = text.split(" ", 1)
+        spec = self.get(command_name)
+        if spec is None or spec.argument_completer is None:
+            return ()
+        completed = tuple(raw_arguments.split())
+        fragment = "" if raw_arguments.endswith(" ") else (completed[-1] if completed else "")
+        fixed = completed if raw_arguments.endswith(" ") else completed[:-1]
+        return tuple(
+            CompletionItem(value, description, -len(fragment))
+            for value, description in spec.argument_completer(fixed)
+            if value.startswith(fragment) and self._argument_available(spec, value, state)
+        )
+
+    @staticmethod
+    def _available(spec: CommandSpec, state: str) -> bool:
+        return not (
+            spec.allowed_states
+            and state not in spec.allowed_states
+            and spec.name != "/model"
+        )
+
+    @staticmethod
+    def _argument_available(spec: CommandSpec, value: str, state: str) -> bool:
+        return not (
+            spec.allowed_states
+            and state not in spec.allowed_states
+            and not (spec.name == "/model" and value == "current")
+        )
 
     def dispatch(self, command: str, *, state: str | None = None) -> bool:
         try:
@@ -89,48 +139,12 @@ class CommandCompleter(Completer):
     def get_completions(self, document: Any, complete_event: Any) -> Iterable[Completion]:
         del complete_event
         text = document.text_before_cursor
-        if not text.startswith("/") or "\n" in text:
-            return
-
-        if " " not in text:
-            prefix = text
-            for spec in self.registry.all():
-                state = self.state_fn()
-                unavailable = (
-                    bool(spec.allowed_states)
-                    and state not in spec.allowed_states
-                    and spec.name != "/model"
-                )
-                if unavailable:
-                    continue
-                if spec.name.startswith(prefix):
-                    yield Completion(
-                        spec.name,
-                        start_position=-len(prefix),
-                        display_meta=spec.description,
-                    )
-            return
-
-        command_name, raw_arguments = text.split(" ", 1)
-        spec = self.registry.get(command_name)
-        if spec is None or spec.argument_completer is None:
-            return
-        completed = tuple(raw_arguments.split())
-        fragment = "" if raw_arguments.endswith(" ") else (completed[-1] if completed else "")
-        fixed = completed if raw_arguments.endswith(" ") else completed[:-1]
-        for value, description in spec.argument_completer(fixed):
-            if (
-                spec.allowed_states
-                and self.state_fn() not in spec.allowed_states
-                and not (spec.name == "/model" and value == "current")
-            ):
-                continue
-            if value.startswith(fragment):
-                yield Completion(
-                    value,
-                    start_position=-len(fragment),
-                    display_meta=description,
-                )
+        for item in self.registry.complete(text, state=self.state_fn()):
+            yield Completion(
+                item.value,
+                start_position=item.start,
+                display_meta=item.description,
+            )
 
 
 def _model_completions(arguments: tuple[str, ...]) -> Iterable[tuple[str, str]]:
