@@ -87,6 +87,7 @@ class ReplTests(unittest.TestCase):
             def __init__(self):
                 self.messages = []
                 self.exit_requests = 0
+                self.render_error = None
 
             def start_event_renderer(self):
                 return None
@@ -107,6 +108,9 @@ class ReplTests(unittest.TestCase):
             def stop_event_renderer(self):
                 return None
 
+            def close(self):
+                self.messages.append("closed")
+
             def show_goodbye(self):
                 self.messages.append("goodbye")
 
@@ -118,7 +122,144 @@ class ReplTests(unittest.TestCase):
 
         self.assertTrue(run_session_repl(session, ui=ui))
         self.assertEqual(ui.exit_requests, 1)
-        self.assertIn("goodbye", ui.messages)
+        self.assertIn("closed", ui.messages)
+
+    def test_persistent_repl_sends_two_inputs_then_exits_cleanly(self):
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = None
+
+            def __init__(self):
+                self.closed = False
+
+            def show_welcome(self):
+                return None
+
+            def run(self, submit):
+                for text in ("first", "second", "/exit"):
+                    submit(text)
+
+            def request_exit(self):
+                return None
+
+            def flush_event_renderer(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+            def show_error(self, message):
+                raise AssertionError(message)
+
+            def show_goodbye(self):
+                return None
+
+        session = AgentSession(lambda _content: "done")
+        ui = FakePiLoopUI()
+
+        clean = run_session_repl(session, ui=ui)
+
+        self.assertTrue(clean)
+        self.assertTrue(ui.closed)
+
+    def test_persistent_repl_returns_false_for_terminal_write_failure(self):
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = BrokenPipeError("closed")
+
+            def show_welcome(self):
+                return None
+
+            def run(self, submit):
+                return None
+
+            def flush_event_renderer(self):
+                return None
+
+            def close(self):
+                return None
+
+            def show_goodbye(self):
+                raise AssertionError("goodbye should not render on loop failure")
+
+            def show_error(self, _message):
+                return None
+
+        session = AgentSession(lambda _content: "done")
+
+        self.assertFalse(run_session_repl(session, ui=FakePiLoopUI()))
+
+    def test_persistent_exit_does_not_wait_for_slow_prior_routing(self):
+        class FakeSession:
+            def __init__(self):
+                self.release = threading.Event()
+                self.event_bus = SimpleNamespace(flush=lambda: None)
+                self.closed = False
+
+            def submit_input(self, text):
+                if text == "slow":
+                    self.release.wait(5)
+                    if self.closed:
+                        raise RuntimeError("event bus is closed")
+                return SimpleNamespace(
+                    task_id="task-1",
+                    queued=False,
+                    rejected=False,
+                    reason="",
+                )
+
+            def close(self, *, wait=True, timeout=None):
+                del wait, timeout
+                self.closed = True
+                self.release.set()
+                return True
+
+            def queue_status(self):
+                return {"pending": 0, "held": 0}
+
+            def publish_notice(self, *_args, **_kwargs):
+                return None
+
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = None
+
+            def run(self, submit):
+                submit("slow")
+                submit("/exit")
+
+            def show_welcome(self):
+                return None
+
+            def request_exit(self):
+                return None
+
+            def flush_event_renderer(self):
+                return None
+
+            def close(self):
+                return None
+
+            def show_error(self, message):
+                raise AssertionError(message)
+
+        session = FakeSession()
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(run_session_repl(session, ui=FakePiLoopUI()))
+        )
+
+        worker.start()
+        worker.join(0.5)
+        closed_before_cleanup = session.closed
+        if worker.is_alive():
+            session.release.set()
+            worker.join(1)
+        session.release.set()
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertFalse(closed_before_cleanup)
 
     def test_plain_repl_uses_agent_session_and_waits_for_pipe_eof(self):
         calls = []

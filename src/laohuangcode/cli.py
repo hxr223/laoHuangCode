@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from queue import Queue
 import sys
-from threading import Thread
+from threading import Event, Thread
 from typing import Any
 
 from . import __version__
@@ -108,9 +108,9 @@ def run_session_repl(
 ) -> bool:
     """Keep accepting input while AgentSession executes in the background."""
 
-    # The production TerminalUI owns a persistent prompt_toolkit application.
-    # Feed it through a coordinator queue so its UI loop never blocks on the
-    # router's optional small-model classification request.
+    # The production TerminalUI owns a raw terminal loop. Feed it through a
+    # coordinator queue so redraws never block on semantic routing or command
+    # handlers.
     if callable(getattr(ui, "run", None)):
         return _run_persistent_session_repl(
             session, command_handler=command_handler, ui=ui
@@ -193,9 +193,12 @@ def _run_persistent_session_repl(
 ) -> bool:
     """Drive a single-renderer terminal without writing outside its layout."""
 
-    ui.start_event_renderer()
     ui.show_welcome()
     submitted: Queue[str | None] = Queue()
+    stopping = Event()
+    drained = Event()
+    drained.set()
+    coordinator_errors: list[BaseException] = []
 
     def handle_input(user_input: str) -> bool:
         if user_input == "/exit":
@@ -242,40 +245,60 @@ def _run_persistent_session_repl(
         while True:
             user_input = submitted.get()
             try:
-                if user_input is None:
+                if user_input is None or stopping.is_set():
                     return
                 handle_input(user_input)
+            except BaseException as error:
+                coordinator_errors.append(error)
             finally:
                 submitted.task_done()
+                if submitted.unfinished_tasks == 0:
+                    drained.set()
 
     coordinator = Thread(
         target=coordinate, name="laohuang-input-coordinator", daemon=True
     )
     coordinator.start()
     clean_shutdown = False
+    coordinator_alive = False
     try:
         def enqueue(user_input: str) -> None:
-            submitted.put(user_input)
             # Exit is a local UI operation and should not wait behind a slow
             # semantic classification of an earlier queued message.
             if user_input == "/exit":
+                try:
+                    session.submit_input(user_input)
+                except (OverflowError, RuntimeError, ValueError) as error:
+                    session.publish_notice(f"Error: {error}", style="bold red")
                 ui.request_exit()
+                return
+            drained.clear()
+            submitted.put(user_input)
 
         ui.run(enqueue)
     finally:
+        queue_drained = drained.wait(0.05)
+        stopping.set()
         submitted.put(None)
-        submitted.join()
-        coordinator.join(timeout=2)
-        clean_shutdown = session.close(wait=True, timeout=10)
+        coordinator.join(timeout=2 if queue_drained else 0.05)
+        coordinator_alive = coordinator.is_alive()
+        if coordinator_alive or coordinator_errors:
+            clean_shutdown = False
+        else:
+            clean_shutdown = session.close(wait=True, timeout=10)
         if clean_shutdown:
             session.event_bus.flush()
-            ui.flush_event_renderer()
-        ui.stop_event_renderer()
-    if clean_shutdown:
-        ui.show_goodbye()
-    else:
+            flush_renderer = getattr(ui, "flush_event_renderer", None)
+            if callable(flush_renderer):
+                flush_renderer()
+        close = getattr(ui, "close", None)
+        if callable(close):
+            close()
+    render_error = getattr(ui, "render_error", None)
+    clean = clean_shutdown and render_error is None
+    if not clean and render_error is None and not coordinator_alive:
         ui.show_error("Task worker did not stop before the shutdown timeout.")
-    return clean_shutdown
+    return clean
 
 
 def run_plain_session_repl(
