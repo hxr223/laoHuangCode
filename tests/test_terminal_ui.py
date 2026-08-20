@@ -55,7 +55,8 @@ class TerminalUITests(unittest.TestCase):
         terminal.clear_writes()
         ui.publish_event(event("model.response_committed", "r1"))
         ui.drain_loop()
-        self.assertIn("first answer", terminal.writes())
+        self.assertNotIn("first answer", terminal.writes())
+        self.assertNotIn("\r\n", terminal.writes())
 
         ui.feed_input_bytes(b"two\r")
         ui.drain_loop()
