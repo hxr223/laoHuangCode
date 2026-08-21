@@ -35,6 +35,10 @@ import type {
   ToolSpec,
 } from "./tools.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
+import {
+  loadBaselineInstructions,
+  type ProjectInstructionState,
+} from "./project-instructions.ts";
 
 export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
 Do not call any tools. Give the user the best concise answer possible from the
@@ -146,6 +150,13 @@ export interface CodingAgentOptions {
   onAgentEvent?: AgentEventCallback | null;
   provider?: string | null;
   toolExecution?: ToolExecutionMode;
+  /**
+   * Project root used only for project-instruction loading (both this and
+   * `startupCwd` must be set; omit both to disable instruction injection).
+   */
+  projectRoot?: string | null;
+  /** Startup cwd for project-instruction discovery. */
+  startupCwd?: string | null;
 }
 
 /** Execution context handed to every tool call in a batch. */
@@ -185,6 +196,10 @@ export class CodingAgent {
   messages: Array<Record<string, unknown>>;
   private readonly onToolEvent: ToolEventCallback | null;
   private readonly onAgentEvent: AgentEventCallback | null;
+  private readonly instructionRoot: string | null;
+  private readonly startupCwd: string | null;
+  private baselineInstructionsLoaded = false;
+  private instructionState: ProjectInstructionState | null = null;
   private turn = 0;
   private activeContext: AgentContext | null = null;
   private activeRequestId: string | null = null;
@@ -209,12 +224,18 @@ export class CodingAgent {
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider ?? null;
     this.toolExecution = options.toolExecution ?? "parallel";
+    this.instructionRoot = options.projectRoot ?? null;
+    this.startupCwd = options.startupCwd ?? null;
     this.messages = [{ role: "system", content: buildSystemPrompt(this.tools) }];
   }
 
+  /** Bookkeeping for loaded project instructions (never model-visible). */
+  get projectInstructionState(): ProjectInstructionState | null {
+    return this.instructionState;
+  }
+
   /** Swap the model client mid-conversation, keeping portable history. */
-  switchModel(options: {
-    client: unknown;
+  switchModel(options: {    client: unknown;
     model: string;
     provider: string;
   }): void {
@@ -274,6 +295,7 @@ export class CodingAgent {
         throw new AgentCancelled("cancelled before user input commit");
       }
       this.emit("user_message", { content: userInput });
+      this.injectBaselineInstructions(cancelToken);
 
       for (;;) {
         raiseIfCancelled(cancelToken);
@@ -776,6 +798,32 @@ export class CodingAgent {
   }
 
   // --- History commits ---------------------------------------------------------
+
+  /**
+   * Append the rendered baseline project instructions once per session,
+   * right after the first direct user message and before the first model
+   * request. Append-only: the system prompt and committed history are never
+   * rebuilt, and nothing is appended when no instruction files exist.
+   */
+  private injectBaselineInstructions(cancelToken: CancelToken | null): void {
+    if (this.baselineInstructionsLoaded) {
+      return;
+    }
+    this.baselineInstructionsLoaded = true;
+    if (this.instructionRoot === null || this.startupCwd === null) {
+      return;
+    }
+    const baseline = loadBaselineInstructions(
+      this.instructionRoot,
+      this.startupCwd,
+    );
+    this.instructionState = baseline.state;
+    if (baseline.rendered === "") {
+      return;
+    }
+    raiseIfCancelled(cancelToken);
+    this.messages.push({ role: "user", content: baseline.rendered });
+  }
 
   private commitContextMessage(
     commit: (append: () => void, rollback: () => void) => boolean,
