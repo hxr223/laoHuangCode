@@ -1,18 +1,25 @@
 # laoHuangCode
 
-一个用于学习和验证的最小 coding agent。核心只使用 Python、官方
-`openai` SDK 和 Chat Completions 原生工具调用，不依赖 Agent 框架。
+一个最小的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
+Chat Completions 原生工具调用。
 
 当前提供四个工具：`read`、`write`、`edit`、`bash`。所有工具均直接执行，当前原型
 暂不提供权限确认。
 
-同一次模型响应中的多个工具调用默认并发执行。实时事件按工具实际完成顺序发出，
-回传模型的 `tool` 消息保持原始调用顺序。同一文件上的
-`write` 和 `edit` 会自动排队，不同文件仍可并发处理。
+同一次模型响应中的只读工具与多个 Bash 调用默认并发执行。实时事件按工具实际完成
+顺序发出，回传模型的 `tool` 消息保持原始调用顺序。只要一个批次包含 `write` 或
+`edit`，Agent 会保守地串行执行整个批次，避免读写或多次修改之间出现竞态。
+
+交互终端采用后台 AgentSession：模型回复和 Bash 的 stderr/状态会实时显示，stdout
+会保留在工具结果中但默认不刷到终端，
+Agent 运行时仍可继续输入。后续输入由事件路由器放入 pending/held 队列，并在安全点
+成批交给模型；当前任务可以通过 `/cancel` 或运行中的 `Ctrl+C` 协作式取消。
+连续重复的工具调用和 Token、耗时预算会触发安全保护；保护触发后
+Agent 会禁用工具并尝试基于已有信息完成一次最终回答。
 
 ## 快速开始
 
-需要 Node.js 18+ 和 Python 3.11+。面向普通用户的安装方式：
+需要 Node.js 18+。面向普通用户的安装方式：
 
 ```bash
 npm install --global laohuang
@@ -22,17 +29,14 @@ laohuang
 首次启动会在终端中依次选择 DeepSeek 或 OpenAI、隐藏输入 API key、选择模型，
 不需要设置环境变量。配置完成后，进入任意项目目录直接运行 `laohuang`。
 
-npm 包只是一个很薄的启动器：第一次运行时，它会在用户缓存目录创建隔离的
-Python 环境，并安装 npm 包内置的同版本 `laohuangcode` wheel。Agent 本身没有
-Node.js 重复实现，你也不需要 PyPI 账号。
-
-开发仓库也可以直接安装：
+从源码运行：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-laohuang --version
+git clone https://github.com/hxr223/laoHuangCode.git
+cd laoHuangCode
+npm ci
+npm run build
+node dist/cli.js
 ```
 
 ## 模型配置
@@ -54,6 +58,11 @@ API key 使用隐藏输入，保存在独立的
 /login                              交互选择供应商并登录
 /login deepseek                     输入或覆盖 DeepSeek API key
 /logout openai                      删除保存的 OpenAI 凭据
+/cancel                             取消当前运行任务
+/queue                              查看 pending/held/dead-letter 与估算 token
+/queue resume                       恢复取消后保留的消息
+/queue clear                        清空 pending/held/dead-letter
+/clear                              清空当前对话上下文
 ```
 
 认证和模型选择相互独立：`/login`、`/logout` 管理凭据，`/model` 只切换模型。
@@ -81,16 +90,30 @@ laohuang
 输入任务，使用 `/help` 查看命令，使用 `/exit` 或 `Ctrl+D` 退出。通过 `/model`
 切换供应商或模型时会保留当前对话上下文。
 
-交互终端使用 `❯` 作为输入提示符，并支持多行编辑和当前会话的输入历史：
+交互终端使用简洁的上下边框标识输入区域，不显示常驻状态或快捷键底栏。输入 `/` 会
+立即显示命令、说明和参数补全；`Tab`/`Enter` 可接受当前补全，`/model` 会按
+“供应商 → 模型”分层补全。终端还支持多行
+编辑和当前会话输入历史：
 
 - `Enter`：发送任务。
 - `Alt+Enter`：插入换行。
 - `↑` / `↓`：浏览历史输入。
+- Agent 运行中按 `Ctrl+C`：取消当前任务。
+- Agent 空闲时按 `Ctrl+C`：清空输入；500ms 内再按一次：退出。
 - `Ctrl+D`：退出。
 
-模型回复会按 Markdown 渲染；思考过程显示状态动画，工具调用显示为紧凑结果卡片，
-完整的逐轮事件仍可通过 Web 日志面板查看。输出被重定向或由程序调用 CLI 时，会自动
-回退到稳定的纯文本格式。
+模型文本和 Bash stderr/状态采用 append-only inline 流式展示，工具输出按 tool call 分组；
+被取消或截断的半条模型回复会保留在屏幕上并标记“未加入上下文”。完整的逐轮事件仍可
+通过 Web 日志面板查看。输出被重定向或由程序调用 CLI 时，会自动回退到稳定的纯文本
+格式。
+
+### 验证交互终端
+
+1. 在真实 TTY 中运行 `laohuang`。
+2. 发送第一个问题并等待回答完成。
+3. 发送第二个问题；向上滚动确认第一个问题和回答仍保留且未被改写。
+4. 输入 `/` 和 `/e`，确认候选只占可见行数，`Tab` 可接受 `/exit`，继续编辑会移除补全层。
+5. 任务运行中按 `Ctrl+C` 取消；空闲且编辑器为空时按 `Ctrl+D` 退出。
 
 当前版本不会在工具执行前请求确认。请只在你信任的项目和环境中运行。
 
@@ -107,23 +130,23 @@ laohuang --web --web-port 9000
 ## 开发与发布检查
 
 ```bash
-python -m unittest discover -s tests -v
-npm --prefix npm test
-scripts/release-check.sh
+npm ci
+npm run build
+npm test
 ```
 
-`release-check.sh` 会检查 Python/npm 版本一致性、运行两套测试、把 Python wheel
-打进 npm 包，并在临时环境验证直接 Python 入口和 npm-only 安装。发布设计见
-[npm 分发说明](docs/npm-distribution.md) 和 [发布流程](docs/publishing.md)。
+`npm run build` 通过 `tsc` 把 `src/` 编译到 `dist/`；`npm test` 使用 Node 自带的
+`node:test` 运行 `test/` 下的离线测试套件，不需要网络访问。发布流程见
+[发布流程](docs/publishing.md) 和 [npm 分发说明](docs/npm-distribution.md)。
 
 ## 安全边界
 
 文件工具会限制在启动目录内并阻止符号链接逃逸；API key 不通过环境变量传递给
-Bash。但 `bash` **没有操作系统级沙箱**，获准后仍能访问项目外文件、网络和其他
+Bash。但 `bash` **没有操作系统级沙箱**，执行后仍能访问项目外文件、网络和其他
 系统资源。公开使用前请阅读 [安全模型](docs/security.md)。
 
-架构图见 [docs/architecture.md](docs/architecture.md)，初始设计见
-[最小 Agent 设计](docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md)。
+架构说明见 [docs/architecture.md](docs/architecture.md)；设计文档归档在
+[docs/superpowers/specs/](docs/superpowers/specs/)。
 
 ## License
 
