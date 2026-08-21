@@ -1,7 +1,8 @@
 /**
  * The model/tool loop at the heart of laoHuangCode.
  *
- * One user turn streams model completions through model-stream.ts, commits
+ * One user turn streams model completions through the provider-neutral
+ * adapter boundary (model-adapter.ts), commits
  * only fully validated attempts to history (atomically, via the owning
  * session's commit hooks when present), executes tool-call batches
  * (read-only tools and multiple bash calls concurrently; any write/edit or
@@ -22,12 +23,17 @@ import {
   type EventBus,
 } from "./events.ts";
 import {
-  ChatCompletionStreamer,
   ModelStreamCancelled,
   ModelStreamError,
   type AssembledToolCall,
-  type ChatCompletionsEndpoint,
 } from "./model-stream.ts";
+import {
+  defaultAdapterRegistry,
+  modelErrorKind,
+  portableMessage,
+  type ChatClientLike,
+  type ModelAdapter,
+} from "./model-adapter.ts";
 import { touchedPathOf } from "./tools.ts";
 import type {
   ToolDefinition,
@@ -81,10 +87,7 @@ export type ToolEventCallback = (
   result: ToolResult,
 ) => void;
 
-/** Structural view of `client.chat` from the openai SDK (or a fake). */
-export interface ChatClientLike {
-  chat: { completions: ChatCompletionsEndpoint };
-}
+export type { ChatClientLike } from "./model-adapter.ts";
 
 /** Structural minimum of ToolRegistry (tools.ts) the agent relies on. */
 export interface AgentToolRegistry {
@@ -193,6 +196,8 @@ export class CodingAgent {
   client: ChatClientLike;
   model: string;
   provider: string | null;
+  /** Provider-neutral model access; resolved from `provider`. */
+  private adapter: ModelAdapter;
   readonly tools: AgentToolRegistry;
   readonly maxTotalTokens: number;
   readonly maxElapsedSeconds: number;
@@ -229,6 +234,7 @@ export class CodingAgent {
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider ?? null;
+    this.adapter = defaultAdapterRegistry.resolve(this.provider);
     this.toolExecution = options.toolExecution ?? "parallel";
     // Canonicalize so instruction scopes line up with the registry's
     // realpath-resolved touched paths even when the cwd contains symlinks.
@@ -255,6 +261,7 @@ export class CodingAgent {
     this.client = options.client as ChatClientLike;
     this.model = options.model;
     this.provider = options.provider;
+    this.adapter = defaultAdapterRegistry.resolve(this.provider);
     this.emit("model_switched", {
       provider: options.provider,
       model: options.model,
@@ -365,9 +372,7 @@ export class CodingAgent {
           const isRequestActive =
             options.isRequestActive ??
             ((requestId: string) => this.activeRequestId === requestId);
-          result = await new ChatCompletionStreamer(
-            this.client.chat.completions,
-          ).complete({
+          result = await this.adapter.complete(this.client, {
             model: this.model,
             messages: requestMessages,
             tools: this.tools.definitions as unknown as Array<
@@ -416,7 +421,10 @@ export class CodingAgent {
             });
             this.emit("agent_guard_failed", payload);
             let message = guardErrorMessage(payload);
-            if (this.provider && isAuthenticationError(error)) {
+            if (
+              this.provider &&
+              modelErrorKind(error) === "authentication"
+            ) {
               message +=
                 ` Authentication failed for ${this.provider}. ` +
                 `Run /login ${this.provider} to update your API key.`;
@@ -424,7 +432,7 @@ export class CodingAgent {
             throw new AgentError(message, { cause: error });
           }
           let message = `Model request failed: ${errorMessage(error)}`;
-          if (this.provider && isAuthenticationError(error)) {
+          if (this.provider && modelErrorKind(error) === "authentication") {
             message +=
               `\nAuthentication failed for ${this.provider}. ` +
               `Run /login ${this.provider} to update your API key.`;
@@ -1047,59 +1055,6 @@ function cancelledToolResult(token: CancelToken | null): ToolResult {
     status: "cancelled",
     error: token?.reason || "cancelled",
   };
-}
-
-/** Strip provider-specific fields (e.g. reasoning_content) on model switch. */
-function portableMessage(
-  message: Record<string, unknown>,
-): Record<string, unknown> {
-  const role = message["role"];
-  const portable: Record<string, unknown> = { role };
-  if ("content" in message) {
-    portable["content"] = message["content"];
-  }
-  const toolCalls = message["tool_calls"];
-  if (role === "assistant" && Array.isArray(toolCalls) && toolCalls.length > 0) {
-    portable["tool_calls"] = toolCalls.map((call) => {
-      const record = call as Record<string, unknown>;
-      const fn = (record["function"] ?? {}) as Record<string, unknown>;
-      return {
-        id: record["id"],
-        type: record["type"] ?? "function",
-        function: { name: fn["name"], arguments: fn["arguments"] },
-      };
-    });
-  }
-  if (role === "tool") {
-    portable["tool_call_id"] = message["tool_call_id"];
-  }
-  return portable;
-}
-
-function isAuthenticationError(error: unknown): boolean {
-  if (
-    error === null ||
-    error === undefined ||
-    (typeof error !== "object" && typeof error !== "function")
-  ) {
-    return false;
-  }
-  const record = error as Record<string, unknown>;
-  let statusCode = record["status_code"];
-  if (statusCode === null || statusCode === undefined) {
-    const response = record["response"];
-    if (response !== null && typeof response === "object") {
-      statusCode = (response as Record<string, unknown>)["status_code"];
-    }
-  }
-  if (statusCode === null || statusCode === undefined) {
-    // The openai npm SDK exposes the HTTP status as `status`.
-    statusCode = record["status"];
-  }
-  if (statusCode === 401 || record["name"] === "AuthenticationError") {
-    return true;
-  }
-  return isAuthenticationError(record["cause"]);
 }
 
 function usageTotalTokens(usage: unknown): number {

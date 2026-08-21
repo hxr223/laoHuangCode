@@ -452,6 +452,8 @@ export interface CompleteOptions {
   onDelta?: DeltaCallback | null;
   onRequestOpened?: (() => boolean | void) | null;
   maxPreDeltaRetries?: number;
+  /** Provider-specific extra request fields, merged into the wire request. */
+  extraBody?: Record<string, unknown> | null;
 }
 
 /** Create and assemble one OpenAI-compatible streaming completion. */
@@ -478,6 +480,9 @@ export class ChatCompletionStreamer {
     };
     if (options.toolChoice !== null && options.toolChoice !== undefined) {
       request["tool_choice"] = options.toolChoice;
+    }
+    if (options.extraBody) {
+      Object.assign(request, options.extraBody);
     }
 
     let lastError: unknown = null;
