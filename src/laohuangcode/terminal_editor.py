@@ -646,7 +646,8 @@ class EditorState:
         if action.kind is InputActionKind.SUBMIT:
             if self.completion_visible:
                 self._accept_completion()
-                return EditorEffect()
+                if not self.text.startswith("/"):
+                    return EditorEffect()
             return self._submit()
         if action.kind is InputActionKind.NEWLINE:
             self._insert("\n")

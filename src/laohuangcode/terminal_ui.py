@@ -415,6 +415,8 @@ class InteractiveTerminalLoop:
 
     def drain(self) -> None:
         """Synchronously consume queued work; this is also the test hook."""
+        if self._closed:
+            return
         self._drain_wake()
         changed = self._drain_work()
         if changed or self._needs_render:
