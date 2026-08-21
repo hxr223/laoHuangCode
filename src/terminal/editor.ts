@@ -947,6 +947,9 @@ export interface RenderOptions {
 
 /** Text, history, and command-completion state for the active editor. */
 export class EditorState {
+  /** Window for the Pi-style double-Ctrl+C-to-exit gesture, in milliseconds. */
+  static readonly DOUBLE_CANCEL_EXIT_MS = 500;
+
   text = "";
   cursor = 0;
   history: string[] = [];
@@ -954,6 +957,7 @@ export class EditorState {
   private historyDraft = "";
   completions: CompletionItem[] = [];
   selectedCompletion: number | null = null;
+  private lastCancelAt: number | null = null;
 
   get completionVisible(): boolean {
     return this.completions.length > 0;
@@ -1048,8 +1052,21 @@ export class EditorState {
 
   private cancelOrClear(runtimeActive: boolean): EditorEffect {
     if (runtimeActive) {
+      // Cancelling a task must not arm (or consume) the exit window.
+      this.lastCancelAt = null;
       return editorEffect({ cancelRequested: true });
     }
+    // Pi semantics (pi-coding-agent handleCtrlC): a second idle Ctrl+C within
+    // the window exits; the first one just clears the editor.
+    const now = performance.now();
+    if (
+      this.lastCancelAt !== null &&
+      now - this.lastCancelAt <= EditorState.DOUBLE_CANCEL_EXIT_MS
+    ) {
+      this.lastCancelAt = null;
+      return editorEffect({ exitRequested: true });
+    }
+    this.lastCancelAt = now;
     this.text = "";
     this.cursor = 0;
     this.historyIndex = null;

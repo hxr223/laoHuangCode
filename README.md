@@ -99,7 +99,7 @@ laohuang
 - `Alt+Enter`：插入换行。
 - `↑` / `↓`：浏览历史输入。
 - Agent 运行中按 `Ctrl+C`：取消当前任务。
-- Agent 空闲且输入非空时按 `Ctrl+C`：清空输入。
+- Agent 空闲时按 `Ctrl+C`：清空输入；500ms 内再按一次：退出。
 - `Ctrl+D`：退出。
 
 模型文本和 Bash stderr/状态采用 append-only inline 流式展示，工具输出按 tool call 分组；
