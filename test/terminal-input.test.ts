@@ -121,7 +121,7 @@ test("tab accepts the first slash completion", async () => {
   assert.equal(await result, "/exit");
 });
 
-test("enter accepts a visible completion before submitting", async () => {
+test("enter accepts a visible slash completion and submits", async () => {
   const { session, io } = createSession({
     completer: (text) =>
       text === "/"

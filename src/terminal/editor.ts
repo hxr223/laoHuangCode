@@ -973,9 +973,11 @@ export class EditorState {
     { runtimeActive }: { runtimeActive: boolean },
   ): EditorEffect {
     if (action.kind === InputActionKind.Submit) {
-      if (this.completionVisible && !this.acceptLeavesTextUnchanged()) {
+      if (this.completionVisible) {
         this.acceptCompletion();
-        return editorEffect();
+        if (!this.text.startsWith("/")) {
+          return editorEffect();
+        }
       }
       return this.submit();
     }
@@ -1136,26 +1138,6 @@ export class EditorState {
     this.text = this.text.slice(0, start) + item.value + this.text.slice(this.cursor);
     this.cursor = start + item.value.length;
     this.clearCompletions();
-  }
-
-  /**
-   * Accepting the selected completion is a no-op when the typed text already
-   * equals the candidate (e.g. "/exit" fully typed). Enter must then submit —
-   * otherwise the accept is swallowed and the refreshed menu swallows every
-   * further Enter forever.
-   */
-  private acceptLeavesTextUnchanged(): boolean {
-    if (this.selectedCompletion === null) {
-      return false;
-    }
-    const item = this.completions[this.selectedCompletion];
-    if (item === undefined) {
-      return false;
-    }
-    const start = Math.max(0, this.cursor + item.start);
-    const next =
-      this.text.slice(0, start) + item.value + this.text.slice(this.cursor);
-    return next === this.text && start + item.value.length === this.cursor;
   }
 
   private moveCompletion(offset: number): void {
