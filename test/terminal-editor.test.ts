@@ -348,6 +348,53 @@ test("ctrl+c cancels when running and clears a non-empty editor when idle", () =
   assert.equal(editor.text, "");
 });
 
+test("a second idle ctrl+c within the window exits (pi double-press)", () => {
+  const editor = new EditorState();
+  editor.apply(inputAction(InputActionKind.Insert, "draft"), { runtimeActive: false });
+
+  const first = editor.apply(inputAction(InputActionKind.Cancel), {
+    runtimeActive: false,
+  });
+  assert.equal(first.exitRequested, false);
+  assert.equal(editor.text, "");
+
+  const second = editor.apply(inputAction(InputActionKind.Cancel), {
+    runtimeActive: false,
+  });
+  assert.equal(second.exitRequested, true);
+});
+
+test("a second idle ctrl+c after the window clears instead of exiting", () => {
+  const originalNow = performance.now;
+  let now = 1_000;
+  performance.now = () => now;
+  try {
+    const editor = new EditorState();
+    editor.apply(inputAction(InputActionKind.Cancel), { runtimeActive: false });
+    now += EditorState.DOUBLE_CANCEL_EXIT_MS + 100;
+    const second = editor.apply(inputAction(InputActionKind.Cancel), {
+      runtimeActive: false,
+    });
+    assert.equal(second.exitRequested, false);
+  } finally {
+    performance.now = originalNow;
+  }
+});
+
+test("ctrl+c while running does not arm the exit window", () => {
+  const editor = new EditorState();
+  const cancel = editor.apply(inputAction(InputActionKind.Cancel), {
+    runtimeActive: true,
+  });
+  assert.equal(cancel.cancelRequested, true);
+
+  // The task just stopped; an immediate idle ctrl+c must only clear, not exit.
+  const after = editor.apply(inputAction(InputActionKind.Cancel), {
+    runtimeActive: false,
+  });
+  assert.equal(after.exitRequested, false);
+});
+
 test("ctrl+d exits only for idle empty editor", () => {
   const editor = new EditorState();
 
