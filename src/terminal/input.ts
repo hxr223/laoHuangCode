@@ -175,7 +175,11 @@ export class PiInputSession {
     };
 
     return new Promise<string>((resolve, reject) => {
-      const finish = (error: Error | null, result: string): void => {
+      const finish = (
+        error: Error | null,
+        result: string,
+        recordHistory = true,
+      ): void => {
         if (settled) {
           return;
         }
@@ -209,7 +213,7 @@ export class PiInputSession {
           reject(error);
           return;
         }
-        if (result) {
+        if (result && recordHistory) {
           editor.history = [...editor.history, result];
         }
         this.persistHistory(editor);
@@ -233,8 +237,13 @@ export class PiInputSession {
         if (action.kind === InputActionKind.Submit) {
           refreshCompletions();
           if (editor.completionVisible) {
-            editor.apply(action, { runtimeActive: false });
+            const effect = editor.apply(action, { runtimeActive: false });
             refreshCompletions();
+            if (effect.submit !== null) {
+              // Slash commands accept and submit in one Enter (pi semantics);
+              // editor.submit() already recorded the history entry.
+              finish(null, effect.submit, false);
+            }
           } else {
             finish(null, editor.text);
           }

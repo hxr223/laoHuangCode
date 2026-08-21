@@ -222,7 +222,7 @@ test("editor submit records history", () => {
   assert.deepEqual(editor.history, ["first"]);
 });
 
-test("completion overlay navigates, accepts with enter and then submits", () => {
+test("completion overlay enter accepts slash command and submits", () => {
   const editor = new EditorState();
   editor.apply(inputAction(InputActionKind.Insert, "/"), { runtimeActive: false });
   editor.setCompletions([
@@ -233,16 +233,16 @@ test("completion overlay navigates, accepts with enter and then submits", () => 
   editor.apply(inputAction(InputActionKind.HistoryDown), { runtimeActive: false });
   editor.apply(inputAction(InputActionKind.HistoryUp), { runtimeActive: false });
   editor.apply(inputAction(InputActionKind.HistoryDown), { runtimeActive: false });
-  const accepted = editor.apply(inputAction(InputActionKind.Submit), {
+  const submitted = editor.apply(inputAction(InputActionKind.Submit), {
     runtimeActive: false,
   });
-  const submitted = editor.apply(inputAction(InputActionKind.Submit), {
+  const empty = editor.apply(inputAction(InputActionKind.Submit), {
     runtimeActive: false,
   });
 
   assert.deepEqual(editor.history, ["/help"]);
-  assert.equal(accepted.submit, null);
   assert.equal(submitted.submit, "/help");
+  assert.equal(empty.submit, null);
 });
 
 test("fully typed command submits instead of re-accepting the exact candidate", () => {
@@ -260,17 +260,17 @@ test("fully typed command submits instead of re-accepting the exact candidate", 
   assert.deepEqual(editor.history, ["/exit"]);
 });
 
-test("partially typed command still accepts the completion on enter", () => {
+test("partially typed command accepts the completion and submits on enter", () => {
   const editor = new EditorState();
   editor.apply(inputAction(InputActionKind.Insert, "/e"), { runtimeActive: false });
   editor.setCompletions([commandCompletion("/exit", "退出", editor.text)]);
 
-  const accepted = editor.apply(inputAction(InputActionKind.Submit), {
+  const submitted = editor.apply(inputAction(InputActionKind.Submit), {
     runtimeActive: false,
   });
 
-  assert.equal(accepted.submit, null);
-  assert.equal(editor.text, "/exit");
+  assert.equal(submitted.submit, "/exit");
+  assert.deepEqual(editor.history, ["/exit"]);
 });
 
 test("fully typed argument submits instead of re-accepting the exact candidate", () => {

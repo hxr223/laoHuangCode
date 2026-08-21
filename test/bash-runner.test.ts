@@ -170,8 +170,29 @@ test("timeout terminates process group", async () => {
 test("cancel token stops running command", async () => {
   await withTempDir(async (directory) => {
     const token = new FakeCancelToken();
-    const context = new ToolExecutionContext({ cancelToken: token });
-    const timer = setTimeout(() => token.cancel("user requested"), 30);
+    let markBeforeSeen!: () => void;
+    const beforeSeen = new Promise<void>((resolve) => {
+      markBeforeSeen = resolve;
+    });
+    const sink = (kind: string, payload: Record<string, unknown>) => {
+      if (
+        kind === "tool.output_delta" &&
+        payload["stream"] === "stdout" &&
+        String(payload["text"] ?? "").includes("before")
+      ) {
+        markBeforeSeen();
+      }
+    };
+    const context = new ToolExecutionContext({ cancelToken: token, eventSink: sink });
+    // Cancel only after "before" is observable; a fixed delay races with
+    // login-shell startup on slow CI runners.
+    const canceller = (async () => {
+      await Promise.race([
+        beforeSeen,
+        new Promise((resolve) => setTimeout(resolve, 5000)),
+      ]);
+      token.cancel("user requested");
+    })();
     try {
       const result = await runBash("printf before; sleep 10; printf after", {
         cwd: directory,
@@ -185,7 +206,7 @@ test("cancel token stops running command", async () => {
       assert.ok(result.stdout.includes("before"));
       assert.ok(!result.stdout.includes("after"));
     } finally {
-      clearTimeout(timer);
+      await canceller;
     }
   });
 });
