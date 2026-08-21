@@ -7,6 +7,8 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+from laohuangcode.bash_runner import ToolExecutionContext
+from laohuangcode.cancellation import CancelToken
 from laohuangcode.tools import ToolRegistry
 
 
@@ -155,6 +157,23 @@ class ToolRegistryTests(unittest.TestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(result["stdout"], "||")
+
+    def test_cancelled_file_tool_does_not_mutate_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            token = CancelToken()
+            token.cancel("stop now")
+            tools = ToolRegistry(root)
+
+            result = tools.execute(
+                "write",
+                {"path": "never.txt", "content": "no"},
+                ToolExecutionContext(cancel_token=token),
+            )
+
+            self.assertEqual(result["status"], "cancelled")
+            self.assertEqual(result["error"], "stop now")
+            self.assertFalse((root / "never.txt").exists())
 
     def test_writes_to_the_same_file_are_serialized(self):
         with tempfile.TemporaryDirectory() as directory:

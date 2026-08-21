@@ -5,13 +5,16 @@ from types import SimpleNamespace
 import unittest
 
 from laohuangcode.agent import AgentError, CodingAgent
+from laohuangcode.cancellation import CancelToken
+from laohuangcode.events import EventBus, EventKind
 from laohuangcode.tools import ToolRegistry
 
 
 class FakeMessage:
-    def __init__(self, *, content=None, tool_calls=None):
+    def __init__(self, *, content=None, tool_calls=None, usage=None):
         self.content = content
         self.tool_calls = tool_calls
+        self.usage = usage
 
     def model_dump(self, *, exclude_none=False):
         message = {"role": "assistant", "content": self.content}
@@ -47,7 +50,9 @@ class FakeCompletions:
     def create(self, **request):
         self.requests.append(request)
         message = next(self.messages)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)], usage=message.usage
+        )
 
 
 class FailingCompletions:
@@ -149,21 +154,188 @@ class CodingAgentTests(unittest.TestCase):
             self.assertEqual(events[0][1], {"path": "answer.txt"})
             self.assertTrue(events[0][2]["ok"])
 
-    def test_agent_stops_at_the_tool_round_limit_without_unmatched_calls(self):
+    def test_agent_does_not_limit_tool_rounds_or_model_requests(self):
         with tempfile.TemporaryDirectory() as directory:
-            call = lambda call_id: FakeMessage(
-                tool_calls=[FakeToolCall(call_id, "read", '{"path":"missing"}')]
+            calls = [
+                FakeMessage(
+                    tool_calls=[
+                        FakeToolCall(
+                            f"call_{index}",
+                            "read",
+                            json.dumps({"path": f"missing-{index}"}),
+                        )
+                    ]
+                )
+                for index in range(21)
+            ]
+            client = fake_client(
+                *calls,
+                FakeMessage(content="Finished after 21 tool rounds."),
             )
-            client = fake_client(call("call_1"), call("call_2"))
             agent = CodingAgent(
                 client=client,
                 model="test-model",
                 tools=ToolRegistry(Path(directory)),
-                max_tool_rounds=1,
             )
 
-            with self.assertRaisesRegex(AgentError, "limit of 1"):
-                agent.run("Keep reading")
+            result = agent.run("Read every missing path")
+
+            self.assertEqual(result, "Finished after 21 tool rounds.")
+            self.assertEqual(len(client.completions.requests), 22)
+            self.assertTrue(
+                all(
+                    request["tool_choice"] == "auto"
+                    for request in client.completions.requests
+                )
+            )
+
+    def test_repeated_tool_call_forces_a_final_answer_after_three_matches(self):
+        with tempfile.TemporaryDirectory() as directory:
+            call = lambda call_id: FakeMessage(
+                tool_calls=[FakeToolCall(call_id, "read", '{"path":"missing"}')]
+            )
+            events = []
+            event_bus = EventBus()
+            context = SimpleNamespace(
+                event_bus=event_bus,
+                session_id="session-1",
+                task_id="task-1",
+                cancel_token=CancelToken(),
+            )
+            client = fake_client(
+                call("call_1"),
+                call("call_2"),
+                call("call_3"),
+                FakeMessage(content="No more tool calls."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+                on_agent_event=lambda event_type, payload: events.append(
+                    (event_type, payload)
+                ),
+            )
+
+            result = agent.run("Repeat forever", context)
+
+            self.assertEqual(result, "No more tool calls.")
+            self.assertEqual(len(client.completions.requests), 4)
+            self.assertEqual(client.completions.requests[-1]["tool_choice"], "none")
+            guard = next(
+                payload
+                for event_type, payload in events
+                if event_type == "agent_guard_triggered"
+            )
+            self.assertIn("repeated tool call", guard["reason"])
+            self.assertEqual(guard["tool_rounds"], 3)
+            canonical = event_bus.drain()
+            self.assertTrue(
+                any(
+                    event.kind is EventKind.AGENT_GUARD_TRIGGERED
+                    and "repeated tool call" in event.payload["reason"]
+                    for event in canonical
+                )
+            )
+            summaries = [
+                event
+                for event in canonical
+                if event.kind is EventKind.MODEL_RESPONSE_SUMMARY
+            ]
+            self.assertEqual(len(summaries), 4)
+            self.assertEqual(summaries[0].payload["tool_names"], ("read",))
+            self.assertGreater(summaries[0].payload["total_tokens"], 0)
+
+    def test_repeated_tool_counter_resets_after_a_different_result(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "one.txt").write_text("one", encoding="utf-8")
+            (root / "two.txt").write_text("two", encoding="utf-8")
+            call = lambda call_id, path: FakeMessage(
+                tool_calls=[
+                    FakeToolCall(call_id, "read", json.dumps({"path": path}))
+                ]
+            )
+            client = fake_client(
+                call("call_1", "one.txt"),
+                call("call_2", "two.txt"),
+                call("call_3", "one.txt"),
+                call("call_4", "one.txt"),
+                FakeMessage(content="Finished normally."),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(root),
+            )
+
+            self.assertEqual(agent.run("Read files"), "Finished normally.")
+            self.assertTrue(
+                all(
+                    request["tool_choice"] == "auto"
+                    for request in client.completions.requests
+                )
+            )
+
+    def test_token_budget_forces_final_without_committing_unmatched_calls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = FakeMessage(
+                tool_calls=[
+                    FakeToolCall("call_1", "read", '{"path":"missing"}')
+                ],
+                usage={"total_tokens": 101},
+            )
+            client = fake_client(first, FakeMessage(content="Budget reached."))
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+                max_total_tokens=100,
+            )
+
+            result = agent.run("Spend tokens")
+
+            self.assertEqual(result, "Budget reached.")
+            self.assertEqual(client.completions.requests[-1]["tool_choice"], "none")
+            self.assertFalse(
+                any(message.get("tool_calls") for message in agent.messages)
+            )
+
+    def test_elapsed_budget_can_force_no_tool_answer_immediately(self):
+        with tempfile.TemporaryDirectory() as directory:
+            client = fake_client(FakeMessage(content="Time limit."))
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+                max_elapsed_seconds=1e-12,
+            )
+
+            self.assertEqual(agent.run("No time"), "Time limit.")
+            self.assertEqual(client.completions.requests[0]["tool_choice"], "none")
+
+    def test_failed_forced_final_reports_guard_counters_and_reason(self):
+        with tempfile.TemporaryDirectory() as directory:
+            call = lambda call_id: FakeMessage(
+                tool_calls=[FakeToolCall(call_id, "read", '{"path":"missing"}')]
+            )
+            client = fake_client(
+                call("call_1"),
+                call("call_2"),
+                call("call_3"),
+                call("call_4"),
+            )
+            agent = CodingAgent(
+                client=client,
+                model="test-model",
+                tools=ToolRegistry(Path(directory)),
+            )
+
+            with self.assertRaisesRegex(
+                AgentError,
+                "repeated tool call detected.*Tool rounds: 3; model requests: 4",
+            ):
+                agent.run("Ignore the guard")
 
             self.assertEqual(agent.messages[-1]["role"], "tool")
 

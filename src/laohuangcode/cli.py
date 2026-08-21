@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 from collections.abc import Callable, Mapping, Sequence
 import getpass
-import json
 import os
 from pathlib import Path
+from queue import Queue
 import sys
+from threading import Event, Thread
 from typing import Any
 
 from . import __version__
@@ -17,9 +18,12 @@ from .client import create_client
 from .commands import SessionCommands
 from .config import Config, ConfigManager
 from .credentials import CredentialStore
+from .events import EventProjector
 from .model_selection import ModelSelector
 from .providers import provider_names
-from .terminal_ui import TerminalUI
+from .semantic_classifier import SmallModelSemanticClassifier
+from .session import AgentSession
+from .terminal_ui import PlainEventSink, TerminalUI
 from .tools import ToolRegistry
 from .web import EventLog, WebDashboard
 
@@ -96,28 +100,295 @@ def run_repl(
                 output_fn(f"\nlaoHuangCode> {response}")
 
 
-def _summarize(value: Any, limit: int = 500) -> str:
-    text = json.dumps(value, ensure_ascii=False)
-    if len(text) <= limit:
-        return text
-    return text[:limit] + "...[truncated]"
+def run_session_repl(
+    session: AgentSession,
+    *,
+    command_handler: Callable[[str], bool] | None = None,
+    ui: TerminalUI,
+) -> bool:
+    """Keep accepting input while AgentSession executes in the background."""
+
+    # The production TerminalUI owns a raw terminal loop. Feed it through a
+    # coordinator queue so redraws never block on semantic routing or command
+    # handlers.
+    if callable(getattr(ui, "run", None)):
+        return _run_persistent_session_repl(
+            session, command_handler=command_handler, ui=ui
+        )
+
+    start_renderer = getattr(ui, "start_event_renderer", None)
+    if callable(start_renderer):
+        start_renderer()
+    ui.show_welcome()
+    clean_shutdown = False
+    try:
+        while True:
+            try:
+                user_input = ui.prompt().strip()
+            except EOFError:
+                break
+            except KeyboardInterrupt:
+                session.publish_notice("Interrupted.", style="yellow")
+                continue
+
+            if user_input == "/exit":
+                session.submit_input(user_input)
+                break
+            if not user_input:
+                continue
+            if user_input.startswith("/"):
+                if user_input == "/cancel":
+                    submission = session.submit_input(user_input)
+                    if submission.task_id is None:
+                        session.publish_notice("No active task to cancel.")
+                    continue
+                session.submit_input(user_input)
+                if command_handler is not None and command_handler(user_input):
+                    continue
+                command_name = user_input.split()[0]
+                suggestion = None
+                if ui.command_registry is not None:
+                    suggestion = ui.command_registry.suggest(command_name)
+                suffix = f" Did you mean {suggestion}?" if suggestion else ""
+                session.publish_notice(
+                    f"Unknown command: {command_name}.{suffix}"
+                )
+                continue
+
+            try:
+                submission = session.submit_input(user_input)
+            except (OverflowError, RuntimeError, ValueError) as error:
+                session.publish_notice(f"Error: {error}", style="bold red")
+                continue
+            if submission.queued:
+                status = session.queue_status()
+                session.publish_notice(
+                    "Message queued "
+                    f"(pending {status['pending']} · held {status['held']})."
+                )
+            elif submission.rejected:
+                session.publish_notice(
+                    f"Message rejected: {submission.reason}", style="bold red"
+                )
+    finally:
+        clean_shutdown = session.close(wait=True, timeout=10)
+        if clean_shutdown:
+            session.event_bus.flush()
+            flush_renderer = getattr(ui, "flush_event_renderer", None)
+            if callable(flush_renderer):
+                flush_renderer()
+        ui.stop_event_renderer()
+    if clean_shutdown:
+        ui.show_goodbye()
+    else:
+        ui.show_error("Task worker did not stop before the shutdown timeout.")
+    return clean_shutdown
 
 
-def _tool_reporter(
-    output_fn: Callable[[str], None]
-) -> Callable[[str, dict[str, Any], dict[str, Any]], None]:
-    def report(
-        name: str, arguments: dict[str, Any], result: dict[str, Any]
-    ) -> None:
-        safe_arguments = dict(arguments)
-        for key in ("content", "old_text", "new_text"):
-            value = safe_arguments.get(key)
-            if isinstance(value, str):
-                safe_arguments[key] = f"<{len(value)} chars>"
-        output_fn(f"\n[tool] {name} {_summarize(safe_arguments)}")
-        output_fn(f"[result] {_summarize(result, limit=2_000)}")
+def _run_persistent_session_repl(
+    session: AgentSession,
+    *,
+    command_handler: Callable[[str], bool] | None,
+    ui: TerminalUI,
+) -> bool:
+    """Drive a single-renderer terminal without writing outside its layout."""
 
-    return report
+    ui.show_welcome()
+    submitted: Queue[str | None] = Queue()
+    stopping = Event()
+    drained = Event()
+    drained.set()
+    coordinator_errors: list[BaseException] = []
+
+    def handle_input(user_input: str) -> bool:
+        if user_input == "/exit":
+            session.submit_input(user_input)
+            return False
+        if not user_input:
+            return True
+        if user_input.startswith("/"):
+            if user_input == "/cancel":
+                submission = session.submit_input(user_input)
+                if submission.task_id is None:
+                    session.publish_notice("No active task to cancel.")
+                return True
+            session.submit_input(user_input)
+            if command_handler is not None and command_handler(user_input):
+                return True
+            command_name = user_input.split()[0]
+            suggestion = (
+                ui.command_registry.suggest(command_name)
+                if ui.command_registry is not None
+                else None
+            )
+            suffix = f" Did you mean {suggestion}?" if suggestion else ""
+            session.publish_notice(f"Unknown command: {command_name}.{suffix}")
+            return True
+        try:
+            submission = session.submit_input(user_input)
+        except (OverflowError, RuntimeError, ValueError) as error:
+            session.publish_notice(f"Error: {error}", style="bold red")
+            return True
+        if submission.queued:
+            status = session.queue_status()
+            session.publish_notice(
+                "Message queued "
+                f"(pending {status['pending']} · held {status['held']})."
+            )
+        elif submission.rejected:
+            session.publish_notice(
+                f"Message rejected: {submission.reason}", style="bold red"
+            )
+        return True
+
+    def coordinate() -> None:
+        while True:
+            user_input = submitted.get()
+            try:
+                if user_input is None or stopping.is_set():
+                    return
+                handle_input(user_input)
+            except BaseException as error:
+                coordinator_errors.append(error)
+            finally:
+                submitted.task_done()
+                if submitted.unfinished_tasks == 0:
+                    drained.set()
+
+    coordinator = Thread(
+        target=coordinate, name="laohuang-input-coordinator", daemon=True
+    )
+    coordinator.start()
+    clean_shutdown = False
+    coordinator_alive = False
+    try:
+        def enqueue(user_input: str) -> None:
+            # Exit is a local UI operation and should not wait behind a slow
+            # semantic classification of an earlier queued message.
+            if user_input == "/exit":
+                try:
+                    session.submit_input(user_input)
+                except (OverflowError, RuntimeError, ValueError) as error:
+                    session.publish_notice(f"Error: {error}", style="bold red")
+                ui.request_exit()
+                return
+            drained.clear()
+            submitted.put(user_input)
+
+        ui.run(enqueue)
+    finally:
+        queue_drained = drained.wait(0.05)
+        stopping.set()
+        submitted.put(None)
+        coordinator.join(timeout=2 if queue_drained else 0.05)
+        coordinator_alive = coordinator.is_alive()
+        session_stopped = session.close(wait=True, timeout=10)
+        if coordinator_alive:
+            coordinator.join(timeout=0.25)
+            coordinator_alive = coordinator.is_alive()
+        clean_shutdown = (
+            session_stopped
+            and not coordinator_alive
+            and not coordinator_errors
+        )
+        if clean_shutdown:
+            session.event_bus.flush()
+            flush_renderer = getattr(ui, "flush_event_renderer", None)
+            if callable(flush_renderer):
+                flush_renderer()
+        render_error = getattr(ui, "render_error", None)
+        try:
+            if not clean_shutdown and render_error is None:
+                if coordinator_alive:
+                    shutdown_message = (
+                        "Input coordinator did not stop before the shutdown timeout."
+                    )
+                elif coordinator_errors:
+                    shutdown_message = "Input coordinator failed during shutdown."
+                else:
+                    shutdown_message = (
+                        "Task worker did not stop before the shutdown timeout."
+                    )
+                ui.show_error(shutdown_message)
+        finally:
+            close = getattr(ui, "close", None)
+            if callable(close):
+                close()
+    render_error = getattr(ui, "render_error", None)
+    clean = clean_shutdown and render_error is None
+    return clean
+
+
+def run_plain_session_repl(
+    session: AgentSession,
+    *,
+    command_handler: Callable[[str], bool] | None = None,
+    input_fn: Callable[[str], str] = input,
+    sink: PlainEventSink,
+) -> bool:
+    """Run the same event-driven session with append-only plain output."""
+
+    session.publish_notice(
+        "laoHuangCode is ready. Type /help for commands or /exit to quit."
+    )
+    session.event_bus.flush()
+    sink.flush()
+    try:
+        while True:
+            try:
+                user_input = input_fn("").strip()
+            except EOFError:
+                # A pipe may close immediately after submitting work. Let the
+                # active task and its compatible pending batch finish normally.
+                session.wait_for_idle()
+                break
+            except KeyboardInterrupt:
+                session.publish_notice("Interrupted. Type /exit to quit.")
+                continue
+
+            if user_input == "/exit":
+                session.submit_input(user_input)
+                break
+            if not user_input:
+                continue
+            if user_input.startswith("/"):
+                if user_input == "/cancel":
+                    submission = session.submit_input(user_input)
+                    if submission.task_id is None:
+                        session.publish_notice("No active task to cancel.")
+                    continue
+                session.submit_input(user_input)
+                if command_handler is not None and command_handler(user_input):
+                    continue
+                session.publish_notice(
+                    f"Unknown command: {user_input.split()[0]}"
+                )
+                continue
+            try:
+                submission = session.submit_input(user_input)
+            except (OverflowError, RuntimeError, ValueError) as error:
+                session.publish_notice(f"Error: {error}")
+                continue
+            if submission.queued:
+                status = session.queue_status()
+                session.publish_notice(
+                    "Message queued "
+                    f"(pending {status['pending']} · held {status['held']})."
+                )
+            elif submission.rejected:
+                session.publish_notice(f"Message rejected: {submission.reason}")
+    finally:
+        clean_shutdown = session.close(wait=True, timeout=10)
+        if clean_shutdown:
+            session.event_bus.flush()
+            sink.flush()
+        sink.stop(drain=clean_shutdown)
+    output = sink.output_fn
+    if clean_shutdown:
+        output("Goodbye.")
+    else:
+        output("Error: Task worker did not stop before the shutdown timeout.")
+    return clean_shutdown
 
 
 def _supports_terminal_ui(
@@ -146,6 +417,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile", help="model profile for this session")
     parser.add_argument("--model", help="model override for this session")
     parser.add_argument("--base-url", help="API base URL override for this session")
+    parser.add_argument(
+        "--theme",
+        choices=("auto", "dark", "light"),
+        default="auto",
+        help="interactive terminal theme (default: auto)",
+    )
     parser.add_argument(
         "--web",
         action="store_true",
@@ -200,7 +477,7 @@ def main(
     project_root = Path.cwd()
     terminal_ui: TerminalUI | None = None
     if _supports_terminal_ui(input_fn=input_fn, output_fn=output_fn):
-        terminal_ui = TerminalUI(project_root=project_root)
+        terminal_ui = TerminalUI(project_root=project_root, theme=args.theme)
         input_fn = terminal_ui.prompt
         output_fn = terminal_ui.write
 
@@ -352,6 +629,8 @@ def main(
     if terminal_ui is not None:
         terminal_ui.provider = config.provider
         terminal_ui.model = config.model
+        terminal_ui.state.provider = config.provider
+        terminal_ui.state.model = config.model
 
     client = runtime_client or create_client(
         config,
@@ -385,31 +664,106 @@ def main(
         client=client,
         model=config.model,
         tools=ToolRegistry(project_root),
-        on_tool_event=(
-            terminal_ui.show_tool
-            if terminal_ui is not None
-            else _tool_reporter(output_fn)
-        ),
-        on_agent_event=event_log.record if event_log is not None else None,
+        on_tool_event=None,
+        on_agent_event=None,
         provider=config.provider,
     )
+    semantic_classifier = SmallModelSemanticClassifier(
+        client=client,
+        model=config.model,
+    )
+    runtime = AgentSession(agent, semantic_classifier=semantic_classifier)
+    plain_sink = PlainEventSink(output_fn) if terminal_ui is None else None
+    session_sink = terminal_ui if terminal_ui is not None else plain_sink
+    assert session_sink is not None
+
+    repl_input_fn = input_fn
+    session_secret_input_fn = secret_input_fn
+    if plain_sink is not None:
+        underlying_input = input_fn
+        underlying_secret_input = secret_input_fn
+
+        def plain_input(prompt: str) -> str:
+            if prompt:
+                runtime.publish_notice(prompt)
+                runtime.event_bus.flush()
+                plain_sink.flush()
+            return underlying_input("")
+
+        def plain_secret_input(prompt: str) -> str:
+            if prompt:
+                runtime.publish_notice(prompt)
+                runtime.event_bus.flush()
+                plain_sink.flush()
+            return underlying_secret_input("")
+
+        repl_input_fn = plain_input
+        session_secret_input_fn = plain_secret_input
+        selector.input_fn = plain_input
+    elif terminal_ui is not None:
+        session_secret_input_fn = terminal_ui.prompt_secret
+
+    def session_output(message: str) -> None:
+        runtime.publish_notice(message)
+
+    selector.output_fn = session_output
     commands = SessionCommands(
         agent=agent,
         selector=selector,
         credentials=credentials,
         current_config=config,
-        secret_input_fn=secret_input_fn,
-        output_fn=output_fn,
+        secret_input_fn=session_secret_input_fn,
+        output_fn=session_output,
+        session=runtime,
     )
-    try:
-        run_repl(
-            agent,
-            command_handler=commands.handle,
-            input_fn=input_fn,
-            output_fn=output_fn,
-            ui=terminal_ui,
+    unsubscribers: list[Callable[[], None]] = []
+    projector = EventProjector()
+    unsubscribers.append(
+        runtime.event_bus.subscribe(
+            lambda event: session_sink.publish_event(
+                projector.project(event, "terminal")
+            )
         )
+    )
+    if event_log is not None:
+        unsubscribers.append(
+            runtime.event_bus.subscribe(
+                lambda event: event_log.record_event(
+                    projector.project(event, "web")
+                )
+            )
+        )
+    if terminal_ui is not None:
+        terminal_ui.set_command_registry(commands.registry)
+        terminal_ui.set_cancel_callback(lambda: commands.handle("/cancel"))
+        terminal_ui.set_runtime_running_callback(
+            lambda: runtime.active_task is not None
+        )
+
+    def handle_command(command: str) -> bool:
+        handled = commands.handle(command)
+        semantic_classifier.configure(client=agent.client, model=agent.model)
+        return handled
+
+    clean_shutdown = False
+    try:
+        if terminal_ui is not None:
+            clean_shutdown = run_session_repl(
+                runtime,
+                command_handler=handle_command,
+                ui=terminal_ui,
+            )
+        else:
+            assert plain_sink is not None
+            clean_shutdown = run_plain_session_repl(
+                runtime,
+                command_handler=handle_command,
+                input_fn=repl_input_fn,
+                sink=plain_sink,
+            )
     finally:
+        for unsubscribe in unsubscribers:
+            unsubscribe()
         if dashboard is not None:
             dashboard.stop()
-    return 0
+    return 0 if clean_shutdown else 1
