@@ -1,0 +1,39 @@
+{
+  "name": "laohuang",
+  "version": "0.3.2",
+  "description": "A minimal coding agent CLI built on the official openai SDK and Chat Completions native tool calling.",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hxr223/laoHuangCode"
+  },
+  "homepage": "https://github.com/hxr223/laoHuangCode#readme",
+  "bugs": "https://github.com/hxr223/laoHuangCode/issues",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "laohuang": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "prepack": "npm run build"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "openai": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "license": "MIT"
+}

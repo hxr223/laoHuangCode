@@ -8,56 +8,72 @@ permissions:
   contents: read
 
 jobs:
-  python:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        python-version: ["3.11", "3.13"]
+        os: [ubuntu-latest, macos-latest]
+        node-version: ["18", "20", "22"]
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install -e .
-      - run: python -m unittest discover -s tests -v
-      - run: python scripts/check_versions.py
-
-  npm:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - run: python -m pip install build
-      - run: scripts/build-python.sh
       - uses: actions/setup-node@v6
         with:
-          node-version: "24"
-          package-manager-cache: false
+          node-version: ${{ matrix.node-version }}
       - run: npm ci
-        working-directory: npm
-      - run: npm test
-        working-directory: npm
-      - run: npm pack --dry-run
-        working-directory: npm
+      - run: npm run build
+      - run: node dist/cli.js --version
 
-  release-readiness:
+  test:
+    # The test suite imports and spawns the TypeScript sources directly, which
+    # relies on Node's built-in type stripping (Node >= 22.18).
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        node-version: ["22"]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: npm pack --dry-run
+
+  version:
+    # Every merged pull request is an npm publish: the version must be a stable
+    # X.Y.Z SemVer, not yet published, and above npm's current latest.
     if: github.event_name == 'pull_request'
-    needs: [python, npm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-node@v6
         with:
-          python-version: "3.13"
-      - name: Require a synchronized, unpublished release version
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - name: Validate the package version
         run: |
-          python scripts/check_versions.py
-          python scripts/check_npm_unpublished.py
+          version="$(node --print 'require("./package.json").version')"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version $version is not a stable X.Y.Z SemVer."
+            exit 1
+          fi
+          if npm view "laohuang@$version" version 2>/dev/null | grep -q .; then
+            echo "::error::laohuang@$version is already published."
+            exit 1
+          fi
+          latest="$(npm view laohuang version 2>/dev/null || true)"
+          if [[ -n "$latest" ]]; then
+            lowest="$(printf '%s\n' "$latest" "$version" | sort -V | head -1)"
+            if [[ "$lowest" != "$latest" ]]; then
+              echo "::error::Version $version is not above npm latest ($latest)."
+              exit 1
+            fi
+          fi
