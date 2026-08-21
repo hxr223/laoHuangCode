@@ -2,7 +2,7 @@
 
 ## 1. 背景与目标
 
-`laoHuangCode` 是一个以学习和验证为主的 coding agent 项目。第一阶段不使用 agent 框架，只使用 Python、官方 `openai` SDK 和 OpenAI 兼容的 Chat Completions API，完整呈现模型请求、工具调用和消息循环。
+`laoHuangCode` 是一个 coding agent 项目，基于 Python、官方 `openai` SDK 和 OpenAI 兼容的 Chat Completions API，完整呈现模型请求、工具调用和消息循环。
 
 本阶段交付一个可在终端持续对话的最小原型。它能够查看和修改启动目录内的代码，并在该目录中执行 Bash 命令，从而完成“理解任务、查看项目、修改文件、运行验证、回复用户”的基本闭环。
 
@@ -29,15 +29,12 @@
 - 审批流程和权限策略引擎。
 - 真正的操作系统沙箱或容器隔离。
 - Web UI、IDE 集成和远程服务。
-- Agent 框架或 `python-dotenv`。
 
 ## 3. 技术选择
 
 模型调用采用官方 `openai` Python SDK 的 `client.chat.completions.create()`。配置允许提供自定义 `base_url`，以支持实现 Chat Completions 和原生工具调用协议的 OpenAI 兼容服务。
 
 不采用 Responses API，因为兼容服务对它的支持范围通常小于 Chat Completions。不采用由提示词约定的 JSON 工具协议，因为原生 tool calling 能减少格式解析和纠错代码，更适合第一版原型。
-
-除运行时依赖 `openai` 外，尽量使用 Python 标准库。测试使用 `unittest`。
 
 ## 4. 项目结构
 

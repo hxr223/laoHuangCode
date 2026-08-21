@@ -1,7 +1,7 @@
 # laoHuangCode
 
-一个用于学习和验证的最小 coding agent。核心只使用 Python、官方
-`openai` SDK 和 Chat Completions 原生工具调用，不依赖 Agent 框架。
+一个最小的 coding agent，基于 Python、官方 `openai` SDK 和
+Chat Completions 原生工具调用。
 
 当前提供四个工具：`read`、`write`、`edit`、`bash`。所有工具均直接执行，当前原型
 暂不提供权限确认。
@@ -148,8 +148,7 @@ scripts/release-check.sh
 Bash。但 `bash` **没有操作系统级沙箱**，执行后仍能访问项目外文件、网络和其他
 系统资源。公开使用前请阅读 [安全模型](docs/security.md)。
 
-架构图见 [docs/architecture.md](docs/architecture.md)，初始设计见
-[最小 Agent 设计](docs/superpowers/specs/2026-08-18-minimal-coding-agent-design.md)。
+架构图见 [docs/architecture.md](docs/architecture.md)。
 
 ## License
 
