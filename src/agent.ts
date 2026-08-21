@@ -32,12 +32,9 @@ import type {
   ToolExecutionContextLike,
   ToolExecutionMode,
   ToolResult,
+  ToolSpec,
 } from "./tools.ts";
-
-export const SYSTEM_PROMPT = `You are laoHuangCode, a small coding agent.
-Work inside the project root. Use read, write, edit, and bash when needed.
-Inspect relevant files before changing them and verify changes when practical.
-Keep your final response concise and explain what changed.`;
+import { buildSystemPrompt } from "./system-prompt.ts";
 
 export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
 Do not call any tools. Give the user the best concise answer possible from the
@@ -82,6 +79,7 @@ export interface ChatClientLike {
 /** Structural minimum of ToolRegistry (tools.ts) the agent relies on. */
 export interface AgentToolRegistry {
   readonly definitions: readonly ToolDefinition[];
+  readonly orderedSpecs: readonly ToolSpec[];
   executionMode(name: string): ToolExecutionMode | undefined;
   execute(
     name: string,
@@ -211,7 +209,7 @@ export class CodingAgent {
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider ?? null;
     this.toolExecution = options.toolExecution ?? "parallel";
-    this.messages = [{ role: "system", content: SYSTEM_PROMPT }];
+    this.messages = [{ role: "system", content: buildSystemPrompt(this.tools) }];
   }
 
   /** Swap the model client mid-conversation, keeping portable history. */
@@ -1094,6 +1092,10 @@ function safeArguments(
     if (typeof value === "string") {
       safe[key] = `<${value.length} chars>`;
     }
+  }
+  const edits = safe["edits"];
+  if (Array.isArray(edits)) {
+    safe["edits"] = `<${edits.length} edits>`;
   }
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(safe)) {

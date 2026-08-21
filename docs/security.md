@@ -19,7 +19,7 @@ laoHuangCode 不是完整沙箱。当前版本不提供工具执行确认，模�
 - `edit` 只接受恰好出现一次的旧文本，避免模糊批量替换。
 - 同一解析路径上的 `write`、`edit` 使用文件修改锁串行执行，避免并发丢失更新；不同文件仍可并发。
 - Web 面板只监听 `127.0.0.1`，事件仅驻留内存。
-- 工具日志隐藏 `content`、`old_text`、`new_text` 的正文。
+- 工具日志隐藏 `content`、`old_text`、`new_text` 的正文以及 `edits` 替换列表。
 - API key 在终端隐藏输入（不回显），不接受命令行参数，也不进入 Shell 历史。
 - API key 保存在独立的 `credentials.json`，文件权限为 `0600`；程序创建的默认父目录为 `0700`。
 - API key 只传给 SDK 客户端，不写入环境变量、Agent 消息或 Web 事件。
