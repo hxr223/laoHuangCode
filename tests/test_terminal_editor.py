@@ -194,7 +194,7 @@ class TerminalEditorTests(unittest.TestCase):
         self.assertEqual(effect.submit, "first")
         self.assertEqual(editor.history, ("first",))
 
-    def test_completion_overlay_navigates_accepts_with_enter_and_then_submits(self):
+    def test_completion_overlay_enter_accepts_slash_command_and_submits(self):
         editor = EditorState()
         editor.apply(InputAction(InputActionKind.INSERT, "/"), runtime_active=False)
         editor.set_completions(
@@ -211,12 +211,23 @@ class TerminalEditorTests(unittest.TestCase):
         editor.apply(InputAction(InputActionKind.HISTORY_DOWN), runtime_active=False)
         editor.apply(InputAction(InputActionKind.HISTORY_UP), runtime_active=False)
         editor.apply(InputAction(InputActionKind.HISTORY_DOWN), runtime_active=False)
-        accepted = editor.apply(InputAction(InputActionKind.SUBMIT), runtime_active=False)
         submitted = editor.apply(InputAction(InputActionKind.SUBMIT), runtime_active=False)
+        empty = editor.apply(InputAction(InputActionKind.SUBMIT), runtime_active=False)
 
         self.assertEqual(editor.history, ("/help",))
-        self.assertIsNone(accepted.submit)
         self.assertEqual(submitted.submit, "/help")
+        self.assertIsNone(empty.submit)
+
+    def test_enter_submits_when_input_exactly_matches_slash_completion(self):
+        editor = EditorState()
+        registry = CommandRegistry((CommandSpec("/exit", "退出程序", "/exit"),))
+        editor.apply(InputAction(InputActionKind.INSERT, "/exit"), runtime_active=False)
+        editor.set_completions(registry.complete(editor.text, state="IDLE"))
+
+        effect = editor.apply(InputAction(InputActionKind.SUBMIT), runtime_active=False)
+
+        self.assertEqual(effect.submit, "/exit")
+        self.assertEqual(editor.history, ("/exit",))
 
     def test_escape_closes_completion_and_cursor_motion_cannot_accept_stale_candidate(self):
         editor = EditorState()
