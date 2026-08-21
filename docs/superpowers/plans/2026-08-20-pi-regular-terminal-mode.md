@@ -27,7 +27,6 @@ event, or CLI coordinator architecture.
   a tail-truncated transcript viewport.
 - The unified UI loop remains the only production interactive stdout writer.
 - Keep `PiInputSession` and prompt-toolkit for one-shot setup prompts.
-- Add no runtime dependency unless a later ruling explicitly justifies it.
 - Verification command: `PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -q`,
   then `PYTHONPATH=src .venv/bin/python -m compileall -q src`, then
   `git diff --check`.
