@@ -12,6 +12,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 
 import { CancelToken } from "./cancellation.ts";
 import {
@@ -27,6 +28,7 @@ import {
   type AssembledToolCall,
   type ChatCompletionsEndpoint,
 } from "./model-stream.ts";
+import { touchedPathOf } from "./tools.ts";
 import type {
   ToolDefinition,
   ToolExecutionContextLike,
@@ -36,8 +38,12 @@ import type {
 } from "./tools.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import {
+  discoverInstructions,
   loadBaselineInstructions,
-  type ProjectInstructionState,
+  realpathOrSelf,
+  renderAdditionalInstructions,
+  scopeChain,
+  ProjectInstructionState,
 } from "./project-instructions.ts";
 
 export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
@@ -224,8 +230,12 @@ export class CodingAgent {
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider ?? null;
     this.toolExecution = options.toolExecution ?? "parallel";
-    this.instructionRoot = options.projectRoot ?? null;
-    this.startupCwd = options.startupCwd ?? null;
+    // Canonicalize so instruction scopes line up with the registry's
+    // realpath-resolved touched paths even when the cwd contains symlinks.
+    this.instructionRoot =
+      options.projectRoot == null ? null : realpathOrSelf(options.projectRoot);
+    this.startupCwd =
+      options.startupCwd == null ? null : realpathOrSelf(options.startupCwd);
     this.messages = [{ role: "system", content: buildSystemPrompt(this.tools) }];
   }
 
@@ -538,6 +548,17 @@ export class CodingAgent {
           });
         }
         raiseIfCancelled(cancelToken);
+        // Dynamic descendant discovery runs only after every paired tool
+        // result is committed, so reminders land between the tool results
+        // and the next model request without touching earlier history.
+        const touchedPaths: string[] = [];
+        for (const result of toolResults) {
+          const touched = touchedPathOf(result);
+          if (typeof touched === "string") {
+            touchedPaths.push(touched);
+          }
+        }
+        this.discoverForTouchedPaths(touchedPaths);
         if (repeated !== null) {
           guardReason =
             `repeated tool call detected (${repeated.name} repeated ` +
@@ -823,6 +844,45 @@ export class CodingAgent {
     }
     raiseIfCancelled(cancelToken);
     this.messages.push({ role: "user", content: baseline.rendered });
+  }
+
+  /**
+   * DSH-style dynamic descendant discovery: for every parent directory from
+   * the instruction root to each successfully touched path's directory,
+   * render instructions from scopes not already represented by the
+   * instruction state as one additional reminder message. Append-only and
+   * duplicate-suppressed by ProjectInstructionState; a no-op when
+   * instruction loading is not configured.
+   */
+  private discoverForTouchedPaths(touchedPaths: readonly string[]): void {
+    const root = this.instructionRoot;
+    if (root === null || touchedPaths.length === 0) {
+      return;
+    }
+    const state = (this.instructionState ??= new ProjectInstructionState());
+    const dirs: string[] = [];
+    const seen = new Set<string>();
+    for (const touched of touchedPaths) {
+      const relative = path.relative(root, touched);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) {
+        continue; // Out-of-root operations yield no discovery.
+      }
+      for (const directory of scopeChain(root, path.dirname(touched))) {
+        if (!seen.has(directory)) {
+          seen.add(directory);
+          dirs.push(directory);
+        }
+      }
+    }
+    if (dirs.length === 0) {
+      return;
+    }
+    const files = discoverInstructions(root, dirs, {}, state);
+    const rendered = renderAdditionalInstructions(files);
+    if (rendered === "") {
+      return;
+    }
+    this.messages.push({ role: "user", content: rendered });
   }
 
   private commitContextMessage(

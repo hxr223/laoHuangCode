@@ -1,10 +1,18 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { CodingAgent } from "../src/agent.ts";
+import { CodingAgent, type AgentContext } from "../src/agent.ts";
+import { CancelToken } from "../src/cancellation.ts";
 import {
   findProjectRoot,
   loadBaselineInstructions,
@@ -13,13 +21,25 @@ import { ToolRegistry } from "../src/tools.ts";
 
 // --- Fakes (mirrors test/agent.test.ts FakeCompletions) ----------------------
 
+class FakeToolCall {
+  readonly id: string;
+  readonly type = "function";
+  readonly function: { name: string; arguments: string };
+
+  constructor(id: string, name: string, args: string) {
+    this.id = id;
+    this.function = { name, arguments: args };
+  }
+}
+
 class FakeMessage {
   readonly content: string | null;
-  readonly tool_calls = null;
+  readonly tool_calls: FakeToolCall[] | null;
   readonly usage = null;
 
-  constructor(content: string) {
+  constructor(content: string | null, toolCalls: FakeToolCall[] | null = null) {
     this.content = content;
+    this.tool_calls = toolCalls;
   }
 }
 
@@ -358,4 +378,333 @@ test("agent without instruction options injects nothing", async (t) => {
     ["system", "user"],
   );
   assert.equal(agent.projectInstructionState, null);
+});
+
+// --- Dynamic descendant discovery (Step 3) -----------------------------------
+
+function remindersIn(
+  messages: Array<Record<string, unknown>>,
+): Array<Record<string, unknown>> {
+  return messages.filter((message) =>
+    String(message["content"]).includes("<system-reminder>"),
+  );
+}
+
+test("successful read discovers descendant instructions after tool results", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  writeInstructions(sub, "file.txt", "data");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall("call_1", "read", '{"path":"sub/file.txt"}'),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  assert.equal(await agent.run("read it"), "done");
+
+  const second = requestMessages(client.completions, 1);
+  assert.deepEqual(
+    second.map((message) => message["role"]),
+    ["system", "user", "assistant", "tool", "user"],
+  );
+  const reminder = String(second.at(-1)?.["content"]);
+  assert.ok(reminder.startsWith("<system-reminder>"));
+  assert.ok(reminder.includes("Additional instructions from: sub/AGENTS.md"));
+  assert.ok(reminder.includes("sub rules"));
+  assert.ok(!reminder.includes(root), "reminder uses root-relative paths");
+});
+
+test("successful edit also discovers descendant instructions", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  writeInstructions(sub, "file.txt", "before");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall(
+        "call_1",
+        "edit",
+        '{"path":"sub/file.txt","edits":[{"old_text":"before","new_text":"after"}]}',
+      ),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("edit it");
+
+  const second = requestMessages(client.completions, 1);
+  assert.deepEqual(
+    second.map((message) => message["role"]),
+    ["system", "user", "assistant", "tool", "user"],
+  );
+  assert.ok(
+    String(second.at(-1)?.["content"]).includes(
+      "Additional instructions from: sub/AGENTS.md",
+    ),
+  );
+});
+
+test("one reminder covers the root-to-dir chain broad to specific", async (t) => {
+  const root = tempDir(t);
+  const deep = path.join(root, "sub", "deep");
+  mkdirSync(deep, { recursive: true });
+  writeInstructions(path.join(root, "sub"), "AGENTS.md", "sub rules");
+  writeInstructions(deep, "AGENTS.md", "deep rules");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall(
+        "call_1",
+        "write",
+        '{"path":"sub/deep/new.txt","content":"created"}',
+      ),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("create a file");
+
+  const second = requestMessages(client.completions, 1);
+  const reminders = remindersIn(second).filter((message) =>
+    String(message["content"]).includes("Additional instructions"),
+  );
+  assert.equal(reminders.length, 1);
+  const reminder = String(reminders[0]?.["content"]);
+  assert.ok(reminder.includes("Additional instructions from: sub/AGENTS.md"));
+  assert.ok(reminder.includes("Additional instructions from: sub/deep/AGENTS.md"));
+  assert.ok(reminder.indexOf("sub rules") < reminder.indexOf("deep rules"));
+});
+
+test("bash never triggers discovery", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall(
+        "call_1",
+        "bash",
+        '{"command":"touch sub/made.txt","description":"make a file"}',
+      ),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("make a file");
+
+  const second = requestMessages(client.completions, 1);
+  assert.deepEqual(
+    second.map((message) => message["role"]),
+    ["system", "user", "assistant", "tool"],
+  );
+  assert.equal(remindersIn(second).length, 0);
+});
+
+test("failed and out-of-root file operations yield no discovery", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall("call_1", "read", '{"path":"sub/missing.txt"}'),
+      new FakeToolCall("call_2", "read", '{"path":"../escape.txt"}'),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("read things");
+
+  const second = requestMessages(client.completions, 1);
+  assert.deepEqual(
+    second.map((message) => message["role"]),
+    ["system", "user", "assistant", "tool", "tool"],
+  );
+  assert.equal(remindersIn(second).length, 0);
+});
+
+test("cancelled tool operations yield no discovery", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  writeInstructions(sub, "file.txt", "data");
+  const token = new CancelToken();
+  const context: AgentContext = {
+    cancelToken: token,
+    toolsStarted: () => token.cancel("stop before tools"),
+  };
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall("call_1", "read", '{"path":"sub/file.txt"}'),
+    ]),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await assert.rejects(agent.run("read it", context));
+
+  assert.equal(remindersIn(agent.messages).length, 0);
+});
+
+test("scopes loaded by the baseline are not re-injected", async (t) => {
+  const root = tempDir(t);
+  writeInstructions(root, "AGENTS.md", "root rules");
+  writeInstructions(root, "file.txt", "data");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall("call_1", "read", '{"path":"file.txt"}'),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("read it");
+
+  const second = requestMessages(client.completions, 1);
+  assert.deepEqual(
+    second.map((message) => message["role"]),
+    ["system", "user", "user", "assistant", "tool"],
+  );
+  assert.equal(remindersIn(second).length, 1); // the baseline only
+  assert.ok(
+    !String(agent.messages.at(-1)?.["content"]).includes(
+      "Additional instructions",
+    ),
+  );
+});
+
+test("a scope discovered once is not re-injected on later touches", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  writeInstructions(sub, "a.txt", "a");
+  writeInstructions(sub, "b.txt", "b");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall("call_1", "read", '{"path":"sub/a.txt"}'),
+    ]),
+    new FakeMessage("one"),
+    new FakeMessage(null, [
+      new FakeToolCall("call_2", "read", '{"path":"sub/b.txt"}'),
+    ]),
+    new FakeMessage("two"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("first");
+  await agent.run("second");
+
+  const history = JSON.stringify(agent.messages);
+  assert.equal(history.split("Additional instructions from").length - 1, 1);
+  const lastRequest = requestMessages(client.completions, 3);
+  assert.deepEqual(
+    lastRequest.map((message) => message["role"]),
+    [
+      "system",
+      "user",
+      "assistant",
+      "tool",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "tool",
+    ],
+  );
+});
+
+test("touched absolute path never appears in serialized history", async (t) => {
+  const root = tempDir(t);
+  const sub = path.join(root, "sub");
+  mkdirSync(sub);
+  writeInstructions(sub, "AGENTS.md", "sub rules");
+  writeInstructions(sub, "file.txt", "data");
+  const client = fakeClient(
+    new FakeMessage(null, [
+      new FakeToolCall("call_1", "read", '{"path":"sub/file.txt"}'),
+      new FakeToolCall(
+        "call_2",
+        "write",
+        '{"path":"sub/out.txt","content":"x"}',
+      ),
+    ]),
+    new FakeMessage("done"),
+  );
+  const agent = new CodingAgent({
+    client,
+    model: "test-model",
+    tools: new ToolRegistry(root),
+    projectRoot: root,
+    startupCwd: root,
+  });
+
+  await agent.run("read and write");
+
+  const toolMessages = agent.messages.filter(
+    (message) => message["role"] === "tool",
+  );
+  assert.equal(toolMessages.length, 2);
+  const serialized = toolMessages
+    .map((message) => String(message["content"]))
+    .join("\n");
+  assert.ok(!serialized.includes(realpathSync(root)));
+  assert.ok(!serialized.includes("touchedPath"));
 });

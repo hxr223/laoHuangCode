@@ -197,6 +197,25 @@ export function renderInstructions(
   files: readonly DiscoveredInstructionFile[],
   totalBudgetBytes: number = DEFAULT_TOTAL_BUDGET_BYTES,
 ): string {
+  return renderWrapped(files, totalBudgetBytes, "Instructions from:");
+}
+
+/**
+ * Render dynamically discovered files as an additional reminder, appended
+ * after paired tool results and before the next model request.
+ */
+export function renderAdditionalInstructions(
+  files: readonly DiscoveredInstructionFile[],
+  totalBudgetBytes: number = DEFAULT_TOTAL_BUDGET_BYTES,
+): string {
+  return renderWrapped(files, totalBudgetBytes, "Additional instructions from:");
+}
+
+function renderWrapped(
+  files: readonly DiscoveredInstructionFile[],
+  totalBudgetBytes: number,
+  sectionHeader: string,
+): string {
   if (files.length === 0) {
     return "";
   }
@@ -216,7 +235,7 @@ export function renderInstructions(
     const body = sections
       .map(
         (section) =>
-          `Instructions from: ${section.displayPath}\n\n` +
+          `${sectionHeader} ${section.displayPath}\n\n` +
           (section.omitted ? OMISSION_NOTICE : section.body),
       )
       .join("\n\n");
@@ -296,7 +315,7 @@ function resolveOptions(options: ProjectInstructionOptions): ResolvedOptions {
 }
 
 /** Directories from `root` to `cwd` inclusively; just root when cwd is outside. */
-function scopeChain(root: string, cwd: string): string[] {
+export function scopeChain(root: string, cwd: string): string[] {
   const relative = path.relative(root, cwd);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return [root];
@@ -410,7 +429,8 @@ function isInsideRoot(rootReal: string, target: string): boolean {
   );
 }
 
-function realpathOrSelf(target: string): string {
+/** Canonical realpath of `target`, falling back to path.resolve when missing. */
+export function realpathOrSelf(target: string): string {
   try {
     return realpathSync(target);
   } catch {
