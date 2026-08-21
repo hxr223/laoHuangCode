@@ -1,6 +1,6 @@
 # laoHuangCode
 
-一个最小的 coding agent，基于 Python、官方 `openai` SDK 和
+一个最小的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
 Chat Completions 原生工具调用。
 
 当前提供四个工具：`read`、`write`、`edit`、`bash`。所有工具均直接执行，当前原型
@@ -19,7 +19,7 @@ Agent 会禁用工具并尝试基于已有信息完成一次最终回答。
 
 ## 快速开始
 
-需要 Node.js 18+ 和 Python 3.11+。面向普通用户的安装方式：
+需要 Node.js 18+。面向普通用户的安装方式：
 
 ```bash
 npm install --global laohuang
@@ -29,17 +29,14 @@ laohuang
 首次启动会在终端中依次选择 DeepSeek 或 OpenAI、隐藏输入 API key、选择模型，
 不需要设置环境变量。配置完成后，进入任意项目目录直接运行 `laohuang`。
 
-npm 包只是一个很薄的启动器：第一次运行时，它会在用户缓存目录创建隔离的
-Python 环境，并安装 npm 包内置的同版本 `laohuangcode` wheel。Agent 本身没有
-Node.js 重复实现，你也不需要 PyPI 账号。
-
-开发仓库也可以直接安装：
+从源码运行：
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-laohuang --version
+git clone https://github.com/hxr223/laoHuangCode.git
+cd laoHuangCode
+npm ci
+npm run build
+node dist/cli.js
 ```
 
 ## 模型配置
@@ -102,7 +99,7 @@ laohuang
 - `Alt+Enter`：插入换行。
 - `↑` / `↓`：浏览历史输入。
 - Agent 运行中按 `Ctrl+C`：取消当前任务。
-- Agent 空闲且输入非空时按 `Ctrl+C`：清空输入。
+- Agent 空闲时按 `Ctrl+C`：清空输入；500ms 内再按一次：退出。
 - `Ctrl+D`：退出。
 
 模型文本和 Bash stderr/状态采用 append-only inline 流式展示，工具输出按 tool call 分组；
@@ -133,14 +130,14 @@ laohuang --web --web-port 9000
 ## 开发与发布检查
 
 ```bash
-python -m unittest discover -s tests -v
-npm --prefix npm test
-scripts/release-check.sh
+npm ci
+npm run build
+npm test
 ```
 
-`release-check.sh` 会检查 Python/npm 版本一致性、运行两套测试、把 Python wheel
-打进 npm 包，并在临时环境验证直接 Python 入口和 npm-only 安装。发布设计见
-[npm 分发说明](docs/npm-distribution.md) 和 [发布流程](docs/publishing.md)。
+`npm run build` 通过 `tsc` 把 `src/` 编译到 `dist/`；`npm test` 使用 Node 自带的
+`node:test` 运行 `test/` 下的离线测试套件，不需要网络访问。发布流程见
+[发布流程](docs/publishing.md) 和 [npm 分发说明](docs/npm-distribution.md)。
 
 ## 安全边界
 
@@ -148,7 +145,8 @@ scripts/release-check.sh
 Bash。但 `bash` **没有操作系统级沙箱**，执行后仍能访问项目外文件、网络和其他
 系统资源。公开使用前请阅读 [安全模型](docs/security.md)。
 
-架构图见 [docs/architecture.md](docs/architecture.md)。
+架构说明见 [docs/architecture.md](docs/architecture.md)；设计文档归档在
+[docs/superpowers/specs/](docs/superpowers/specs/)。
 
 ## License
 
