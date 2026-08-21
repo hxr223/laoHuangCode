@@ -24,6 +24,7 @@ import { CredentialStore } from "./credentials.ts";
 import { EventProjector } from "./events.ts";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
+import { findProjectRoot } from "./project-instructions.ts";
 import {
   SmallModelSemanticClassifier,
   type ChatCompletionsClient,
@@ -1206,6 +1207,9 @@ export async function main(
   const args = parsed.args;
   const environ = options.environ ?? process.env;
   const projectRoot = process.cwd();
+  // Instruction loading roots at the nearest .git ancestor; the tool
+  // registry keeps the plain cwd as its root.
+  const instructionRoot = findProjectRoot(process.cwd(), projectRoot);
   const interactive = supportsTerminalUI({
     inputFn: options.inputFn,
     outputFn: options.outputFn,
@@ -1441,6 +1445,8 @@ export async function main(
     model: config.model,
     tools: new ToolRegistry(projectRoot),
     provider: config.provider,
+    projectRoot: instructionRoot,
+    startupCwd: process.cwd(),
   });
   const semanticClassifier = new SmallModelSemanticClassifier({
     client: client as unknown as ChatCompletionsClient,
