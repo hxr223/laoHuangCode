@@ -147,6 +147,14 @@ export const TOOL_SPECS: readonly ToolSpec[] = [
 
 export type ToolExecutionMode = "parallel" | "sequential";
 
+/**
+ * Internal side channel: the resolved absolute path touched by a successful
+ * first-party file tool (read/write/edit), attached non-enumerably so it
+ * never serializes into model-visible history. Consumed only by the agent
+ * layer for project-instruction discovery.
+ */
+export const TOUCHED_PATH: unique symbol = Symbol("laohuang.touchedPath");
+
 /** Plain-object result returned to the model for every tool call. */
 export interface ToolResult {
   ok: boolean;
@@ -154,7 +162,24 @@ export interface ToolResult {
   content?: string;
   path?: string;
   error?: string;
+  [TOUCHED_PATH]?: string;
   [key: string]: unknown;
+}
+
+/** The resolved path a successful file tool touched, if recorded. */
+export function touchedPathOf(result: ToolResult): string | undefined {
+  return result[TOUCHED_PATH];
+}
+
+/** Attach the touched path invisibly: JSON.stringify, spreads, and
+ * Object.entries all skip non-enumerable symbol properties. */
+function withTouchedPath(result: ToolResult, target: string): ToolResult {
+  Object.defineProperty(result, TOUCHED_PATH, {
+    value: target,
+    enumerable: false,
+    configurable: true,
+  });
+  return result;
 }
 
 /**
@@ -440,14 +465,17 @@ export class ToolRegistry {
           offset - 1,
           limit === undefined ? undefined : offset - 1 + limit,
         );
-        return {
-          ok: true,
-          content: this.truncate(window.join("")),
-          offset,
-          limit: limit ?? null,
-          total_lines: totalLines,
-          has_more: offset - 1 + window.length < totalLines,
-        };
+        return withTouchedPath(
+          {
+            ok: true,
+            content: this.truncate(window.join("")),
+            offset,
+            limit: limit ?? null,
+            total_lines: totalLines,
+            has_more: offset - 1 + window.length < totalLines,
+          },
+          target,
+        );
       }
 
       if (name === "write") {
@@ -459,7 +487,7 @@ export class ToolRegistry {
           }
           await fs.mkdir(path.dirname(target), { recursive: true });
           await this.io.writeFile(target, stringArgument(args, "content"));
-          return { ok: true, path: rawPath };
+          return withTouchedPath({ ok: true, path: rawPath }, target);
         });
       }
 
@@ -506,7 +534,7 @@ export class ToolRegistry {
             return cancelledResult(execution);
           }
           await this.io.writeFile(target, updated);
-          return { ok: true, path: rawPath };
+          return withTouchedPath({ ok: true, path: rawPath }, target);
         });
       }
 
