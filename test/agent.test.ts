@@ -16,6 +16,7 @@ import {
   ToolRegistry,
   type ToolDefinition,
   type ToolResult,
+  type ToolSpec,
 } from "../src/tools.ts";
 
 // --- Fakes -------------------------------------------------------------------
@@ -174,6 +175,7 @@ class CancellingTools {
   readonly definitions: ToolDefinition[] = [
     { type: "function", function: { name: "read" } } as ToolDefinition,
   ];
+  readonly orderedSpecs: readonly ToolSpec[] = [];
   private readonly token: CancelToken;
 
   constructor(token: CancelToken) {
@@ -532,8 +534,8 @@ test("tool batch executes concurrently and returns source order", async (t) => {
   const client = fakeClient(
     new FakeMessage({
       tool_calls: [
-        new FakeToolCall("call_1", "bash", JSON.stringify({ command: waitForSecond })),
-        new FakeToolCall("call_2", "bash", JSON.stringify({ command: waitForFirst })),
+        new FakeToolCall("call_1", "bash", JSON.stringify({ command: waitForSecond, description: "wait for second" })),
+        new FakeToolCall("call_2", "bash", JSON.stringify({ command: waitForFirst, description: "wait for first" })),
       ],
     }),
     new FakeMessage({ content: "Finished." }),
@@ -574,8 +576,8 @@ test("global sequential mode runs tool calls one by one", async (t) => {
   const client = fakeClient(
     new FakeMessage({
       tool_calls: [
-        new FakeToolCall("call_1", "bash", JSON.stringify({ command: waitForSecond })),
-        new FakeToolCall("call_2", "bash", JSON.stringify({ command: waitForFirst })),
+        new FakeToolCall("call_1", "bash", JSON.stringify({ command: waitForSecond, description: "wait for second" })),
+        new FakeToolCall("call_2", "bash", JSON.stringify({ command: waitForFirst, description: "wait for first" })),
       ],
     }),
     new FakeMessage({ content: "Finished." }),
@@ -607,9 +609,9 @@ test("one sequential tool forces the whole batch to run sequentially", async (t)
         new FakeToolCall(
           "call_1",
           "bash",
-          JSON.stringify({ command: "sleep 0.1; touch first.done" }),
+          JSON.stringify({ command: "sleep 0.1; touch first.done", description: "create marker" }),
         ),
-        new FakeToolCall("call_2", "bash", JSON.stringify({ command: "[ -f first.done ]" })),
+        new FakeToolCall("call_2", "bash", JSON.stringify({ command: "[ -f first.done ]", description: "check marker" })),
       ],
     }),
     new FakeMessage({ content: "Finished." }),
@@ -640,8 +642,8 @@ test("completion events are live while messages stay source ordered", async (t) 
   const client = fakeClient(
     new FakeMessage({
       tool_calls: [
-        new FakeToolCall("call_1", "bash", '{"command":"sleep 0.1; printf slow"}'),
-        new FakeToolCall("call_2", "bash", '{"command":"printf fast"}'),
+        new FakeToolCall("call_1", "bash", '{"command":"sleep 0.1; printf slow","description":"slow print"}'),
+        new FakeToolCall("call_2", "bash", '{"command":"printf fast","description":"fast print"}'),
       ],
     }),
     new FakeMessage({ content: "Finished." }),

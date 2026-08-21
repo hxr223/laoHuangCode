@@ -16,69 +16,132 @@ export interface ToolDefinition {
   };
 }
 
-export const TOOL_DEFINITIONS: ToolDefinition[] = [
+/**
+ * Internal immutable specification for one fixed tool. `promptGuidelines`
+ * feeds only the stable System Prompt (system-prompt.ts); it is never
+ * serialized into the OpenAI tools payload.
+ */
+export interface ToolSpec {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: Record<string, unknown>;
+  readonly promptGuidelines: readonly string[];
+}
+
+/** The fixed tool set, in the canonical prompt/schema order. */
+export const TOOL_SPECS: readonly ToolSpec[] = [
   {
-    type: "function",
-    function: {
-      name: "read",
-      description: "Read a UTF-8 text file inside the project root.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "File path." },
+    name: "read",
+    description: "Read a UTF-8 text file inside the project root.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path." },
+        offset: {
+          type: "integer",
+          description: "1-based line number to start reading from.",
+          minimum: 1,
         },
-        required: ["path"],
-        additionalProperties: false,
+        limit: {
+          type: "integer",
+          description: "Maximum number of lines to return.",
+          minimum: 1,
+        },
       },
+      required: ["path"],
+      additionalProperties: false,
     },
+    promptGuidelines: [
+      "Use read for ordinary file inspection rather than cat/sed.",
+      "Use offset/limit to page through large files.",
+      "Inspect an existing file before changing it.",
+    ],
   },
   {
-    type: "function",
-    function: {
-      name: "write",
-      description: "Create or fully overwrite a UTF-8 text file.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "File path." },
-          content: { type: "string", description: "Full file content." },
-        },
-        required: ["path", "content"],
-        additionalProperties: false,
+    name: "write",
+    description: "Create or fully overwrite a UTF-8 text file.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path." },
+        content: { type: "string", description: "Full file content." },
       },
+      required: ["path", "content"],
+      additionalProperties: false,
     },
+    promptGuidelines: [
+      "Use write only to create a file or replace all of one; use edit for local changes.",
+      "Confirm the path and the complete content before writing.",
+    ],
   },
   {
-    type: "function",
-    function: {
-      name: "edit",
-      description: "Replace one exact, unique text occurrence in a file.",
-      parameters: {
-        type: "object",
-        properties: {
-          path: { type: "string", description: "File path." },
-          old_text: { type: "string", description: "Exact text to replace." },
-          new_text: { type: "string", description: "Replacement text." },
+    name: "edit",
+    description:
+      "Apply a batch of exact, unique text replacements to a file atomically.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "File path." },
+        edits: {
+          type: "array",
+          description:
+            "Non-empty list of exact replacements, matched against the original file content.",
+          minItems: 1,
+          items: {
+            type: "object",
+            properties: {
+              old_text: {
+                type: "string",
+                description:
+                  "Exact text to replace; must appear exactly once in the original content.",
+              },
+              new_text: { type: "string", description: "Replacement text." },
+            },
+            required: ["old_text", "new_text"],
+            additionalProperties: false,
+          },
         },
-        required: ["path", "old_text", "new_text"],
-        additionalProperties: false,
       },
+      required: ["path", "edits"],
+      additionalProperties: false,
     },
+    promptGuidelines: [
+      "Use edit for local changes; targets must exactly and uniquely match the original file.",
+      "Edits in one batch are matched against the original content and must not overlap.",
+      "Inspect the file first and verify the change when practical.",
+    ],
   },
   {
-    type: "function",
-    function: {
-      name: "bash",
-      description: "Run a Bash command in the project root.",
-      parameters: {
-        type: "object",
-        properties: {
-          command: { type: "string", description: "Bash command." },
+    name: "bash",
+    description: "Run a Bash command inside the project root.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: { type: "string", description: "Bash command." },
+        description: {
+          type: "string",
+          description: "Concise purpose of the command.",
         },
-        required: ["command"],
-        additionalProperties: false,
+        workdir: {
+          type: "string",
+          description:
+            "Working directory for the command; must resolve inside the project root. Defaults to the project root.",
+        },
+        timeoutMs: {
+          type: "integer",
+          description: "Timeout in milliseconds.",
+          minimum: 1,
+        },
       },
+      required: ["command", "description"],
+      additionalProperties: false,
     },
+    promptGuidelines: [
+      "Supply a concise description of what the command does.",
+      "Use workdir instead of cd.",
+      "Each call runs in an independent shell; state does not persist between calls.",
+      "On a non-zero exit, inspect the output before retrying.",
+    ],
   },
 ];
 
@@ -253,6 +316,44 @@ function stringArgument(args: Record<string, unknown>, key: string): string {
   return value;
 }
 
+/** Optional positive-integer argument; undefined when absent. */
+function optionalPositiveInteger(
+  args: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = args[key];
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+    throw new Error(`Argument ${key} must be a positive integer`);
+  }
+  return value;
+}
+
+interface EditOperation {
+  oldText: string;
+  newText: string;
+}
+
+/** Validate the batched `edits` argument (non-empty array of pairs). */
+function editsArgument(args: Record<string, unknown>): EditOperation[] {
+  const value = args["edits"];
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error("Missing or invalid argument: edits");
+  }
+  return value.map((entry, index) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error(`edits[${index}] must be an object`);
+    }
+    const record = entry as Record<string, unknown>;
+    return {
+      oldText: stringArgument(record, "old_text"),
+      newText: stringArgument(record, "new_text"),
+    };
+  });
+}
+
 function cancelledResult(context: ToolExecutionContextLike): ToolResult {
   return {
     ok: false,
@@ -288,7 +389,20 @@ export class ToolRegistry {
   }
 
   get definitions(): ToolDefinition[] {
-    return TOOL_DEFINITIONS;
+    // promptGuidelines never leaks into the OpenAI tools payload.
+    return TOOL_SPECS.map((spec) => ({
+      type: "function",
+      function: {
+        name: spec.name,
+        description: spec.description,
+        parameters: spec.parameters,
+      },
+    }));
+  }
+
+  /** Ordered fixed specs, consumed by the System Prompt builder. */
+  get orderedSpecs(): readonly ToolSpec[] {
+    return TOOL_SPECS;
   }
 
   executionMode(name: string): ToolExecutionMode | undefined {
@@ -308,11 +422,32 @@ export class ToolRegistry {
 
       if (name === "read") {
         const target = await this.resolvePath(stringArgument(args, "path"));
+        const offset = optionalPositiveInteger(args, "offset") ?? 1;
+        const limit = optionalPositiveInteger(args, "limit");
         const content = await this.io.readFile(target);
         if (execution.isCancelled()) {
           return cancelledResult(execution);
         }
-        return { ok: true, content: this.truncate(content) };
+        // Split after each newline so a window rejoins byte-identically.
+        const lines = content === "" ? [] : content.split(/(?<=\n)/);
+        const totalLines = lines.length;
+        if (offset > Math.max(totalLines, 1)) {
+          throw new Error(
+            `offset ${offset} is out of range; the file has ${totalLines} lines`,
+          );
+        }
+        const window = lines.slice(
+          offset - 1,
+          limit === undefined ? undefined : offset - 1 + limit,
+        );
+        return {
+          ok: true,
+          content: this.truncate(window.join("")),
+          offset,
+          limit: limit ?? null,
+          total_lines: totalLines,
+          has_more: offset - 1 + window.length < totalLines,
+        };
       }
 
       if (name === "write") {
@@ -331,33 +466,65 @@ export class ToolRegistry {
       if (name === "edit") {
         const rawPath = stringArgument(args, "path");
         const target = await this.resolvePath(rawPath);
+        const edits = editsArgument(args);
         return await withFileMutationLock(target, async () => {
           if (execution.isCancelled()) {
             return cancelledResult(execution);
           }
           const content = await this.io.readFile(target);
-          const oldText = stringArgument(args, "old_text");
-          const matches = countOccurrences(content, oldText);
-          if (matches !== 1) {
-            throw new Error(
-              `old_text must appear exactly once; found ${matches} matches`,
-            );
+          // Every edit matches against the pre-edit original content.
+          const ranges = edits.map((edit, index) => {
+            const matches = countOccurrences(content, edit.oldText);
+            if (matches !== 1) {
+              throw new Error(
+                `edits[${index}]: old_text must appear exactly once; ` +
+                  `found ${matches} matches`,
+              );
+            }
+            const start = content.indexOf(edit.oldText);
+            return { start, end: start + edit.oldText.length, index };
+          });
+          const ordered = [...ranges].sort((a, b) => a.start - b.start);
+          for (let i = 1; i < ordered.length; i += 1) {
+            const previous = ordered[i - 1]!;
+            const current = ordered[i]!;
+            if (current.start < previous.end) {
+              throw new Error(
+                `edits[${previous.index}] and edits[${current.index}] overlap`,
+              );
+            }
           }
+          let updated = "";
+          let cursor = 0;
+          for (const range of ordered) {
+            updated += content.slice(cursor, range.start);
+            updated += edits[range.index]!.newText;
+            cursor = range.end;
+          }
+          updated += content.slice(cursor);
           if (execution.isCancelled()) {
             return cancelledResult(execution);
           }
-          await this.io.writeFile(
-            target,
-            content.replace(oldText, stringArgument(args, "new_text")),
-          );
+          await this.io.writeFile(target, updated);
           return { ok: true, path: rawPath };
         });
       }
 
       if (name === "bash") {
-        return await this.runBash(stringArgument(args, "command"), {
-          cwd: this.root,
-          timeoutSeconds: this.bashTimeoutSeconds,
+        const command = stringArgument(args, "command");
+        // Required by the schema; validated here too so direct execute()
+        // callers get the same enforcement.
+        stringArgument(args, "description");
+        const workdir = args["workdir"];
+        const cwd =
+          workdir === undefined
+            ? this.root
+            : await this.resolvePath(stringArgument(args, "workdir"));
+        const timeoutMs = optionalPositiveInteger(args, "timeoutMs");
+        return await this.runBash(command, {
+          cwd,
+          timeoutSeconds:
+            timeoutMs === undefined ? this.bashTimeoutSeconds : timeoutMs / 1000,
           maxOutputChars: this.maxOutputChars,
           context: execution,
           env: process.env,

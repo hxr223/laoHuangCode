@@ -100,7 +100,14 @@ test("user can write then read a file", async (t) => {
   const read = await tools.execute("read", { path: "notes/hello.txt" });
 
   assert.equal(written.ok, true);
-  assert.deepEqual(read, { ok: true, content: "hello\n" });
+  assert.deepEqual(read, {
+    ok: true,
+    content: "hello\n",
+    offset: 1,
+    limit: null,
+    total_lines: 1,
+    has_more: false,
+  });
 });
 
 test("file tools block parent directory traversal", async (t) => {
@@ -146,8 +153,7 @@ test("user can replace one exact text match", async (t) => {
 
   const result = await tools.execute("edit", {
     path: "app.py",
-    old_text: "answer = 41",
-    new_text: "answer = 42",
+    edits: [{ old_text: "answer = 41", new_text: "answer = 42" }],
   });
 
   assert.equal(result.ok, true);
@@ -166,18 +172,92 @@ test("edit refuses missing or ambiguous text", async (t) => {
 
   const missing = await tools.execute("edit", {
     path: "items.txt",
-    old_text: "absent",
-    new_text: "new",
+    edits: [{ old_text: "absent", new_text: "new" }],
   });
   const ambiguous = await tools.execute("edit", {
     path: "items.txt",
-    old_text: "same",
-    new_text: "new",
+    edits: [{ old_text: "same", new_text: "new" }],
   });
 
   assert.equal(missing.ok, false);
   assert.equal(ambiguous.ok, false);
   assert.equal(await fs.readFile(filePath, "utf8"), original);
+});
+
+test("edit applies multiple non-adjacent replacements against the original", async (t) => {
+  const root = await makeTempDir(t);
+  const filePath = path.join(root, "app.py");
+  await fs.writeFile(filePath, "a = 1\nb = 2\nc = 3\n", "utf8");
+  const tools = new ToolRegistry(root);
+
+  const result = await tools.execute("edit", {
+    path: "app.py",
+    edits: [
+      { old_text: "a = 1", new_text: "a = 10" },
+      { old_text: "c = 3", new_text: "c = 30" },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(filePath, "utf8"), "a = 10\nb = 2\nc = 30\n");
+});
+
+test("edit batch matches all targets against the original content", async (t) => {
+  const root = await makeTempDir(t);
+  const filePath = path.join(root, "chain.txt");
+  const original = "abc\n";
+  await fs.writeFile(filePath, original, "utf8");
+  const tools = new ToolRegistry(root);
+
+  // "xbc" only exists after the first replacement; matching against the
+  // original means the second edit cannot see it and the batch must fail.
+  const result = await tools.execute("edit", {
+    path: "chain.txt",
+    edits: [
+      { old_text: "abc", new_text: "xbc" },
+      { old_text: "xbc", new_text: "ybc" },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error as string, /exactly once/);
+  assert.equal(await fs.readFile(filePath, "utf8"), original);
+});
+
+test("edit rejects overlapping replacements atomically", async (t) => {
+  const root = await makeTempDir(t);
+  const filePath = path.join(root, "overlap.txt");
+  const original = "abcdef\n";
+  await fs.writeFile(filePath, original, "utf8");
+  const tools = new ToolRegistry(root);
+
+  const result = await tools.execute("edit", {
+    path: "overlap.txt",
+    edits: [
+      { old_text: "abc", new_text: "ABC" },
+      { old_text: "cde", new_text: "CDE" },
+    ],
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error as string, /overlap/);
+  assert.equal(await fs.readFile(filePath, "utf8"), original);
+});
+
+test("edit requires a non-empty edits array", async (t) => {
+  const root = await makeTempDir(t);
+  await fs.writeFile(path.join(root, "app.py"), "answer = 41\n", "utf8");
+  const tools = new ToolRegistry(root);
+
+  const missing = await tools.execute("edit", { path: "app.py" });
+  const empty = await tools.execute("edit", { path: "app.py", edits: [] });
+
+  assert.equal(missing.ok, false);
+  assert.equal(empty.ok, false);
+  assert.equal(
+    await fs.readFile(path.join(root, "app.py"), "utf8"),
+    "answer = 41\n",
+  );
 });
 
 test("bash runs in project root and returns process result", async (t) => {
@@ -186,6 +266,7 @@ test("bash runs in project root and returns process result", async (t) => {
 
   const result = await tools.execute("bash", {
     command: "pwd; printf problem >&2",
+    description: "print working directory and a stderr marker",
   });
 
   assert.equal(result.ok, true);
@@ -204,7 +285,10 @@ test("bash timeout returns an error", async (t) => {
     runBash: testRunBash,
   });
 
-  const result = await tools.execute("bash", { command: "sleep 1" });
+  const result = await tools.execute("bash", {
+    command: "sleep 1",
+    description: "sleep past the timeout",
+  });
 
   assert.equal(result.ok, false);
   assert.match(result.error as string, /timed out/i);
@@ -238,6 +322,7 @@ test("bash does not receive model api keys", async (t) => {
   const result = await tools.execute("bash", {
     command:
       'printf \'%s|%s|%s\' "$OPENAI_API_KEY" "$DEEPSEEK_API_KEY" "$LAOHUANG_API_KEY"',
+    description: "check model API keys are stripped",
   });
 
   assert.equal(result.ok, true);
@@ -344,8 +429,8 @@ test("edits to the same file do not lose updates", async (t) => {
   });
 
   const edits = [
-    { path: "shared.txt", old_text: "one", new_text: "ONE" },
-    { path: "shared.txt", old_text: "two", new_text: "TWO" },
+    { path: "shared.txt", edits: [{ old_text: "one", new_text: "ONE" }] },
+    { path: "shared.txt", edits: [{ old_text: "two", new_text: "TWO" }] },
   ];
   const results = await Promise.all(
     edits.map((args) => tools.execute("edit", args)),
@@ -353,6 +438,141 @@ test("edits to the same file do not lose updates", async (t) => {
 
   assert.ok(results.every((result) => result.ok));
   assert.equal(await fs.readFile(filePath, "utf8"), "ONE\nTWO\n");
+});
+
+test("read pages through a file with offset and limit", async (t) => {
+  const root = await makeTempDir(t);
+  await fs.writeFile(path.join(root, "lines.txt"), "1\n2\n3\n4\n5\n", "utf8");
+  const tools = new ToolRegistry(root);
+
+  const whole = await tools.execute("read", { path: "lines.txt" });
+  assert.deepEqual(whole, {
+    ok: true,
+    content: "1\n2\n3\n4\n5\n",
+    offset: 1,
+    limit: null,
+    total_lines: 5,
+    has_more: false,
+  });
+
+  const window = await tools.execute("read", {
+    path: "lines.txt",
+    offset: 2,
+    limit: 2,
+  });
+  assert.deepEqual(window, {
+    ok: true,
+    content: "2\n3\n",
+    offset: 2,
+    limit: 2,
+    total_lines: 5,
+    has_more: true,
+  });
+
+  const rest = await tools.execute("read", { path: "lines.txt", offset: 4 });
+  assert.deepEqual(rest, {
+    ok: true,
+    content: "4\n5\n",
+    offset: 4,
+    limit: null,
+    total_lines: 5,
+    has_more: false,
+  });
+});
+
+test("read rejects an out-of-range offset", async (t) => {
+  const root = await makeTempDir(t);
+  await fs.writeFile(path.join(root, "lines.txt"), "1\n2\n", "utf8");
+  const tools = new ToolRegistry(root);
+
+  const beyond = await tools.execute("read", { path: "lines.txt", offset: 3 });
+  const zero = await tools.execute("read", { path: "lines.txt", offset: 0 });
+
+  assert.equal(beyond.ok, false);
+  assert.match(beyond.error as string, /out of range/);
+  assert.equal(zero.ok, false);
+});
+
+test("read handles an empty file", async (t) => {
+  const root = await makeTempDir(t);
+  await fs.writeFile(path.join(root, "empty.txt"), "", "utf8");
+  const tools = new ToolRegistry(root);
+
+  const result = await tools.execute("read", { path: "empty.txt" });
+
+  assert.deepEqual(result, {
+    ok: true,
+    content: "",
+    offset: 1,
+    limit: null,
+    total_lines: 0,
+    has_more: false,
+  });
+});
+
+test("bash schema requires a description", async (t) => {
+  const directory = await makeTempDir(t);
+  const tools = new ToolRegistry(directory, { runBash: testRunBash });
+
+  const bash = tools.definitions.find(
+    (definition) => definition.function.name === "bash",
+  );
+  const required = (bash?.function.parameters as Record<string, unknown>)[
+    "required"
+  ];
+  assert.ok((required as string[]).includes("description"));
+
+  const result = await tools.execute("bash", { command: "true" });
+  assert.equal(result.ok, false);
+  assert.match(result.error as string, /description/);
+});
+
+test("bash runs in workdir inside the project root", async (t) => {
+  const directory = await makeTempDir(t);
+  await fs.mkdir(path.join(directory, "sub"));
+  const tools = new ToolRegistry(directory, { runBash: testRunBash });
+
+  const result = await tools.execute("bash", {
+    command: "pwd",
+    description: "print working directory",
+    workdir: "sub",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    (result.stdout as string).trim(),
+    await fs.realpath(path.join(directory, "sub")),
+  );
+});
+
+test("bash rejects a workdir outside the project root", async (t) => {
+  const base = await makeTempDir(t);
+  const root = path.join(base, "project");
+  await fs.mkdir(root);
+  const tools = new ToolRegistry(root, { runBash: testRunBash });
+
+  const result = await tools.execute("bash", {
+    command: "pwd",
+    description: "print working directory",
+    workdir: "..",
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error as string, /outside the project root/);
+});
+
+test("bash honors timeoutMs over the registry default", async (t) => {
+  const directory = await makeTempDir(t);
+  const tools = new ToolRegistry(directory, { runBash: testRunBash });
+
+  const result = await tools.execute("bash", {
+    command: "sleep 1",
+    description: "sleep past the timeout",
+    timeoutMs: 20,
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.error as string, /timed out/i);
 });
 
 async function exists(target: string): Promise<boolean> {
