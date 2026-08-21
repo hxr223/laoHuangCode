@@ -116,9 +116,26 @@ class BashRunnerTests(unittest.TestCase):
     def test_cancel_token_stops_running_command(self):
         with tempfile.TemporaryDirectory() as directory:
             token = CancelToken()
-            context = ToolExecutionContext(cancel_token=token)
-            timer = threading.Timer(0.03, lambda: token.cancel("user requested"))
-            timer.start()
+            before_seen = threading.Event()
+
+            def sink(kind: str, payload: dict) -> None:
+                if (
+                    kind == "tool.output_delta"
+                    and payload.get("stream") == "stdout"
+                    and "before" in payload.get("text", "")
+                ):
+                    before_seen.set()
+
+            context = ToolExecutionContext(cancel_token=token, event_sink=sink)
+
+            def cancel_once_output_starts() -> None:
+                # Cancel only after "before" is observable; a fixed delay races
+                # with login-shell startup on slow CI runners.
+                before_seen.wait(timeout=5)
+                token.cancel("user requested")
+
+            canceller = threading.Thread(target=cancel_once_output_starts, daemon=True)
+            canceller.start()
             try:
                 result = run_bash(
                     "printf before; sleep 10; printf after",
@@ -128,7 +145,7 @@ class BashRunnerTests(unittest.TestCase):
                     context=context,
                 )
             finally:
-                timer.cancel()
+                canceller.join(timeout=1)
 
             self.assertEqual(result.status, "cancelled")
             self.assertEqual(result.error, "user requested")
