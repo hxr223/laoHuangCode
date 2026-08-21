@@ -3,9 +3,11 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
+from prompt_toolkit.document import Document
+
 from laohuangcode.agent import CodingAgent
 from laohuangcode.cli import run_repl
-from laohuangcode.commands import SessionCommands
+from laohuangcode.commands import CommandCompleter, CommandRegistry, CommandSpec, SessionCommands
 from laohuangcode.config import Config
 from laohuangcode.credentials import CredentialStore
 from laohuangcode.model_selection import ModelSelector
@@ -13,6 +15,134 @@ from laohuangcode.tools import ToolRegistry
 
 
 class SessionCommandTests(unittest.TestCase):
+    def test_registry_completion_has_replacement_start_and_respects_state(self):
+        registry = CommandRegistry(
+            (
+                CommandSpec("/exit", "退出", "/exit"),
+                CommandSpec("/login", "登录", "/login", allowed_states=frozenset({"IDLE"})),
+                CommandSpec(
+                    "/model",
+                    "模型",
+                    "/model [provider]",
+                    allowed_states=frozenset({"IDLE"}),
+                    argument_completer=lambda _arguments: (("current", "当前模型"),),
+                ),
+            )
+        )
+
+        self.assertEqual(
+            registry.complete("/lo", state="RUNNING_MODEL"), ()
+        )
+        self.assertEqual(
+            registry.complete("/mo", state="RUNNING_MODEL")[0].value, "/model"
+        )
+        self.assertEqual(
+            registry.complete("/model ", state="RUNNING_MODEL")[0].value, "current"
+        )
+        self.assertEqual(
+            registry.complete("/ex", state="IDLE")[0].start, -3
+        )
+    def _commands(self, root, *, outputs, session=None):
+        credentials = CredentialStore(root / "credentials.json")
+        return SessionCommands(
+            agent=CodingAgent(
+                client=SimpleNamespace(),
+                model="deepseek-v4-flash",
+                provider="deepseek",
+                tools=ToolRegistry(root),
+            ),
+            selector=ModelSelector(
+                credentials=credentials,
+                input_fn=lambda _prompt: self.fail("no selection expected"),
+                secret_input_fn=lambda _prompt: self.fail("no secret expected"),
+                output_fn=outputs.append,
+            ),
+            credentials=credentials,
+            current_config=Config(
+                api_key="hidden",
+                model="deepseek-v4-flash",
+                provider="deepseek",
+            ),
+            secret_input_fn=lambda _prompt: "unused",
+            output_fn=outputs.append,
+            session=session,
+        )
+
+    def test_slash_commands_and_model_arguments_are_completed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = self._commands(Path(directory), outputs=[])
+            completer = CommandCompleter(commands.registry)
+
+            commands_found = list(
+                completer.get_completions(Document("/mo"), None)
+            )
+            models_found = list(
+                completer.get_completions(Document("/model deepseek "), None)
+            )
+            plain_found = list(
+                completer.get_completions(Document("please read files"), None)
+            )
+
+            self.assertIn("/model", [item.text for item in commands_found])
+            self.assertIn(
+                "deepseek-v4-flash", [item.text for item in models_found]
+            )
+            self.assertEqual(plain_found, [])
+
+    def test_running_completion_filters_mutating_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            commands = self._commands(Path(directory), outputs=[])
+            completer = CommandCompleter(
+                commands.registry, state_fn=lambda: "RUNNING_MODEL"
+            )
+
+            commands_found = list(
+                completer.get_completions(Document("/"), None)
+            )
+            model_arguments = list(
+                completer.get_completions(Document("/model "), None)
+            )
+
+            names = [item.text for item in commands_found]
+            self.assertNotIn("/login", names)
+            self.assertIn("/cancel", names)
+            self.assertIn("/model", names)
+            self.assertEqual(
+                [item.text for item in model_arguments], ["current"]
+            )
+
+    def test_queue_commands_delegate_to_agent_session(self):
+        session = SimpleNamespace(
+            queue_status=lambda: {
+                "pending": 2,
+                "held": 1,
+                "pending_tokens": 20,
+                "held_tokens": 10,
+                "dead_letters": 1,
+            },
+            clear_queues=lambda: 3,
+            resume_held=lambda: 1,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            outputs = []
+            commands = self._commands(
+                Path(directory), outputs=outputs, session=session
+            )
+
+            commands.handle("/queue")
+            commands.handle("/queue resume")
+            commands.handle("/queue clear")
+
+            self.assertEqual(
+                outputs,
+                [
+                    "Pending: 2 (20 est. tokens) · Held: 1 (10 est. tokens)"
+                    " · Dead letters: 1",
+                    "Resumed 1 held message(s).",
+                    "Cleared 3 queued message(s).",
+                ],
+            )
+
     def test_model_current_reports_the_active_provider_and_model(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

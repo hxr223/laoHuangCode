@@ -1,13 +1,815 @@
 import io
 from pathlib import Path
+from types import SimpleNamespace
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.data_structures import Size
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
+from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
-from laohuangcode.terminal_ui import TerminalUI
+from laohuangcode.commands import CommandRegistry, CommandSpec
+from laohuangcode.terminal_editor import EditorState, InputAction, InputActionKind
+from laohuangcode.terminal_input import PiInputSession
+from laohuangcode.terminal_screen import (
+    MemoryTerminalDriver,
+    PiMainScreenRenderer,
+    visible_width,
+)
+from laohuangcode.terminal_ui import PlainEventSink, TerminalUI, _input_bindings
+from laohuangcode.ui_state import UIUpdate
+from tests.terminal_emulator import TerminalEmulator
+
+
+def event(kind: str, correlation_id: str, **payload: object) -> dict[str, object]:
+    return {"kind": kind, "correlation_id": correlation_id, "payload": payload}
 
 
 class TerminalUITests(unittest.TestCase):
+    def test_loop_preserves_first_turn_while_second_response_streams(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        submitted = []
+
+        ui.start_loop(submitted.append)
+        ui.feed_input_bytes(b"first\r")
+        ui.publish_event(event("model.text_delta", "r1", text="answer one"))
+        ui.publish_event(event("model.response_committed", "r1"))
+        ui.feed_input_bytes(b"second\r")
+        ui.publish_event(event("model.text_delta", "r2", text="answer two"))
+        ui.drain_loop()
+
+        self.assertEqual(submitted, ["first", "second"])
+        self.assertIn("first", terminal.writes())
+        self.assertIn("answer one", terminal.writes())
+        self.assertIn("answer two", terminal.writes())
+
+    def test_second_response_does_not_rewrite_frozen_first_turn_bytes(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"one\r")
+        ui.publish_event(event("model.text_delta", "r1", text="first answer"))
+        ui.drain_loop()
+        self.assertIn("first answer", terminal.writes())
+        terminal.clear_writes()
+        ui.publish_event(event("model.response_committed", "r1"))
+        ui.drain_loop()
+        self.assertNotIn("first answer", terminal.writes())
+        self.assertNotIn("\r\n", terminal.writes())
+
+        ui.feed_input_bytes(b"two\r")
+        ui.drain_loop()
+        terminal.clear_writes()
+        ui.publish_event(event("model.text_delta", "r2", text="second answer"))
+        ui.drain_loop()
+
+        self.assertNotIn("first answer", terminal.writes())
+        self.assertIn("second answer", terminal.writes())
+
+    def test_event_publication_does_not_write_before_loop_drains(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        ui.publish_event(event("ui.message", "", text="queued"))
+
+        self.assertEqual(terminal.writes(), "")
+        ui.drain_loop()
+        self.assertIn("queued", terminal.writes())
+
+    def test_input_bytes_do_not_mutate_before_loop_drains(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        submitted = []
+        ui.start_loop(submitted.append)
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"queued input\r")
+
+        self.assertEqual(submitted, [])
+        self.assertEqual(terminal.writes(), "")
+        ui.drain_loop()
+        self.assertEqual(submitted, ["queued input"])
+        self.assertIn("queued input", terminal.writes())
+
+    def test_typing_updates_editor_line_without_appending_prompt_history(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"a")
+        ui.drain_loop()
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"s")
+        ui.drain_loop()
+
+        self.assertEqual(len(terminal.write_chunks()), 1)
+        self.assertIn("\r\x1b[2K❯ as", terminal.writes())
+        self.assertEqual(terminal.writes().count("\x1b[2K"), 1)
+        self.assertNotIn("\r\n", terminal.writes())
+        self.assertNotIn("\r\n❯ a", terminal.writes())
+
+    def test_typing_updates_editor_line_semantically_in_four_rows(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=4)
+        emulator = TerminalEmulator(columns=80, rows=4)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"a")
+        ui.drain_loop()
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"s")
+        ui.drain_loop()
+        emulator.write(terminal.writes())
+
+        rendered = "\n".join(emulator.logical_lines)
+        self.assertEqual(rendered.count("❯ "), 1)
+        self.assertIn("❯ as", emulator.viewport_lines)
+        self.assertNotIn("❯ a", emulator.logical_lines)
+
+    def test_three_ascii_keystrokes_leave_cursor_after_third_character(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=4)
+        emulator = TerminalEmulator(columns=80, rows=4)
+        ui = TerminalUI(theme="dark", terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+
+        for char in b"asd":
+            ui.feed_input_bytes(bytes([char]))
+            ui.drain_loop()
+            emulator.write(terminal.writes())
+            terminal.clear_writes()
+
+        self.assertEqual(
+            emulator.viewport_lines[:3],
+            ("─" * 80, "❯ asd", "─" * 80),
+        )
+        self.assertEqual(emulator.cursor_row, 1)
+        self.assertEqual(emulator.cursor_column, 5)
+        self.assertEqual("\n".join(emulator.logical_lines).count("❯ "), 1)
+
+    def test_two_completed_turns_remain_in_history_without_tail_truncation(self):
+        ui = TerminalUI(theme="light")
+        ui.accept_user_input("first question")
+        ui.apply_projected_event(event("model.text_delta", "r1", text="first answer"))
+        ui.apply_projected_event(event("model.response_committed", "r1"))
+        ui.accept_user_input("second question")
+        ui.apply_projected_event(event("model.text_delta", "r2", text="second answer"))
+
+        rendered = "\n".join(ui.build_history_lines(width=80))
+        self.assertIn("first question", rendered)
+        self.assertIn("first answer", rendered)
+        self.assertIn("second question", rendered)
+        self.assertIn("second answer", rendered)
+
+    def test_second_request_cannot_mutate_frozen_first_response(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.text_delta", "r1", text="one"))
+        ui.apply_projected_event(event("model.response_committed", "r1"))
+        ui.apply_projected_event(event("model.text_delta", "r2", text="two"))
+
+        self.assertEqual(ui.block_for("assistant", "r1").text, "one")
+        self.assertEqual(ui.block_for("assistant", "r2").text, "two")
+
+    def test_frame_active_start_includes_mutable_response(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.text_delta", "r1", text="one"))
+
+        frame = ui.build_frame(width=80, editor=EditorState())
+
+        self.assertIn("one", frame.lines[frame.active_start])
+
+    def test_raw_frame_preserves_non_markdown_block_styles(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))
+        ui.apply_projected_event(event("tool.started", "tool-1", name="bash"))
+
+        rendered = "\n".join(ui.build_history_lines(width=80))
+
+        self.assertIn("\x1b[3;38;2;128;128;128mthinking  plan", rendered)
+        self.assertIn("\x1b[48;2;40;40;50;38;2;212;212;212m", rendered)
+        self.assertIn("● bash", rendered)
+
+    def test_tool_start_freezes_superseded_reasoning(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))
+        ui.apply_projected_event(event("tool.started", "tool-1", name="bash"))
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text=" late"))
+
+        self.assertEqual(ui.block_for("thinking", "r1").text, "plan")
+
+    def test_text_response_freezes_superseded_reasoning(self):
+        ui = TerminalUI(theme="dark")
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text="plan"))
+        ui.apply_projected_event(event("model.text_delta", "r1", text="answer"))
+        ui.apply_projected_event(event("model.reasoning_delta", "r1", text=" late"))
+
+        self.assertEqual(ui.block_for("thinking", "r1").text, "plan")
+
+    def test_plain_sink_outputs_one_complete_model_response(self):
+        output = []
+        sink = PlainEventSink(output.append)
+        base = {
+            "source": "model",
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "correlation_id": "request-1",
+            "sequence": 1,
+        }
+        sink.publish_event(
+            {
+                **base,
+                "kind": "model.text_delta",
+                "payload": {"text": "hello "},
+            }
+        )
+        sink.publish_event(
+            {
+                **base,
+                "kind": "model.text_delta",
+                "payload": {"text": "world"},
+            }
+        )
+        sink.publish_event(
+            {
+                **base,
+                "kind": "model.response_committed",
+                "payload": {},
+            }
+        )
+        sink.flush()
+        sink.stop()
+
+        self.assertEqual(output, ["hello world"])
+
+    def test_real_prompt_frame_is_compact_and_has_both_borders(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=40, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        with create_pipe_input() as pipe:
+            ui = TerminalUI(
+                console=Console(file=io.StringIO(), force_terminal=False),
+                session_factory=lambda **options: PromptSession(
+                    input=pipe,
+                    output=output,
+                    **options,
+                ),
+            )
+
+            def prompt() -> None:
+                try:
+                    ui.prompt()
+                except EOFError:
+                    pass
+
+            worker = threading.Thread(target=prompt)
+            worker.start()
+            time.sleep(0.05)
+            rendered = output_buffer.getvalue()
+            pipe.send_bytes(b"\x04")
+            worker.join(1)
+
+        self.assertIn("┌", rendered)
+        self.assertIn("└", rendered)
+        self.assertIn("│", rendered)
+        self.assertLessEqual(rendered.count("\r\n"), 3)
+
+    def test_pi_input_session_uses_horizontal_borders_without_side_edges(self):
+        class TTYBuffer(io.StringIO):
+            def isatty(self):
+                return True
+
+        output_buffer = TTYBuffer()
+        output = Vt100_Output(
+            output_buffer,
+            lambda: Size(rows=20, columns=60),
+            term="xterm",
+            enable_cpr=False,
+        )
+        with create_pipe_input() as pipe:
+            session = PiInputSession(input=pipe, output=output)
+            result = []
+            worker = threading.Thread(target=lambda: result.append(session.prompt()))
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("hello")
+            pipe.send_bytes(b"\r")
+            worker.join(1)
+
+        rendered = output_buffer.getvalue()
+        self.assertEqual(result, ["hello"])
+        self.assertIn("─", rendered)
+        self.assertIn("❯", rendered)
+        self.assertNotIn("│", rendered)
+
+    def test_raw_loop_owns_transcript_and_editor_together(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(theme="light", terminal_driver=terminal)
+        submitted = []
+
+        ui.show_welcome()
+        ui.start_loop(submitted.append)
+        ui.feed_input_bytes(b"hello\r")
+        ui.drain_loop()
+
+        self.assertEqual(submitted, ["hello"])
+        self.assertIn("laoHuangCode", terminal.writes())
+        self.assertIn("hello", terminal.writes())
+
+    def test_raw_loop_stays_in_the_regular_terminal_screen(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+
+        ui.start_loop(lambda _text: None)
+        ui.drain_loop()
+        ui.request_exit()
+
+        self.assertNotIn("\x1b[?1049h", terminal.writes())
+        self.assertNotIn("\x1b[2J", terminal.writes())
+
+    def test_raw_loop_bracketed_paste_lifecycle_writes_start_and_close(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+
+        ui.start_loop(lambda _text: None)
+        self.assertIn("\x1b[?2004h", terminal.writes())
+
+        ui.close()
+
+        self.assertIn("\x1b[?2004l", terminal.writes())
+
+    def test_raw_loop_restores_modify_other_keys_on_close(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        terminal.clear_writes()
+
+        ui.feed_input_bytes(b"\x1b[?1;2c")
+        ui.drain_loop()
+        self.assertIn("\x1b[>4;2m", terminal.writes())
+
+        terminal.clear_writes()
+        ui.close()
+
+        self.assertIn("\x1b[>4;0m", terminal.writes())
+
+    def test_raw_loop_split_paste_submits_multiline_content_only(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        submitted = []
+        ui.start_loop(submitted.append)
+
+        ui.feed_input_bytes(b"\x1b[200~one\n")
+        ui.drain_loop()
+        ui.feed_input_bytes(b"two\x1b[201~")
+        ui.drain_loop()
+        ui.feed_input_bytes(b"\r")
+        ui.drain_loop()
+
+        self.assertEqual(submitted, ["one\ntwo"])
+        self.assertNotIn("[200~", terminal.writes())
+        self.assertNotIn("[201~", terminal.writes())
+
+    def test_raw_loop_apple_shift_enter_uses_native_shift_detector(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        submitted = []
+        with (
+            patch("laohuangcode.terminal_editor.platform.system", return_value="Darwin"),
+            patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}),
+            patch("laohuangcode.terminal_ui._is_native_shift_pressed", return_value=True),
+        ):
+            ui = TerminalUI(terminal_driver=terminal)
+            ui.start_loop(submitted.append)
+            ui.feed_input_bytes(b"\r")
+            ui.drain_loop()
+
+        self.assertEqual(submitted, [])
+        self.assertIsNotNone(ui._interactive_loop)
+        if ui._interactive_loop is not None:
+            self.assertEqual(ui._interactive_loop._editor.text, "\n")
+
+    def test_run_enters_raw_mode_before_keyboard_protocol_query(self):
+        class OrderedDriver(MemoryTerminalDriver):
+            def __init__(self) -> None:
+                super().__init__(columns=80, rows=24)
+                self.events: list[str] = []
+
+            def enter_raw_mode(self) -> None:
+                self.events.append("raw")
+
+            def write(self, data: str) -> None:
+                if "\x1b[>7u\x1b[?u\x1b[c" in data:
+                    self.events.append("query")
+                super().write(data)
+
+        terminal = OrderedDriver()
+        ui = TerminalUI(terminal_driver=terminal)
+        loop = ui._interactive_loop
+        self.assertIsNotNone(loop)
+        if loop is None:
+            return
+        loop.start(lambda _text: None)
+        loop._exit_requested = True
+        loop.run()
+
+        self.assertLess(terminal.events.index("raw"), terminal.events.index("query"))
+
+    def test_raw_loop_goodbye_uses_loop_writer_not_console(self):
+        stream = io.StringIO()
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(
+            console=Console(file=stream, force_terminal=False),
+            terminal_driver=terminal,
+        )
+        ui.start_loop(lambda _text: None)
+
+        ui.show_goodbye()
+
+        self.assertEqual(stream.getvalue(), "")
+        self.assertIn("Goodbye.", terminal.writes())
+
+    def test_closed_raw_loop_error_falls_back_to_console(self):
+        stream = io.StringIO()
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(
+            console=Console(file=stream, force_terminal=False),
+            terminal_driver=terminal,
+        )
+        ui.start_loop(lambda _text: None)
+        ui.close()
+
+        ui.show_error("shutdown failed")
+
+        self.assertIn("Error: shutdown failed", stream.getvalue())
+
+    def test_raw_loop_ignores_a_repeated_exit_request(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+
+        ui.start_loop(lambda _text: None)
+        ui.request_exit()
+        ui.request_exit()
+        ui.drain_loop()
+
+        self.assertIsNone(ui.render_error)
+
+    def test_raw_loop_keeps_command_completion_compact(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        registry = CommandRegistry(
+            [CommandSpec("/exit", "退出程序", "/exit")]
+        )
+        ui = TerminalUI(terminal_driver=terminal, command_registry=registry)
+
+        ui.start_loop(lambda _text: None)
+        ui.feed_input_bytes(b"/e")
+        ui.drain_loop()
+
+        completion_lines = [line for line in terminal.writes().split("\r\n") if "/exit" in line]
+        self.assertEqual(len(completion_lines), 1)
+
+    def test_frame_uses_only_content_rows_for_a_completion(self):
+        registry = CommandRegistry(
+            [CommandSpec("/exit", "退出程序", "/exit")]
+        )
+        ui = TerminalUI(
+            terminal_driver=MemoryTerminalDriver(columns=80, rows=24),
+            command_registry=registry,
+            model="deepseek-v4-flash",
+        )
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "/e"), runtime_active=False)
+        editor.set_completions(registry.complete(editor.text, state="IDLE"))
+        frame = ui.build_frame(width=80, editor=editor)
+
+        self.assertEqual(sum(1 for line in frame.lines if "/exit" in line), 1)
+        self.assertIn("deepseek-v4-flash", frame.lines[-1])
+
+    def test_frame_lines_fit_visible_width_with_cjk_content(self):
+        registry = CommandRegistry(
+            [
+                CommandSpec(
+                    "/extralong",
+                    "说明说明说明 very long completion description",
+                    "/extralong",
+                )
+            ]
+        )
+        ui = TerminalUI(
+            terminal_driver=MemoryTerminalDriver(columns=20, rows=8),
+            command_registry=registry,
+            provider="deepseek",
+            model="deepseek-v4-flash-extra-long",
+        )
+        ui.accept_user_input("你好abc你好abc你好abc")
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "/e"), runtime_active=False)
+        editor.set_completions(registry.complete(editor.text, state="IDLE"))
+
+        frame = ui.build_frame(width=20, editor=editor)
+
+        self.assertTrue(frame.lines)
+        self.assertTrue(all(visible_width(line) <= 20 for line in frame.lines))
+
+    def test_tool_card_lines_fit_visible_width_with_styled_text(self):
+        ui = TerminalUI(
+            terminal_driver=MemoryTerminalDriver(columns=18, rows=8),
+        )
+        ui.apply_projected_event(
+            event(
+                "tool.started",
+                "tool-1",
+                name="bash",
+                arguments={"command": "echo 你好你好你好你好"},
+            )
+        )
+
+        frame = ui.build_frame(width=18, editor=EditorState())
+
+        self.assertTrue(frame.lines)
+        self.assertTrue(all(visible_width(line) <= 18 for line in frame.lines))
+
+    def test_completion_shrink_clears_stale_rows_without_clearing_scrollback(self):
+        terminal = MemoryTerminalDriver(columns=40, rows=4)
+        emulator = TerminalEmulator(columns=40, rows=4)
+        renderer_ui = TerminalUI(
+            terminal_driver=terminal,
+            command_registry=CommandRegistry(
+                [
+                    CommandSpec("/exit", "退出程序", "/exit"),
+                    CommandSpec("/help", "show help", "/help"),
+                    CommandSpec("/model", "choose model", "/model"),
+                ]
+            ),
+        )
+        renderer_ui.accept_user_input("saved scrollback")
+        renderer = PiMainScreenRenderer(terminal)
+        editor = EditorState()
+        editor.apply(InputAction(InputActionKind.INSERT, "/"), runtime_active=False)
+        editor.set_completions(
+            renderer_ui.command_registry.complete(editor.text, state="IDLE")
+        )
+        renderer.render(renderer_ui.build_frame(width=40, editor=editor))
+        emulator.write(terminal.writes())
+        terminal.clear_writes()
+        self.assertIn("saved scrollback", "\n".join(emulator.logical_lines))
+
+        editor.apply(InputAction(InputActionKind.INSERT, "h"), runtime_active=False)
+        editor.set_completions(
+            renderer_ui.command_registry.complete(editor.text, state="IDLE")
+        )
+        renderer.render(renderer_ui.build_frame(width=40, editor=editor))
+        emulator.write(terminal.writes())
+
+        rendered = "\n".join(emulator.logical_lines)
+        viewport = "\n".join(emulator.viewport_lines)
+        self.assertIn("saved scrollback", rendered)
+        self.assertIn("/help", viewport)
+        self.assertNotIn("/exit", viewport)
+        self.assertNotIn("/model", viewport)
+
+    def test_frame_grows_only_for_actual_multiline_input(self):
+        ui = TerminalUI(terminal_driver=MemoryTerminalDriver(columns=80, rows=24))
+        editor = EditorState()
+        editor.apply(
+            InputAction(InputActionKind.INSERT, "first line\nsecond line"),
+            runtime_active=False,
+        )
+        frame = ui.build_frame(width=80, editor=editor)
+
+        self.assertIn("❯ first line", frame.lines)
+        self.assertIn("  second line", frame.lines)
+        self.assertEqual(
+            sum(
+                1
+                for line in frame.lines
+                if "first line" in line or "second line" in line
+            ),
+            2,
+        )
+
+    def test_raw_loop_reuses_editor_for_command_questions(self):
+        terminal = MemoryTerminalDriver(columns=80, rows=24)
+        ui = TerminalUI(terminal_driver=terminal)
+        ui.start_loop(lambda _text: None)
+        answers = []
+        asker = threading.Thread(
+            target=lambda: answers.append(ui.prompt("Select model:"))
+        )
+
+        asker.start()
+        time.sleep(0.05)
+        ui.drain_loop()
+        ui.feed_input_bytes(b"1\r")
+        ui.drain_loop()
+        asker.join(1)
+
+        self.assertEqual(answers, ["1"])
+        self.assertIn("Select model:", terminal.writes())
+
+    def test_single_renderer_keeps_stream_text_across_tool_boundaries(self):
+        ui = TerminalUI(theme="light")
+        ui._apply_transcript_update(
+            UIUpdate("model.reasoning_delta", text="thinking", correlation_id="r1")
+        )
+        ui._apply_transcript_update(
+            UIUpdate(
+                "tool.started",
+                correlation_id="tool-1",
+                payload={"name": "bash", "arguments": {"command": "ls -la"}},
+            )
+        )
+        ui._apply_transcript_update(
+            UIUpdate(
+                "tool.finished",
+                correlation_id="tool-1",
+                payload={"status": "completed", "exit_code": 0, "duration_ms": 1},
+            )
+        )
+        ui._apply_transcript_update(
+            UIUpdate(
+                "model.text_delta",
+                text="`laoHuangCode` 项目根目录",
+                correlation_id="r2",
+            )
+        )
+
+        rendered = "".join(text for _style, text in ui._render_transcript(60, 30))
+
+        self.assertIn("laoHuangCode 项目根目录", rendered)
+        self.assertNotIn("`", rendered)
+        self.assertIn("completed · exit 0 · 1ms", rendered)
+        self.assertNotIn("very long output", rendered)
+
+    def test_single_renderer_renders_assistant_markdown(self):
+        ui = TerminalUI(theme="dark")
+        ui._apply_transcript_update(
+            UIUpdate(
+                "model.text_delta",
+                text="**加粗**、`代码`\n\n- 第一项",
+                correlation_id="response-1",
+            )
+        )
+
+        fragments = ui._render_transcript(80, 30)
+        rendered = "".join(text for _style, text in fragments)
+
+        self.assertIn("加粗", rendered)
+        self.assertIn("代码", rendered)
+        self.assertIn("第一项", rendered)
+        self.assertNotIn("**", rendered)
+        self.assertNotIn("`", rendered)
+        self.assertTrue(
+            any("bold" in style and "加粗" in text for style, text in fragments)
+        )
+        self.assertTrue(
+            any("bg:" in style and "代码" in text for style, text in fragments)
+        )
+        self.assertFalse(
+            any(
+                "\n" not in text and text.strip() == "" and len(text) > 1
+                for _style, text in fragments
+            )
+        )
+
+    def test_typing_slash_opens_command_completion_immediately(self):
+        calls = []
+
+        class Buffer:
+            text = ""
+            cursor_position = 0
+
+            def insert_text(self, text):
+                self.text += text
+                self.cursor_position += len(text)
+
+            def start_completion(self, *, select_first):
+                calls.append(select_first)
+
+        binding = next(
+            item
+            for item in _input_bindings().bindings
+            if item.keys == ("/",)
+        )
+        buffer = Buffer()
+
+        binding.handler(SimpleNamespace(current_buffer=buffer))
+
+        self.assertEqual(buffer.text, "/")
+        self.assertEqual(calls, [False])
+
+    def test_real_prompt_keeps_slash_completions_live_while_typing(self):
+        registry = CommandRegistry(
+            [
+                CommandSpec("/help", "show help", "/help"),
+                CommandSpec(
+                    "/model",
+                    "choose model",
+                    "/model",
+                    argument_completer=lambda _arguments: (
+                        ("deepseek", "model provider"),
+                        ("openai", "model provider"),
+                    ),
+                ),
+            ]
+        )
+        with create_pipe_input() as pipe:
+            ui = TerminalUI(
+                console=Console(file=io.StringIO(), force_terminal=False),
+                command_registry=registry,
+                session_factory=lambda **options: PromptSession(
+                    input=pipe,
+                    output=DummyOutput(),
+                    **options,
+                ),
+            )
+            errors = []
+
+            def prompt() -> None:
+                try:
+                    ui.prompt()
+                except EOFError:
+                    pass
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=prompt)
+            worker.start()
+            time.sleep(0.05)
+
+            snapshots = []
+            for text in ("/", "h", "e"):
+                pipe.send_text(text)
+                deadline = time.monotonic() + 1
+                while time.monotonic() < deadline:
+                    state = ui._session.default_buffer.complete_state
+                    values = (
+                        tuple(item.text for item in state.completions)
+                        if state is not None
+                        else ()
+                    )
+                    expected = ("/help", "/model") if text == "/" else ("/help",)
+                    if values == expected:
+                        break
+                    time.sleep(0.01)
+                snapshots.append(values)
+
+            pipe.send_bytes(b"\x7f")
+            deadline = time.monotonic() + 1
+            while time.monotonic() < deadline:
+                state = ui._session.default_buffer.complete_state
+                backspace_values = (
+                    tuple(item.text for item in state.completions)
+                    if state is not None
+                    else ()
+                )
+                if backspace_values == ("/help",):
+                    break
+                time.sleep(0.01)
+
+            pipe.send_bytes(b"\x15")
+            pipe.send_text("/model d")
+            deadline = time.monotonic() + 1
+            argument_values = ()
+            argument_meta = ""
+            while time.monotonic() < deadline:
+                state = ui._session.default_buffer.complete_state
+                argument_values = (
+                    tuple(item.text for item in state.completions)
+                    if state is not None
+                    else ()
+                )
+                if argument_values == ("deepseek",):
+                    argument_meta = str(state.completions[0].display_meta)
+                    break
+                time.sleep(0.01)
+
+            pipe.send_bytes(b"\x15")
+            pipe.send_bytes(b"\x04")
+            worker.join(1)
+
+        self.assertFalse(errors)
+        self.assertEqual(
+            snapshots,
+            [("/help", "/model"), ("/help",), ("/help",)],
+        )
+        self.assertEqual(backspace_values, ("/help",))
+        self.assertEqual(argument_values, ("deepseek",))
+        self.assertIn("model provider", argument_meta)
+
     def test_assistant_response_is_rendered_as_markdown_without_chat_prefix(self):
         stream = io.StringIO()
         ui = TerminalUI(
@@ -28,6 +830,7 @@ class TerminalUITests(unittest.TestCase):
 
     def test_prompt_uses_multiline_editing_and_session_history(self):
         options = {}
+        stream = io.StringIO()
 
         class FakeSession:
             def prompt(self):
@@ -38,7 +841,7 @@ class TerminalUITests(unittest.TestCase):
             return FakeSession()
 
         ui = TerminalUI(
-            console=Console(file=io.StringIO(), force_terminal=False),
+            console=Console(file=stream, force_terminal=False),
             session_factory=session_factory,
         )
 
@@ -46,8 +849,13 @@ class TerminalUITests(unittest.TestCase):
 
         self.assertEqual(value, "first line\nsecond line")
         self.assertTrue(options["multiline"])
-        self.assertTrue(options["enable_history_search"])
-        self.assertIn("❯", str(options["message"]))
+        self.assertTrue(options["show_frame"])
+        self.assertTrue(options["erase_when_done"])
+        self.assertIn("first line", stream.getvalue())
+        self.assertIn("second line", stream.getvalue())
+        self.assertFalse(options["enable_history_search"])
+        self.assertIn("❯", str(options["message"]()))
+        self.assertNotIn("bottom_toolbar", options)
         self.assertIsNotNone(options["history"])
         self.assertIsNotNone(options["key_bindings"])
 
@@ -77,9 +885,49 @@ class TerminalUITests(unittest.TestCase):
         self.assertEqual(len(created_sessions), 2)
         self.assertFalse(created_sessions[0]["multiline"])
         self.assertTrue(created_sessions[1]["multiline"])
-        self.assertIn("❯", str(created_sessions[1]["message"]))
+        self.assertTrue(created_sessions[1]["show_frame"])
+        self.assertIn("❯", str(created_sessions[1]["message"]()))
 
-    def test_tool_call_is_rendered_as_a_compact_result_card(self):
+    def test_real_prompt_tab_accepts_first_slash_completion(self):
+        registry = CommandRegistry(
+            [CommandSpec("/help", "show help", "/help")]
+        )
+        with create_pipe_input() as pipe:
+            ui = TerminalUI(
+                console=Console(file=io.StringIO(), force_terminal=False),
+                command_registry=registry,
+                session_factory=lambda **options: PromptSession(
+                    input=pipe,
+                    output=DummyOutput(),
+                    **options,
+                ),
+            )
+            result = []
+            errors = []
+
+            def prompt() -> None:
+                try:
+                    result.append(ui.prompt())
+                except Exception as error:
+                    errors.append(error)
+
+            worker = threading.Thread(target=prompt)
+            worker.start()
+            time.sleep(0.05)
+            pipe.send_text("/")
+            deadline = time.monotonic() + 1
+            while (
+                ui._session is None
+                or ui._session.default_buffer.complete_state is None
+            ) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            pipe.send_bytes(b"\t\r")
+            worker.join(1)
+
+        self.assertFalse(errors)
+        self.assertEqual(result, ["/help"])
+
+    def test_tool_call_hides_stdout_but_keeps_stderr_in_result_card(self):
         stream = io.StringIO()
         ui = TerminalUI(
             console=Console(
@@ -97,7 +945,7 @@ class TerminalUITests(unittest.TestCase):
                 "ok": True,
                 "exit_code": 0,
                 "stdout": "24 tests passed",
-                "stderr": "",
+                "stderr": "test warning",
             },
         )
 
@@ -105,7 +953,63 @@ class TerminalUITests(unittest.TestCase):
         self.assertIn("● bash", rendered)
         self.assertIn("python -m unittest", rendered)
         self.assertIn("exit 0", rendered)
-        self.assertIn("24 tests passed", rendered)
+        self.assertNotIn("24 tests passed", rendered)
+        self.assertIn("test warning", rendered)
+
+    def test_event_sinks_hide_stdout_but_render_stderr_and_status(self):
+        base = {
+            "source": "tool",
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "correlation_id": "call-1",
+            "sequence": 1,
+        }
+        events = [
+            {**base, "kind": "tool.started", "payload": {"name": "bash"}},
+            {
+                **base,
+                "kind": "tool.output_delta",
+                "payload": {"stream": "stdout", "text": "very long output"},
+            },
+            {
+                **base,
+                "kind": "tool.output_delta",
+                "payload": {"stream": "stderr", "text": "warning\n"},
+            },
+            {
+                **base,
+                "kind": "tool.finished",
+                "payload": {"status": "completed", "exit_code": 0},
+            },
+        ]
+
+        plain_output = []
+        plain = PlainEventSink(plain_output.append)
+        for event in events:
+            plain.publish_event(event)
+        plain.flush()
+        plain.stop()
+
+        stream = io.StringIO()
+        ui = TerminalUI(
+            console=Console(
+                file=stream,
+                color_system=None,
+                force_terminal=False,
+                width=100,
+            )
+        )
+        for event in events:
+            ui.publish_event(event)
+        ui.flush_event_renderer()
+        ui.stop_event_renderer()
+
+        plain_rendered = "\n".join(plain_output)
+        terminal_rendered = stream.getvalue()
+        for rendered in (plain_rendered, terminal_rendered):
+            self.assertNotIn("very long output", rendered)
+            self.assertIn("warning", rendered)
+            self.assertIn("completed", rendered)
 
     def test_welcome_panel_shows_session_context(self):
         stream = io.StringIO()
@@ -127,7 +1031,7 @@ class TerminalUITests(unittest.TestCase):
         rendered = stream.getvalue()
         self.assertIn("laoHuangCode", rendered)
         self.assertIn("/tmp/demo", rendered)
-        self.assertIn("deepseek / deepseek-v4-pro", rendered)
+        self.assertIn("deepseek/deepseek-v4-pro", rendered)
         self.assertIn("http://127.0.0.1:8765/", rendered)
 
 

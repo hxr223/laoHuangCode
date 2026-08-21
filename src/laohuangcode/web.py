@@ -38,6 +38,7 @@ DASHBOARD_HTML = """<!doctype html>
   <main id="events"><div class="empty">等待 Agent 事件…</div></main>
   <script>
     let lastId = 0;
+    let polling = false;
     const events = document.getElementById('events');
     const status = document.getElementById('status');
     function addEvent(event) {
@@ -57,9 +58,14 @@ DASHBOARD_HTML = """<!doctype html>
       body.append(type, payload);
       card.append(meta, body);
       events.append(card);
+      while (events.querySelectorAll('.event').length > 1000) {
+        events.querySelector('.event').remove();
+      }
       lastId = Math.max(lastId, event.id);
     }
     async function poll() {
+      if (polling) return;
+      polling = true;
       try {
         const response = await fetch(`/api/events?after=${lastId}`, {cache: 'no-store'});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -70,6 +76,8 @@ DASHBOARD_HTML = """<!doctype html>
       } catch (error) {
         status.textContent = `连接失败：${error.message}`;
         status.style.color = '#fca5a5';
+      } finally {
+        polling = false;
       }
     }
     poll();
@@ -83,8 +91,11 @@ DASHBOARD_HTML = """<!doctype html>
 class EventLog:
     """A thread-safe, in-memory sequence of observable agent events."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_events: int = 5_000) -> None:
+        if max_events <= 0:
+            raise ValueError("max_events must be positive")
         self._events: list[dict[str, Any]] = []
+        self._max_events = max_events
         self._next_id = 1
         self._lock = Lock()
 
@@ -100,7 +111,43 @@ class EventLog:
             }
             self._next_id += 1
             self._events.append(event)
+            if len(self._events) > self._max_events:
+                del self._events[: len(self._events) - self._max_events]
             return dict(event)
+
+    def record_event(self, event: Any) -> dict[str, Any]:
+        """Record an EventEnvelope or projected event dictionary."""
+        if isinstance(event, dict):
+            raw_kind = event.get("kind", event.get("type", "event"))
+            payload = event.get("payload", {})
+            metadata = {
+                key: event.get(key)
+                for key in (
+                    "event_id",
+                    "session_id",
+                    "task_id",
+                    "correlation_id",
+                    "sequence",
+                )
+                if event.get(key) is not None
+            }
+        else:
+            raw_kind = getattr(event, "kind", "event")
+            payload = getattr(event, "payload", {})
+            metadata = {
+                key: getattr(event, key, None)
+                for key in (
+                    "event_id",
+                    "session_id",
+                    "task_id",
+                    "correlation_id",
+                    "sequence",
+                )
+                if getattr(event, key, None) is not None
+            }
+        event_type = str(getattr(raw_kind, "value", raw_kind))
+        safe_payload = dict(payload) if isinstance(payload, dict) else {}
+        return self.record(event_type, {**metadata, **safe_payload})
 
     def read(self, *, after_id: int = 0) -> list[dict[str, Any]]:
         with self._lock:

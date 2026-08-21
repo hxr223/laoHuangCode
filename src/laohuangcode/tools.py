@@ -6,9 +6,14 @@ import os
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
-import subprocess
 import threading
 from typing import Any, Literal
+
+from .bash_runner import (
+    MODEL_API_KEY_ENV_NAMES,
+    ToolExecutionContext,
+    run_bash,
+)
 
 
 TOOL_DEFINITIONS: list[dict[str, Any]] = [
@@ -77,11 +82,6 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
 ]
 
-MODEL_API_KEY_ENV_NAMES = (
-    "OPENAI_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "LAOHUANG_API_KEY",
-)
 ToolExecutionMode = Literal["parallel", "sequential"]
 
 
@@ -135,16 +135,29 @@ class ToolRegistry:
     def execution_mode(self, name: str) -> ToolExecutionMode | None:
         return self.execution_modes.get(name)
 
-    def execute(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def execute(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        context: ToolExecutionContext | None = None,
+    ) -> dict[str, Any]:
+        execution = context or ToolExecutionContext()
         try:
+            if execution.is_cancelled():
+                return self._cancelled_result(execution)
+
             if name == "read":
                 path = self._resolve_path(arguments["path"])
                 content = path.read_text(encoding="utf-8")
+                if execution.is_cancelled():
+                    return self._cancelled_result(execution)
                 return {"ok": True, "content": self._truncate(content)}
 
             if name == "write":
                 path = self._resolve_path(arguments["path"])
                 with _file_mutation_lock(path):
+                    if execution.is_cancelled():
+                        return self._cancelled_result(execution)
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_text(arguments["content"], encoding="utf-8")
                 return {"ok": True, "path": arguments["path"]}
@@ -152,6 +165,8 @@ class ToolRegistry:
             if name == "edit":
                 path = self._resolve_path(arguments["path"])
                 with _file_mutation_lock(path):
+                    if execution.is_cancelled():
+                        return self._cancelled_result(execution)
                     content = path.read_text(encoding="utf-8")
                     old_text = arguments["old_text"]
                     matches = content.count(old_text)
@@ -159,6 +174,8 @@ class ToolRegistry:
                         raise ValueError(
                             f"old_text must appear exactly once; found {matches} matches"
                         )
+                    if execution.is_cancelled():
+                        return self._cancelled_result(execution)
                     path.write_text(
                         content.replace(old_text, arguments["new_text"], 1),
                         encoding="utf-8",
@@ -166,35 +183,27 @@ class ToolRegistry:
                 return {"ok": True, "path": arguments["path"]}
 
             if name == "bash":
-                environment = os.environ.copy()
-                for variable_name in MODEL_API_KEY_ENV_NAMES:
-                    environment.pop(variable_name, None)
-                completed = subprocess.run(
-                    ["/bin/bash", "-lc", arguments["command"]],
+                result = run_bash(
+                    arguments["command"],
                     cwd=self.root,
-                    env=environment,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
                     timeout=self.bash_timeout,
-                    check=False,
+                    max_output_chars=self.max_output_chars,
+                    context=execution,
+                    env=os.environ,
                 )
-                return {
-                    "ok": completed.returncode == 0,
-                    "exit_code": completed.returncode,
-                    "stdout": self._truncate(completed.stdout),
-                    "stderr": self._truncate(completed.stderr),
-                }
+                return result.as_dict()
 
             raise ValueError(f"Unknown tool: {name}")
-        except subprocess.TimeoutExpired:
-            return {
-                "ok": False,
-                "error": f"Bash command timed out after {self.bash_timeout} seconds",
-            }
         except (KeyError, OSError, TypeError, ValueError) as error:
             return {"ok": False, "error": str(error)}
+
+    @staticmethod
+    def _cancelled_result(context: ToolExecutionContext) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "status": "cancelled",
+            "error": context.cancellation_reason,
+        }
 
     def _resolve_path(self, raw_path: str) -> Path:
         path = (self.root / raw_path).resolve()

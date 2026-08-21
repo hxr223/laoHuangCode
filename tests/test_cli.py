@@ -4,17 +4,338 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from types import SimpleNamespace
 import unittest
 
 from laohuangcode.__main__ import run_repl
 from laohuangcode import __version__
-from laohuangcode.cli import _supports_terminal_ui, main as cli_main
+from laohuangcode.cli import (
+    _supports_terminal_ui,
+    main as cli_main,
+    run_plain_session_repl,
+    run_session_repl,
+)
 from laohuangcode.config import ConfigManager
 from laohuangcode.credentials import CredentialStore
+from laohuangcode.events import EventProjector
+from laohuangcode.session import AgentSession
+from laohuangcode.terminal_ui import PlainEventSink
 
 
 class ReplTests(unittest.TestCase):
+    def test_session_repl_keeps_prompting_while_worker_runs(self):
+        started = []
+        release = threading.Event()
+
+        def runner(text, _context):
+            started.append(text)
+            release.wait(1)
+            return "done"
+
+        session = AgentSession(runner)
+
+        class FakeUI:
+            command_registry = None
+
+            def __init__(self):
+                self.inputs = iter(["first", "second", "/exit"])
+                self.messages = []
+
+            def show_welcome(self):
+                self.messages.append("welcome")
+
+            def prompt(self):
+                value = next(self.inputs)
+                if value == "/exit":
+                    release.set()
+                return value
+
+            def write(self, message):
+                self.messages.append(message)
+
+            def show_error(self, message):
+                self.messages.append(message)
+
+            def show_goodbye(self):
+                self.messages.append("goodbye")
+
+            def show_interrupted(self):
+                self.messages.append("interrupted")
+
+            def stop_event_renderer(self):
+                return None
+
+        ui = FakeUI()
+        session.event_bus.subscribe(
+            lambda event: ui.messages.append(str(event.payload.get("text", "")))
+            if event.kind.value == "ui.message"
+            else None
+        )
+
+        run_session_repl(session, ui=ui)
+
+        self.assertEqual(started[0], "first")
+        self.assertTrue(any("Message queued" in item for item in ui.messages))
+        self.assertIn("goodbye", ui.messages)
+
+    def test_persistent_terminal_repl_exits_without_leaving_its_queue_blocked(self):
+        class PersistentUI:
+            command_registry = None
+
+            def __init__(self):
+                self.messages = []
+                self.exit_requests = 0
+                self.render_error = None
+
+            def start_event_renderer(self):
+                return None
+
+            def show_welcome(self):
+                self.messages.append("welcome")
+
+            def run(self, submit):
+                submit("/exit")
+                time.sleep(0.05)
+
+            def request_exit(self):
+                self.exit_requests += 1
+
+            def flush_event_renderer(self):
+                return None
+
+            def stop_event_renderer(self):
+                return None
+
+            def close(self):
+                self.messages.append("closed")
+
+            def show_goodbye(self):
+                self.messages.append("goodbye")
+
+            def show_error(self, message):
+                self.messages.append(message)
+
+        ui = PersistentUI()
+        session = AgentSession(lambda _content: "unused")
+
+        self.assertTrue(run_session_repl(session, ui=ui))
+        self.assertEqual(ui.exit_requests, 1)
+        self.assertIn("closed", ui.messages)
+
+    def test_persistent_repl_sends_two_inputs_then_exits_cleanly(self):
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = None
+
+            def __init__(self):
+                self.closed = False
+
+            def show_welcome(self):
+                return None
+
+            def run(self, submit):
+                for text in ("first", "second", "/exit"):
+                    submit(text)
+
+            def request_exit(self):
+                return None
+
+            def flush_event_renderer(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+            def show_error(self, message):
+                raise AssertionError(message)
+
+            def show_goodbye(self):
+                return None
+
+        session = AgentSession(lambda _content: "done")
+        ui = FakePiLoopUI()
+
+        clean = run_session_repl(session, ui=ui)
+
+        self.assertTrue(clean)
+        self.assertTrue(ui.closed)
+
+    def test_persistent_repl_returns_false_for_terminal_write_failure(self):
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = BrokenPipeError("closed")
+
+            def show_welcome(self):
+                return None
+
+            def run(self, submit):
+                return None
+
+            def flush_event_renderer(self):
+                return None
+
+            def close(self):
+                return None
+
+            def show_goodbye(self):
+                raise AssertionError("goodbye should not render on loop failure")
+
+            def show_error(self, _message):
+                return None
+
+        session = AgentSession(lambda _content: "done")
+
+        self.assertFalse(run_session_repl(session, ui=FakePiLoopUI()))
+
+    def test_persistent_exit_does_not_wait_for_slow_prior_routing(self):
+        class FakeSession:
+            def __init__(self):
+                self.started = threading.Event()
+                self.release = threading.Event()
+                self.event_bus = SimpleNamespace(flush=lambda: None)
+                self.closed = False
+
+            def submit_input(self, text):
+                if text == "slow":
+                    self.started.set()
+                    self.release.wait(5)
+                    if self.closed:
+                        raise RuntimeError("event bus is closed")
+                return SimpleNamespace(
+                    task_id="task-1",
+                    queued=False,
+                    rejected=False,
+                    reason="",
+                )
+
+            def close(self, *, wait=True, timeout=None):
+                del wait, timeout
+                self.closed = True
+                self.release.set()
+                return True
+
+            def queue_status(self):
+                return {"pending": 0, "held": 0}
+
+            def publish_notice(self, *_args, **_kwargs):
+                if self.closed:
+                    raise RuntimeError("event bus is closed")
+                return None
+
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = None
+
+            def __init__(self):
+                self.messages = []
+
+            def run(self, submit):
+                submit("slow")
+                if not session.started.wait(1):
+                    raise AssertionError("slow route did not start")
+                submit("/exit")
+
+            def show_welcome(self):
+                return None
+
+            def request_exit(self):
+                return None
+
+            def flush_event_renderer(self):
+                return None
+
+            def close(self):
+                return None
+
+            def show_error(self, message):
+                self.messages.append(message)
+
+        session = FakeSession()
+        ui = FakePiLoopUI()
+        result = []
+        worker = threading.Thread(
+            target=lambda: result.append(run_session_repl(session, ui=ui))
+        )
+
+        worker.start()
+        worker.join(0.5)
+        closed_before_cleanup = session.closed
+        if worker.is_alive():
+            session.release.set()
+            worker.join(1)
+        session.release.set()
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, [False])
+        self.assertTrue(closed_before_cleanup)
+        self.assertTrue(session.closed)
+        self.assertEqual(
+            ui.messages,
+            ["Input coordinator failed during shutdown."],
+        )
+
+    def test_persistent_repl_reports_unclean_shutdown_before_ui_close(self):
+        events = []
+
+        class FakeSession:
+            event_bus = SimpleNamespace(flush=lambda: None)
+
+            def close(self, *, wait=True, timeout=None):
+                del wait, timeout
+                return False
+
+        class FakePiLoopUI:
+            command_registry = None
+            render_error = None
+
+            def run(self, _submit):
+                return None
+
+            def show_welcome(self):
+                return None
+
+            def close(self):
+                events.append("close")
+
+            def show_error(self, message):
+                events.append(f"error:{message}")
+
+        clean = run_session_repl(FakeSession(), ui=FakePiLoopUI())
+
+        self.assertFalse(clean)
+        self.assertEqual(
+            events,
+            ["error:Task worker did not stop before the shutdown timeout.", "close"],
+        )
+
+    def test_plain_repl_uses_agent_session_and_waits_for_pipe_eof(self):
+        calls = []
+        answers = iter(["hello"])
+        outputs = []
+
+        def read_input(_prompt):
+            try:
+                return next(answers)
+            except StopIteration as error:
+                raise EOFError from error
+
+        session = AgentSession(lambda content: calls.append(content) or "done")
+        sink = PlainEventSink(outputs.append)
+        projector = EventProjector()
+        session.event_bus.subscribe(
+            lambda event: sink.publish_event(
+                projector.project(event, "terminal")
+            )
+        )
+
+        run_plain_session_repl(session, input_fn=read_input, sink=sink)
+
+        self.assertEqual(calls, ["hello"])
+        self.assertTrue(any("ready" in output for output in outputs))
+        self.assertEqual(outputs[-1], "Goodbye.")
+
     def test_terminal_ui_is_only_enabled_for_the_real_interactive_streams(self):
         tty = SimpleNamespace(isatty=lambda: True)
         pipe = SimpleNamespace(isatty=lambda: False)
