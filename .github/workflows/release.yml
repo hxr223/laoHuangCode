@@ -63,8 +63,16 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: |
-          published_version="$(npm view "laohuang@$EXPECTED_VERSION" version)"
-          if [[ "$published_version" != "$EXPECTED_VERSION" ]]; then
-            echo "::error::Expected laohuang@$EXPECTED_VERSION, got $published_version"
-            exit 1
-          fi
+          # The registry can take a few seconds to propagate a fresh publish;
+          # retry instead of racing it.
+          published_version=""
+          for attempt in 1 2 3 4 5; do
+            published_version="$(npm view "laohuang@$EXPECTED_VERSION" version 2>/dev/null || true)"
+            if [[ "$published_version" == "$EXPECTED_VERSION" ]]; then
+              echo "Published laohuang@$EXPECTED_VERSION verified."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Expected laohuang@$EXPECTED_VERSION, got ${published_version:-<not found>}"
+          exit 1
