@@ -1,6 +1,6 @@
 {
   "name": "laohuang",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "A minimal coding agent CLI built on the official openai SDK and Chat Completions native tool calling.",
   "type": "module",
   "repository": {
