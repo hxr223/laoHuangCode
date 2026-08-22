@@ -761,12 +761,39 @@ class FakeInputSource implements LoopInputSource {
     }
   }
 
+  pauseCount = 0;
+
+  pause(): void {
+    this.pauseCount += 1;
+  }
+
   emitEnd(): void {
     for (const handler of [...this.#endHandlers]) {
       handler();
     }
   }
 }
+
+test("run restores raw mode and pauses stdin on exit", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const loop = ui.interactiveLoop;
+  assert.ok(loop !== null);
+  if (loop === null) {
+    return;
+  }
+  const input = new FakeInputSource();
+  const done = loop.run(input);
+
+  input.emitEnd();
+  await done;
+
+  // A still-flowing stdin keeps the event loop alive forever; raw mode left
+  // on leaks into the user's shell after exit.
+  assert.equal(input.pauseCount, 1);
+  assert.ok(terminal.restoreCalls >= 1);
+});
 
 test("run exits when stdin ends with an idle empty editor", async () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
