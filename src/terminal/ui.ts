@@ -948,6 +948,8 @@ export interface LoopInputSource {
   on(event: "data", listener: (data: Uint8Array) => void): unknown;
   on(event: "end", listener: () => void): unknown;
   off?(event: "data" | "end", listener: (...args: never[]) => void): unknown;
+  /** Stop flowing mode so the handle no longer keeps the event loop alive. */
+  pause?(): unknown;
 }
 
 /** A terminal driver that may support raw-mode entry (POSIX TTY). */
@@ -1120,6 +1122,10 @@ export class InteractiveTerminalLoop {
         this.#wakeupEnabled = false;
         input?.off?.("data", onData);
         input?.off?.("end", onEnd);
+        // Pause stdin: a still-flowing stdin keeps the event loop alive and
+        // the process would never exit after the UI closed. Raw mode is
+        // restored by the renderer close path.
+        input?.pause?.();
       }
     } catch (error) {
       this.writeError = error;
