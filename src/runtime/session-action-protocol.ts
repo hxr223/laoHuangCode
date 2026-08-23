@@ -24,6 +24,7 @@ export function makeCommandAction(
   name: string,
   arguments_: readonly string[] = [],
   source = "command",
+  text = [name, ...arguments_].join(" "),
 ): CommandAction {
   return {
     id: actionId(),
@@ -31,6 +32,7 @@ export function makeCommandAction(
     name,
     arguments: [...arguments_],
     source,
+    text,
   };
 }
 

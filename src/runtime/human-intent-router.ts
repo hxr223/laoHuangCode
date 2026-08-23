@@ -23,7 +23,7 @@ function commandAction(text: string, source: string): SessionAction {
   if (name === undefined) {
     return makePromptAction(text, source);
   }
-  return makeCommandAction(name, arguments_, source);
+  return makeCommandAction(name, arguments_, source, text);
 }
 
 export function routeHumanIntent(

@@ -14,6 +14,8 @@ export interface CommandAction extends SessionActionBase {
   readonly type: "command";
   readonly name: string;
   readonly arguments: readonly string[];
+  /** Original command text, retained so quoted arguments survive dispatch. */
+  readonly text?: string;
 }
 
 export interface SteerAction extends SessionActionBase {

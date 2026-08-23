@@ -40,8 +40,34 @@ test("slash text creates a command action", () => {
       type: action.type,
       name: "name" in action ? action.name : undefined,
       arguments: "arguments" in action ? action.arguments : undefined,
+      text: "text" in action ? action.text : undefined,
     },
-    { type: "command", name: "/queue", arguments: ["resume"] },
+    {
+      type: "command",
+      name: "/queue",
+      arguments: ["resume"],
+      text: "/queue resume",
+    },
+  );
+});
+
+test("slash text preserves quoted command arguments", () => {
+  const action = routeHumanIntent(
+    makePromptIntent('/cmd "two words"', "editor"),
+    SessionState.Idle,
+  );
+
+  assert.deepEqual(
+    {
+      type: action.type,
+      arguments: "arguments" in action ? action.arguments : undefined,
+      text: "text" in action ? action.text : undefined,
+    },
+    {
+      type: "command",
+      arguments: ["two words"],
+      text: '/cmd "two words"',
+    },
   );
 });
 
@@ -99,7 +125,6 @@ test("submitAction delegates compatibility actions to existing session paths", a
   await session.waitForIdle(1000);
   await session.submitAction(makeAnswerAction("Tokyo", "question"));
   await session.waitForIdle(1000);
-  await session.submitAction(makeCommandAction("/queue", ["resume"]));
   await session.submitAction(makeCancelAction("keyboard", "editor"));
 
   assert.deepEqual(submitted, [
@@ -109,6 +134,23 @@ test("submitAction delegates compatibility actions to existing session paths", a
     { content: "yes" },
     { content: "Tokyo", strategy: "follow_up" },
     { content: "Tokyo" },
-    { content: "/queue resume", strategy: undefined },
   ]);
+});
+
+test("submitAction dispatches raw command text through its command entry", async () => {
+  const commands: string[] = [];
+  const session = new AgentSession(() => null, {
+    commandDispatcher: async (command) => {
+      commands.push(command);
+      return true;
+    },
+  });
+  const action = routeHumanIntent(
+    makePromptIntent('/cmd "two words"', "editor"),
+    SessionState.Idle,
+  );
+
+  await session.submitAction(action);
+
+  assert.deepEqual(commands, ['/cmd "two words"']);
 });

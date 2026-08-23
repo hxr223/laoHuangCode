@@ -1455,7 +1455,11 @@ export async function main(
   // session.ts asserts at compile time that CodingAgent satisfies its
   // AgentRunnerLike contract (run(userInput, TaskContext)), so the agent can
   // be handed to the session directly — no adapter needed.
-  const runtime = new AgentSession(agent, { semanticClassifier });
+  let commandDispatcher: CommandHandler | undefined;
+  const runtime = new AgentSession(agent, {
+    semanticClassifier,
+    commandDispatcher: (command) => commandDispatcher?.(command) ?? false,
+  });
   const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
   const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
 
@@ -1544,6 +1548,8 @@ export async function main(
     });
     return handled;
   };
+  commandDispatcher = (command) =>
+    handleSessionInput(runtime, handleCommand, terminalUi, command);
 
   let cleanShutdown = false;
   try {

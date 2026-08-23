@@ -100,6 +100,10 @@ export type TaskRunner =
   | ((content: string, context: TaskContext) => TaskRunnerResult)
   | AgentRunnerLike;
 
+export type CommandDispatcher = (
+  command: string,
+) => boolean | Promise<boolean>;
+
 // Compile-time contract check (tsc covers src/ only): the real CodingAgent
 // from agent.ts is a valid AgentRunnerLike — its run(userInput, context,
 // options?) accepts this module's TaskContext, whose publish options use the
@@ -242,6 +246,7 @@ export interface AgentSessionOptions {
   taskRegistry?: TaskRegistry;
   semanticClassifier?: SemanticClassifier | null;
   safetyPolicy?: SafetyPolicy | null;
+  commandDispatcher?: CommandDispatcher | null;
 }
 
 export interface CloseOptions {
@@ -268,6 +273,7 @@ export class AgentSession {
   readonly scheduler: Scheduler;
   readonly router: EventRouter;
   readonly runner: TaskRunner;
+  readonly #commandDispatcher: CommandDispatcher | null;
 
   #state: SessionState = SessionState.Idle;
   #worker: object | null = null;
@@ -296,6 +302,7 @@ export class AgentSession {
       safetyPolicy: options.safetyPolicy ?? null,
     });
     this.runner = runner;
+    this.#commandDispatcher = options.commandDispatcher ?? null;
     this.eventBus.publish(EventKind.SessionReady, {
       source: EventSource.Session,
       session_id: this.sessionId,
@@ -426,8 +433,14 @@ export class AgentSession {
         return this.submitInput(action.text, { strategy: "follow_up" });
       case "cancel":
         return this.requestCancel(action.reason);
-      case "command":
-        return this.submitInput([action.name, ...action.arguments].join(" "));
+      case "command": {
+        if (this.#commandDispatcher === null) {
+          return false;
+        }
+        const command =
+          action.text ?? [action.name, ...action.arguments].join(" ");
+        return this.#commandDispatcher(command);
+      }
       case "exit":
         return this.close();
     }
