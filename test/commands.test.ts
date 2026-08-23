@@ -194,6 +194,7 @@ test("queue commands delegate to the agent session", async () => {
     clearQueues: () => 3,
     resumeHeld: () => 1,
     cancelActiveTask: () => false,
+    submitAction: () => false,
   };
   const outputs: string[] = [];
   const fixture = makeCommands(outputs, { session });
