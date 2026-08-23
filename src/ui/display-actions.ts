@@ -4,6 +4,7 @@ export type DisplayAction =
   | { readonly type: "text"; readonly text: string }
   | { readonly type: "status"; readonly text: string }
   | { readonly type: "error"; readonly text: string }
+  | { readonly type: "toggle_tool_output"; readonly expanded: boolean }
   | { readonly type: "clear" }
   | { readonly type: "exit" };
 
@@ -17,4 +18,9 @@ export function makeStatusDisplayAction(text: string): DisplayAction {
 
 export function makeErrorDisplayAction(text: string): DisplayAction {
   return { type: "error", text };
+}
+
+/** A local display preference; it is never a session or model action. */
+export function makeToggleToolOutputDisplayAction(expanded: boolean): DisplayAction {
+  return { type: "toggle_tool_output", expanded };
 }

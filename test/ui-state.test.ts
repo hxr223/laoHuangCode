@@ -51,7 +51,7 @@ test("parallel tool output is grouped by correlation id", () => {
   assert.equal(reducer.state.activeTools.get("call-2")?.stderr, "warning");
 });
 
-test("stdout is not retained in user-facing state", () => {
+test("stdout is retained for projection policy without changing stderr state", () => {
   const reducer = new UIEventReducer();
   reducer.apply({
     kind: "tool.started",
@@ -65,8 +65,9 @@ test("stdout is not retained in user-facing state", () => {
     payload: { stream: "stdout", text: "large output" },
   });
 
-  assert.equal(update, null);
-  assert.equal(reducer.state.activeTools.get("call-1")?.stdout, "");
+  assert.equal(update?.stream, "stdout");
+  assert.equal(reducer.state.activeTools.get("call-1")?.stdout, "large output");
+  assert.equal(reducer.state.activeTools.get("call-1")?.stderr, "");
 });
 
 test("response summaries accumulate token usage", () => {
