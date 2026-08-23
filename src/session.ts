@@ -2,7 +2,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { CancellationError, type CancelToken } from "./cancellation.ts";
+import type { CancelToken } from "./cancellation.ts";
 import type { CodingAgent } from "./agent.ts";
 import type { CommandResult, QueueStatus } from "./commands.ts";
 import {
@@ -28,6 +28,8 @@ import {
   QueueDispatcher,
   QueueDispatchStatus,
 } from "./runtime/queue-dispatcher.ts";
+import { AgentTurnLoop } from "./runtime/agent-turn-loop.ts";
+import type { QueueBridge, QueueInputBatch } from "./runtime/queue-bridge.ts";
 import type { SessionAction } from "./runtime/session-action.ts";
 import {
   TaskLifecycle,
@@ -55,7 +57,7 @@ const ROUTE_STRATEGIES: ReadonlySet<string> = new Set([
 ]);
 
 /** One compatible batch of pending input claimed at a safe point. */
-export interface PendingInputBatch {
+export interface PendingInputBatch extends QueueInputBatch {
   readonly events: readonly RoutedEvent[];
   readonly content: string;
   readonly eventIds: readonly string[];
@@ -205,7 +207,7 @@ export class TaskContext {
   }
 
   /** @internal Used by the session worker around each runner invocation. */
-  setClaimedInput(batch: PendingInputBatch | null): void {
+  setClaimedInput(batch: QueueInputBatch | null): void {
     this.#claimedInputEventIds = batch === null ? [] : batch.eventIds;
   }
 
@@ -276,6 +278,7 @@ export class AgentSession {
   readonly router: EventRouter;
   readonly runner: TaskRunner;
   readonly #commandDispatcher: CommandDispatcher | null;
+  readonly #queueBridge: QueueBridge;
 
   #state: SessionState = SessionState.Idle;
   #worker: object | null = null;
@@ -305,6 +308,15 @@ export class AgentSession {
         this.holdTaskInputs(taskId, "held because its task is cancelling");
       },
     });
+    this.#queueBridge = {
+      drainPending: (taskId) => {
+        const batch = this.drainPending(taskId);
+        return batch.events.length === 0 ? null : batch;
+      },
+      acknowledgeClaimedInput: (taskId, eventIds) =>
+        this.ackClaimedInput(taskId, eventIds),
+      preserveTaskInputs: (taskId, reason) => this.holdTaskInputs(taskId, reason),
+    };
     this.router = new EventRouter(this.taskRegistry, {
       semanticClassifier: options.semanticClassifier ?? null,
       safetyPolicy: options.safetyPolicy ?? null,
@@ -805,53 +817,13 @@ export class AgentSession {
     content: string,
   ): Promise<void> {
     const context = new TaskContext(this, taskId);
-    let currentInput = content;
-    let currentBatch: PendingInputBatch | null = null;
-    let result: string | null = null;
     try {
-      for (;;) {
-        context.cancelToken.throwIfCancelled();
-        this.setRunningState(taskId, TaskState.RunningModel);
-        context.setClaimedInput(currentBatch);
-        result = await this.invokeRunner(currentInput, context);
-        if (currentBatch !== null) {
-          this.ackClaimedInput(taskId, currentBatch.eventIds);
-        }
-        context.cancelToken.throwIfCancelled();
-        let cancelledAtBoundary = false;
-        // Synchronous critical section: drain or complete atomically.
-        const batch = this.drainPending(taskId);
-        if (batch.events.length > 0) {
-          currentInput = batch.content;
-          currentBatch = batch;
-          continue;
-        }
-        const record = this.taskRegistry.get(taskId);
-        cancelledAtBoundary =
-          record === null ||
-          record.state === TaskState.Cancelling ||
-          record.cancelToken.isCancelled();
-        if (!cancelledAtBoundary) {
-          this.taskLifecycle.completeTask(taskId, result);
-        }
-        if (cancelledAtBoundary) {
-          this.finishCancelled(taskId);
-        }
-        break;
-      }
-    } catch (error) {
-      if (error instanceof CancellationError) {
-        this.finishCancelled(taskId);
-      } else {
-        const record = this.taskRegistry.get(taskId);
-        if (record !== null && record.cancelToken.isCancelled()) {
-          this.finishCancelled(taskId);
-        } else {
-          const message = error instanceof Error ? error.message : String(error);
-          this.holdTaskInputs(taskId, "held because its task failed");
-          this.taskLifecycle.failTask(taskId, message);
-        }
-      }
+      const turnLoop = new AgentTurnLoop<TaskContext>({
+        lifecycle: this.taskLifecycle,
+        bridge: this.#queueBridge,
+        runner: this.runner,
+      });
+      await turnLoop.run(taskId, content, context);
     } finally {
       this.settleWorker(workerKey);
     }
@@ -886,15 +858,6 @@ export class AgentSession {
   /** @internal Test hook mirroring Python's ``_settle_worker``. */
   _settleWorker(workerKey: object): void {
     this.settleWorker(workerKey);
-  }
-
-  private finishCancelled(taskId: string): void {
-    const record = this.taskRegistry.get(taskId);
-    if (record === null || isTerminalTaskState(record.state)) {
-      return;
-    }
-    this.holdTaskInputs(taskId, "held because its task was cancelled");
-    this.taskLifecycle.finishCancelled(taskId);
   }
 
   /** Rollback and preserve every unacknowledged input for a task. */
@@ -942,16 +905,6 @@ export class AgentSession {
       }
     }
     return heldCount;
-  }
-
-  private async invokeRunner(
-    content: string,
-    context: TaskContext,
-  ): Promise<string | null> {
-    const runner = this.runner;
-    const fn =
-      typeof runner === "function" ? runner : runner.run.bind(runner);
-    return (await fn(content, context)) ?? null;
   }
 
   /** @internal Used by {@link TaskContext}. */
