@@ -64,6 +64,9 @@ import {
   type ScreenFrame,
   type TerminalDriver,
 } from "./screen.ts";
+import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "../tui/components.ts";
+import { FocusManager } from "../tui/focus-manager.ts";
+import { OverlayManager } from "../tui/overlay-manager.ts";
 
 // ---------------------------------------------------------------------------
 // Shared input contracts (implemented by terminal/input.ts once landed)
@@ -973,6 +976,8 @@ export class InteractiveTerminalLoop {
   #editor: EditorLike;
   #decoder: InputDecoderLike;
   #renderer: PiMainScreenRenderer;
+  #overlays = new OverlayManager();
+  #focus = new FocusManager(this.#overlays, COMPOSER_COMPONENT);
   #onSubmit: (text: string) => void = () => {};
   #exitRequested = false;
   #closed = false;
@@ -1320,12 +1325,54 @@ export class InteractiveTerminalLoop {
       this.#needsRender = true;
       return;
     }
+    if (this.#applyCompletionAction(action)) {
+      this.#refreshCompletions();
+      this.#needsRender = true;
+      return;
+    }
     const effect = this.#editor.apply(action, {
       runtimeActive: this.#ui.isRunning(),
     });
     this.#applyEffect(effect);
     this.#refreshCompletions();
     this.#needsRender = true;
+  }
+
+  /** Completion owns navigation and acceptance while text edits stay in the composer. */
+  #applyCompletionAction(action: InputAction): boolean {
+    if (this.#focus.current() !== COMPLETION_OVERLAY.id) {
+      return false;
+    }
+    if (action.kind === "dismiss") {
+      this.#editor.setCompletions([]);
+      return true;
+    }
+    if (action.kind === "history_up" || action.kind === "history_down") {
+      const count = this.#editor.completions.length;
+      const selected = this.#editor.selectedCompletion;
+      if (count > 0 && selected !== null) {
+        const offset = action.kind === "history_up" ? -1 : 1;
+        this.#editor.selectedCompletion = ((selected + offset) % count + count) % count;
+      }
+      return true;
+    }
+    if (action.kind === "complete" || action.kind === "submit") {
+      const selected = this.#editor.selectedCompletion;
+      if (selected !== null) {
+        const item = this.#editor.completions[selected];
+        if (item !== undefined) {
+          const start = Math.max(0, this.#editor.cursor + item.start);
+          this.#editor.text =
+            cpSlice(this.#editor.text, 0, start) +
+            item.value +
+            cpSlice(this.#editor.text, this.#editor.cursor);
+          this.#editor.cursor = start + cpLength(item.value);
+          this.#editor.setCompletions([]);
+        }
+      }
+      return true;
+    }
+    return false;
   }
 
   #applyEof(): void {
@@ -1396,11 +1443,13 @@ export class InteractiveTerminalLoop {
     this.#editor.cursor = 0;
     this.#editor.historyIndex = null;
     this.#editor.setCompletions([]);
+    this.#syncCompletionOverlay();
   }
 
   #refreshCompletions(): void {
     if (this.#question !== null) {
       this.#editor.setCompletions([]);
+      this.#syncCompletionOverlay();
       return;
     }
     const registry = this.#ui.commandRegistry;
@@ -1410,6 +1459,15 @@ export class InteractiveTerminalLoop {
           state: this.#ui.isRunning() ? "RUNNING_MODEL" : this.#ui.state.sessionState,
         }),
       );
+    }
+    this.#syncCompletionOverlay();
+  }
+
+  #syncCompletionOverlay(): void {
+    if (this.#editor.completions.length > 0) {
+      this.#overlays.open(COMPLETION_OVERLAY);
+    } else {
+      this.#overlays.close(COMPLETION_OVERLAY.id);
     }
   }
 }
