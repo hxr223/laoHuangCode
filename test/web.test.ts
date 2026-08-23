@@ -56,3 +56,21 @@ test("pull buffer consumer records projected events until the bus closes", async
   assert.equal(events[0]?.payload["session_id"], "session-1");
   assert.equal(events[0]?.payload["sequence"], 1);
 });
+
+test("web projection retains stdout that terminal folds", async () => {
+  const bus = new EventBus();
+  const log = new EventLog();
+  const consumer = consumePullBuffer(bus, log);
+
+  bus.publish(EventKind.ToolOutputDelta, {
+    source: EventSource.Tool,
+    session_id: "session-1",
+    task_id: "task-1",
+    correlation_id: "call-1",
+    payload: { stream: "stdout", text: "full output" },
+  });
+  await bus.close();
+  await consumer;
+
+  assert.equal(log.read()[0]?.payload["text"], "full output");
+});

@@ -29,7 +29,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "openai": "^4.0.0"
+    "openai": "^6.49.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

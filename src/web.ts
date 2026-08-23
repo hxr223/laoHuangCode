@@ -13,6 +13,7 @@ import {
   type AnyEventEnvelope,
   type EventBus,
 } from "./events.ts";
+import { DisplayPolicy } from "./ui/display-policy.ts";
 
 export const DASHBOARD_HTML = `<!doctype html>
 <html lang="zh-CN">
@@ -193,6 +194,7 @@ export async function consumePullBuffer(
   log: EventLog,
 ): Promise<void> {
   const projector = new EventProjector();
+  const displayPolicy = new DisplayPolicy({ audience: "web" });
   for (;;) {
     let event: AnyEventEnvelope;
     try {
@@ -203,7 +205,18 @@ export async function consumePullBuffer(
       }
       throw error;
     }
-    log.recordEvent(projector.project(event, "web"));
+    const projected = projector.project(event, "web");
+    for (const displayEvent of displayPolicy.project(projected)) {
+      log.recordEvent({
+        kind: displayEvent.kind,
+        event_id: projected.event_id,
+        session_id: projected.session_id,
+        task_id: projected.task_id,
+        correlation_id: displayEvent.correlationId,
+        sequence: projected.sequence,
+        payload: displayEvent.payload,
+      });
+    }
   }
 }
 

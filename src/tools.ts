@@ -193,6 +193,18 @@ export interface ToolExecutionContextLike {
   publish?(kind: string, payload: Record<string, unknown>): void;
 }
 
+/** Structural tool surface consumed by the agent and ToolRuntime. */
+export interface ToolRegistryLike {
+  readonly definitions: readonly ToolDefinition[];
+  readonly orderedSpecs: readonly ToolSpec[];
+  executionMode(name: string): ToolExecutionMode | undefined;
+  execute(
+    name: string,
+    args: Record<string, unknown>,
+    context?: ToolExecutionContextLike,
+  ): Promise<ToolResult> | ToolResult;
+}
+
 export interface RunBashOptions {
   cwd: string;
   timeoutSeconds: number;

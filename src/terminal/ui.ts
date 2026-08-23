@@ -18,13 +18,41 @@
 
 import { appendFileSync } from "node:fs";
 
+export { toTuiInputEvent } from "./editor.ts";
+export type { TuiInputEvent } from "../keybindings/key-id.ts";
+
+import {
+  ACTION_CAPABILITIES,
+  DEFAULT_RUNTIME_CAPABILITIES,
+  unavailableActionNotice,
+  type RuntimeCapabilities,
+} from "../capabilities.ts";
+import { DEFAULT_KEYBINDINGS } from "../keybindings/default-keybindings.ts";
+import { makeKeyInput, type KeyInput, type TuiInputEvent } from "../keybindings/key-id.ts";
+import {
+  KeybindingsManager,
+  type ActionId,
+  type KeybindingOverrides,
+} from "../keybindings/keybindings.ts";
 import {
   createUIState,
   UIEventReducer,
   type UIEventLike,
   type UIState,
-  type UIUpdate,
 } from "../ui-state.ts";
+import {
+  DisplayPolicy,
+  displayGapMessage,
+  type DisplayEvent,
+  type DisplayEventLike,
+} from "../ui/display-policy.ts";
+import type { DisplayAction } from "../ui/display-actions.ts";
+import {
+  TranscriptStore,
+  createTranscriptBlock,
+  type TranscriptBlock,
+} from "../ui/transcript-store.ts";
+import { FrameBuilder } from "../ui/frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
@@ -36,10 +64,25 @@ import {
   type ScreenFrame,
   type TerminalDriver,
 } from "./screen.ts";
+import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "../tui/components.ts";
+import { FocusManager } from "../tui/focus-manager.ts";
+import { OverlayManager } from "../tui/overlay-manager.ts";
 
 // ---------------------------------------------------------------------------
 // Shared input contracts (implemented by terminal/input.ts once landed)
 // ---------------------------------------------------------------------------
+
+const WELCOME_TEXT = "hello, welcome to laoHuang";
+
+const KITTY_LOCK_MODIFIER_MASK = 64 | 128;
+
+function matchesKittyModifiers(modifier: number, expected: number): boolean {
+  return (modifier & ~KITTY_LOCK_MODIFIER_MASK) === expected;
+}
+
+function isKittyPressEvent(eventType: string | undefined): boolean {
+  return eventType === undefined || eventType === "1";
+}
 
 export type InputActionKind =
   | "insert"
@@ -51,6 +94,7 @@ export type InputActionKind =
   | "cursor_left"
   | "cursor_right"
   | "backspace"
+  | "key"
   | "dismiss"
   | "cancel"
   | "eof";
@@ -58,6 +102,7 @@ export type InputActionKind =
 export interface InputAction {
   kind: InputActionKind;
   text?: string;
+  key?: KeyInput;
 }
 
 export interface EditorEffect {
@@ -208,7 +253,9 @@ export class BasicEditorState implements EditorLike {
     if (action.kind === "submit") {
       if (this.completionVisible) {
         this.#acceptCompletion();
-        return {};
+        if (!this.text.startsWith("/")) {
+          return {};
+        }
       }
       return this.#submit();
     }
@@ -421,11 +468,17 @@ const CSI_ARROW_ACTIONS: Record<string, InputActionKind> = {
 };
 
 const CONTROL_ACTIONS: Record<number, InputActionKind> = {
-  3: "cancel",
   4: "eof",
   9: "complete",
   8: "backspace",
   127: "backspace",
+};
+
+const CONTROL_KEYS: Readonly<Record<number, KeyInput>> = {
+  3: makeKeyInput("ctrl_c", { ctrl: true }),
+  12: makeKeyInput("ctrl_l", { ctrl: true }),
+  15: makeKeyInput("character", { text: "o", ctrl: true }),
+  20: makeKeyInput("character", { text: "t", ctrl: true }),
 };
 
 const SPECIAL_ESCAPE_ACTIONS: Record<string, InputActionKind> = {
@@ -602,6 +655,12 @@ export class BasicInputDecoder implements InputDecoderLike {
         }
         continue;
       }
+      const key = CONTROL_KEYS[byte];
+      if (key !== undefined) {
+        index += 1;
+        actions.push({ kind: "key", key });
+        continue;
+      }
       const control = CONTROL_ACTIONS[byte];
       if (control !== undefined) {
         index += 1;
@@ -637,7 +696,10 @@ export class BasicInputDecoder implements InputDecoderLike {
     }
     const second = bytes[start + 1] as number;
     if (second === 10 || second === 13) {
-      return { next: start + 2, action: { kind: "newline" } };
+      return {
+        next: start + 2,
+        action: { kind: "key", key: makeKeyInput("enter", { alt: true }) },
+      };
     }
     if (second === 0x5b) {
       let final = -1;
@@ -691,6 +753,13 @@ export class BasicInputDecoder implements InputDecoderLike {
     if (sequence.startsWith("\x1b[?")) {
       // Other negotiation responses (or their abandoned tails) are swallowed.
       return undefined;
+    }
+    if (sequence === "\x1b[Z") {
+      return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
+    }
+    const modifiedControl = this.#modifiedControlKey(sequence);
+    if (modifiedControl !== undefined) {
+      return modifiedControl;
     }
     const special = SPECIAL_ESCAPE_ACTIONS[sequence];
     if (special !== undefined) {
@@ -747,6 +816,40 @@ export class BasicInputDecoder implements InputDecoderLike {
     return undefined;
   }
 
+  #modifiedControlKey(sequence: string): InputAction | undefined {
+    const kitty = /^\x1b\[(13|57414|9);(\d+)(?::(\d+))?u$/.exec(sequence);
+    if (kitty !== null) {
+      const code = kitty[1] as string;
+      const modifier = Number.parseInt(kitty[2] as string, 10) - 1;
+      if (!isKittyPressEvent(kitty[3])) {
+        return undefined;
+      }
+      if (
+        (code === "13" || code === "57414")
+        && matchesKittyModifiers(modifier, 2)
+      ) {
+        return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
+      }
+      if (code === "9" && matchesKittyModifiers(modifier, 1)) {
+        return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
+      }
+      return undefined;
+    }
+    const modifyOtherKeys = /^\x1b\[27;(\d+);(\d+)~$/.exec(sequence);
+    if (modifyOtherKeys === null) {
+      return undefined;
+    }
+    const modifier = Number.parseInt(modifyOtherKeys[1] as string, 10) - 1;
+    const codepoint = Number.parseInt(modifyOtherKeys[2] as string, 10);
+    if (codepoint === 13 && modifier === 2) {
+      return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
+    }
+    if (codepoint === 9 && modifier === 1) {
+      return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
+    }
+    return undefined;
+  }
+
   #isKittyRelease(sequence: string): boolean {
     if (sequence.includes("\x1b[200~")) {
       return false;
@@ -757,44 +860,7 @@ export class BasicInputDecoder implements InputDecoderLike {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Transcript model
-// ---------------------------------------------------------------------------
-
-/** An append-only transcript unit, mutable only while it streams. */
-export interface TranscriptBlock {
-  kind: string;
-  key: string;
-  text: string;
-  mutable: boolean;
-  name: string;
-  subject: string;
-  status: string;
-  exitCode: number | null;
-  durationMs: number | null;
-  streamError: string;
-  style: string;
-}
-
-export function createTranscriptBlock(
-  kind: string,
-  key: string,
-  fields: Partial<Omit<TranscriptBlock, "kind" | "key">> = {},
-): TranscriptBlock {
-  return {
-    kind,
-    key,
-    text: fields.text ?? "",
-    mutable: fields.mutable ?? false,
-    name: fields.name ?? "",
-    subject: fields.subject ?? "",
-    status: fields.status ?? "",
-    exitCode: fields.exitCode ?? null,
-    durationMs: fields.durationMs ?? null,
-    streamError: fields.streamError ?? "",
-    style: fields.style ?? "",
-  };
-}
+export { createTranscriptBlock, type TranscriptBlock } from "../ui/transcript-store.ts";
 
 /** Local command feedback sharing the loop's event queue. */
 class LocalMessage {
@@ -811,46 +877,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Keep captured tool stdout out of user-facing terminal render queues. */
-function isHiddenToolStdout(event: unknown): boolean {
-  if (!isRecord(event)) {
-    return false;
-  }
-  if (String(event.kind ?? "") !== "tool.output_delta") {
-    return false;
-  }
-  const payload = event.payload;
-  return isRecord(payload) && String(payload.stream ?? "stdout") === "stdout";
-}
-
-function eventKind(event: unknown): string {
-  return isRecord(event) ? String(event.kind ?? "") : "";
-}
-
-function eventPayload(event: unknown): Record<string, unknown> {
-  return isRecord(event) && isRecord(event.payload) ? event.payload : {};
-}
-
-/** Mirror Python's `int(...)`: truncate numbers, parse numeric strings. */
-function toInt(value: unknown): number {
-  const parsed = typeof value === "string" ? Number.parseInt(value, 10) : Number(value);
-  return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
-}
-
-function projectionDropped(event: unknown): number {
-  const payload = eventPayload(event);
-  return toInt(payload._projection_dropped ?? 0);
-}
-
 function clip(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}…`;
 }
-
-const HIGH_FREQUENCY_KINDS = new Set([
-  "model.reasoning_delta",
-  "model.tool_call_delta",
-  "tool.output_delta",
-]);
 
 // ---------------------------------------------------------------------------
 // ANSI style helpers (rich-style "italic #rrggbb" / "bg:#rrggbb" strings)
@@ -943,6 +972,12 @@ type LoopWorkItem =
   | { type: "input"; data: Uint8Array }
   | { type: "event"; event: unknown };
 
+export interface SubmitOptions {
+  readonly strategy?: "follow_up";
+}
+
+type SubmitCallback = (text: string, options?: SubmitOptions) => void;
+
 /** Minimal readable-source contract for the production run loop. */
 export interface LoopInputSource {
   on(event: "data", listener: (data: Uint8Array) => void): unknown;
@@ -955,6 +990,42 @@ export interface LoopInputSource {
 /** A terminal driver that may support raw-mode entry (POSIX TTY). */
 export type RawTerminalDriver = TerminalDriver & { enterRawMode?: () => void };
 
+function inputEventFromAction(action: InputAction): TuiInputEvent {
+  if (action.kind === "insert") {
+    return { type: "text", text: action.text ?? "" };
+  }
+  if (action.kind === "key") {
+    if (action.key === undefined) {
+      throw new Error("key input action is missing its key");
+    }
+    return { type: "key", key: action.key };
+  }
+  const key = action.kind === "submit" ? makeKeyInput("enter")
+    : action.kind === "newline" ? makeKeyInput("enter", { alt: true })
+    : action.kind === "complete" ? makeKeyInput("tab")
+    : action.kind === "history_up" ? makeKeyInput("up")
+    : action.kind === "history_down" ? makeKeyInput("down")
+    : action.kind === "cursor_left" ? makeKeyInput("left")
+    : action.kind === "cursor_right" ? makeKeyInput("right")
+    : action.kind === "backspace" ? makeKeyInput("backspace")
+    : action.kind === "dismiss" ? makeKeyInput("escape")
+    : action.kind === "cancel" ? makeKeyInput("ctrl_c", { ctrl: true })
+    : makeKeyInput("ctrl_d", { ctrl: true });
+  return { type: "key", key };
+}
+
+function editorActionForKey(key: KeyInput): InputAction | null {
+  if (key.id === "enter") return { kind: "submit" };
+  if (key.id === "tab") return { kind: "complete" };
+  if (key.id === "up") return { kind: "history_up" };
+  if (key.id === "down") return { kind: "history_down" };
+  if (key.id === "left") return { kind: "cursor_left" };
+  if (key.id === "right") return { kind: "cursor_right" };
+  if (key.id === "backspace") return { kind: "backspace" };
+  if (key.id === "ctrl_d") return { kind: "eof" };
+  return null;
+}
+
 /** Serialize stdin, UI events, and all terminal writes in one loop. */
 export class InteractiveTerminalLoop {
   static readonly ESCAPE_TIMEOUT_MS = 50;
@@ -966,7 +1037,9 @@ export class InteractiveTerminalLoop {
   #editor: EditorLike;
   #decoder: InputDecoderLike;
   #renderer: PiMainScreenRenderer;
-  #onSubmit: (text: string) => void = () => {};
+  #overlays = new OverlayManager();
+  #focus = new FocusManager(this.#overlays, COMPOSER_COMPONENT);
+  #onSubmit: SubmitCallback = () => {};
   #exitRequested = false;
   #closed = false;
   #running = false;
@@ -1013,23 +1086,27 @@ export class InteractiveTerminalLoop {
     return this.#running;
   }
 
-  start(onSubmit: (text: string) => void): void {
+  start(onSubmit: SubmitCallback): void {
     this.#onSubmit = onSubmit;
     this.#exitRequested = false;
     this.#running = true;
   }
 
   publishEvent(event: unknown): void {
-    if (this.#closed || isHiddenToolStdout(event)) {
+    if (this.#closed) {
+      return;
+    }
+    if (!this.#ui.shouldQueueDisplayEvent(event)) {
       return;
     }
     if (
       this.#work.length >= InteractiveTerminalLoop.WORK_QUEUE_LIMIT - 128 &&
-      HIGH_FREQUENCY_KINDS.has(eventKind(event))
+      this.#ui.isHighFrequencyDisplayEvent(event)
     ) {
+      this.#ui.recordDisplayDrop(event);
       return;
     }
-    this.#work.push({ type: "event", event });
+    this.#work.push({ type: "event", event: this.#ui.withDisplayDropMarker(event) });
     this.#scheduleWakeup();
   }
 
@@ -1044,9 +1121,15 @@ export class InteractiveTerminalLoop {
   /** Synchronously consume queued work; this is also the test hook. */
   drain(): void {
     const changed = this.#drainWork();
-    if (changed || this.#needsRender) {
+    const dropped = this.#ui.flushDisplayDropMarker();
+    if (changed || dropped || this.#needsRender) {
       this.#render();
     }
+  }
+
+  requestRender(): void {
+    this.#needsRender = true;
+    this.#scheduleWakeup();
   }
 
   ask(message: string, options: { secret?: boolean } = {}): Promise<string> {
@@ -1218,6 +1301,9 @@ export class InteractiveTerminalLoop {
     while (item !== undefined) {
       if (item.type === "input") {
         this.#applyActions(this.#decoder.feed(item.data));
+        if (!this.#wakeupEnabled) {
+          this.#applyActions(this.#decoder.flush());
+        }
         changed = true;
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
@@ -1256,17 +1342,120 @@ export class InteractiveTerminalLoop {
 
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
-      if (this.#applyQuestionAction(action)) {
-        this.#needsRender = true;
+      if (action.kind === "newline") {
+        this.#applyEditorAction(action);
         continue;
       }
-      const effect = this.#editor.apply(action, {
-        runtimeActive: this.#ui.isRunning(),
-      });
-      this.#applyEffect(effect);
-      this.#refreshCompletions();
+      this.#applyInputEvent(inputEventFromAction(action));
+    }
+  }
+
+  #applyInputEvent(event: TuiInputEvent): void {
+    if (event.type === "text" || event.type === "paste") {
+      this.#applyEditorAction({ kind: "insert", text: event.text });
+      return;
+    }
+    const action = this.#ui.keybindings.resolve(event.key, ["terminal", "editor"]);
+    if (action !== null) {
+      this.#applyKeyAction(action);
+      return;
+    }
+    const editorAction = editorActionForKey(event.key);
+    if (editorAction !== null) {
+      this.#applyEditorAction(editorAction);
+    }
+  }
+
+  #applyKeyAction(action: ActionId): void {
+    const capability = ACTION_CAPABILITIES[action as keyof typeof ACTION_CAPABILITIES];
+    if (capability !== undefined && !this.#ui.capabilities[capability]) {
+      this.#appendNotice(unavailableActionNotice(action as keyof typeof ACTION_CAPABILITIES));
+      this.#needsRender = true;
+      return;
+    }
+    if (action === "editor_newline") {
+      this.#applyEditorAction({ kind: "newline" });
+    } else if (action === "submit_follow_up") {
+      this.#applyFollowUpSubmit();
+    } else if (action === "dismiss") {
+      this.#applyEditorAction({ kind: "dismiss" });
+    } else if (action === "cancel") {
+      this.#applyEditorAction({ kind: "cancel" });
+    } else if (action === "toggle_tool_output") {
+      this.#ui.toggleToolOutputFromKeybinding();
+      this.#needsRender = true;
+    } else {
+      this.#ui.handleKeyAction(action);
       this.#needsRender = true;
     }
+  }
+
+  #applyFollowUpSubmit(): void {
+    if (this.#applyQuestionAction({ kind: "submit" })) {
+      this.#needsRender = true;
+      return;
+    }
+    if (this.#applyCompletionAction({ kind: "submit" })) {
+      this.#needsRender = true;
+      return;
+    }
+    const effect = this.#editor.apply(
+      { kind: "submit" },
+      { runtimeActive: this.#ui.isRunning() },
+    );
+    if (effect.submit !== null && effect.submit !== undefined) {
+      this.#ui.acceptUserInput(effect.submit);
+      this.#onSubmit(effect.submit, { strategy: "follow_up" });
+    }
+    if (effect.notice) {
+      this.#appendNotice(effect.notice);
+    }
+    if (effect.cancelRequested) {
+      this.#ui.cancelFromKeybinding();
+    }
+    if (effect.exitRequested) {
+      this.requestExit();
+    }
+    this.#syncCompletionOverlay();
+    this.#needsRender = true;
+  }
+
+  #applyEditorAction(action: InputAction): void {
+    if (this.#applyQuestionAction(action)) {
+      this.#needsRender = true;
+      return;
+    }
+    if (this.#applyCompletionAction(action)) {
+      this.#needsRender = true;
+      return;
+    }
+    const effect = this.#editor.apply(action, {
+      runtimeActive: this.#ui.isRunning(),
+    });
+    this.#applyEffect(effect);
+    this.#refreshCompletions();
+    this.#needsRender = true;
+  }
+
+  /** Completion owns navigation and acceptance while text edits stay in the composer. */
+  #applyCompletionAction(action: InputAction): boolean {
+    if (this.#focus.current() !== COMPLETION_OVERLAY.id) {
+      return false;
+    }
+    if (
+      action.kind !== "dismiss" &&
+      action.kind !== "history_up" &&
+      action.kind !== "history_down" &&
+      action.kind !== "complete" &&
+      action.kind !== "submit"
+    ) {
+      return false;
+    }
+    this.#applyEffect(
+      this.#editor.apply(action, { runtimeActive: this.#ui.isRunning() }),
+    );
+    this.#syncCompletionOverlay();
+    return true;
   }
 
   #applyEof(): void {
@@ -1287,12 +1476,7 @@ export class InteractiveTerminalLoop {
       this.#ui.cancelFromKeybinding();
     }
     if (effect.notice) {
-      this.#ui.appendTranscript(
-        createTranscriptBlock("notice", this.#ui.newBlockId(), {
-          text: effect.notice,
-          style: "yellow",
-        }),
-      );
+      this.#appendNotice(effect.notice);
     }
     if (effect.exitRequested) {
       this.requestExit();
@@ -1323,14 +1507,18 @@ export class InteractiveTerminalLoop {
     }
     const effect = this.#editor.apply(action, { runtimeActive: false });
     if (effect.notice) {
-      this.#ui.appendTranscript(
-        createTranscriptBlock("notice", this.#ui.newBlockId(), {
-          text: effect.notice,
-          style: "yellow",
-        }),
-      );
+      this.#appendNotice(effect.notice);
     }
     return true;
+  }
+
+  #appendNotice(text: string): void {
+    this.#ui.appendTranscript(
+      createTranscriptBlock("notice", this.#ui.newBlockId(), {
+        text,
+        style: "yellow",
+      }),
+    );
   }
 
   #resetEditor(): void {
@@ -1338,11 +1526,13 @@ export class InteractiveTerminalLoop {
     this.#editor.cursor = 0;
     this.#editor.historyIndex = null;
     this.#editor.setCompletions([]);
+    this.#syncCompletionOverlay();
   }
 
   #refreshCompletions(): void {
     if (this.#question !== null) {
       this.#editor.setCompletions([]);
+      this.#syncCompletionOverlay();
       return;
     }
     const registry = this.#ui.commandRegistry;
@@ -1352,6 +1542,15 @@ export class InteractiveTerminalLoop {
           state: this.#ui.isRunning() ? "RUNNING_MODEL" : this.#ui.state.sessionState,
         }),
       );
+    }
+    this.#syncCompletionOverlay();
+  }
+
+  #syncCompletionOverlay(): void {
+    if (this.#editor.completions.length > 0) {
+      this.#overlays.open(COMPLETION_OVERLAY);
+    } else {
+      this.#overlays.close(COMPLETION_OVERLAY.id);
     }
   }
 }
@@ -1376,6 +1575,9 @@ export interface TerminalUIOptions {
   decoderFactory?: InputDecoderFactory;
   /** Non-loop prompt fallback (setup questions outside a live session). */
   askFallback?: (message: string, secret: boolean) => Promise<string>;
+  capabilities?: Partial<RuntimeCapabilities>;
+  keybindingOverrides?: KeybindingOverrides;
+  keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void;
 }
 
 /**
@@ -1414,13 +1616,20 @@ export class TerminalUI {
   readonly provider: string | null;
   readonly model: string | null;
   readonly dashboardUrl: string | null;
+  readonly capabilities: RuntimeCapabilities;
+  readonly keybindings: KeybindingsManager;
 
   #output: (text: string) => void;
   #askFallback: ((message: string, secret: boolean) => Promise<string>) | null;
   #loop: InteractiveTerminalLoop | null = null;
-  #transcript: TranscriptBlock[] = [];
-  #byCorrelation = new Map<string, TranscriptBlock>();
-  #nextBlockId = 0;
+  readonly #transcript: TranscriptStore;
+  readonly #displayPolicy = new DisplayPolicy({
+    audience: "terminal",
+    foldToolOutput: false,
+  });
+  readonly #frameBuilder: FrameBuilder;
+  #pendingDisplayDrops = 0;
+  #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void) | null;
 
   constructor(options: TerminalUIOptions = {}) {
     this.theme = resolveTerminalTheme(options.theme);
@@ -1428,14 +1637,30 @@ export class TerminalUI {
     this.provider = options.provider ?? null;
     this.model = options.model ?? null;
     this.dashboardUrl = options.dashboardUrl ?? null;
+    this.capabilities = { ...DEFAULT_RUNTIME_CAPABILITIES, ...options.capabilities };
+    this.keybindings = new KeybindingsManager(
+      DEFAULT_KEYBINDINGS,
+      options.keybindingOverrides,
+    );
     this.commandRegistry = options.commandRegistry ?? null;
     this.cancelCallback = options.cancelCallback ?? null;
     this.#output = options.output ?? ((text) => console.log(text));
     this.#askFallback = options.askFallback ?? null;
+    this.#keyActionCallback = options.keyActionCallback ?? null;
     this.state = createUIState();
     this.state.provider = options.provider ?? "";
     this.state.model = options.model ?? "";
     this.reducer = new UIEventReducer(this.state);
+    this.#transcript = new TranscriptStore({
+      errorStyle: `bold ${this.theme.color("error")}`,
+    });
+    this.#frameBuilder = new FrameBuilder({
+      state: this.state,
+      transcript: this.#transcript,
+      projectRoot: this.projectRoot,
+      provider: this.provider,
+      model: this.model,
+    });
     if (options.driver) {
       const editorFactory = options.editorFactory ?? (() => new BasicEditorState());
       const decoderFactory =
@@ -1486,7 +1711,7 @@ export class TerminalUI {
   // -- loop lifecycle -----------------------------------------------------
 
   /** Run the single-owner interactive terminal for the whole session. */
-  async run(onSubmit: (text: string) => void): Promise<void> {
+  async run(onSubmit: SubmitCallback): Promise<void> {
     if (this.#loop === null) {
       throw new Error("single-renderer mode is unavailable for this UI");
     }
@@ -1502,7 +1727,7 @@ export class TerminalUI {
     this.#loop?.close();
   }
 
-  startLoop(onSubmit: (text: string) => void): void {
+  startLoop(onSubmit: SubmitCallback): void {
     if (this.#loop === null) {
       throw new Error("a terminal driver is required");
     }
@@ -1539,6 +1764,27 @@ export class TerminalUI {
     this.runtimeRunningCallback = callback;
   }
 
+  setKeyActionCallback(
+    callback: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void,
+  ): void {
+    this.#keyActionCallback = callback;
+  }
+
+  handleKeyAction(action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">): void {
+    if (this.#keyActionCallback === null) {
+      this.write(`Key action is unavailable: ${action}.`);
+      return;
+    }
+    this.#keyActionCallback(action);
+  }
+
+  toggleToolOutputFromKeybinding(): void {
+    this.applyDisplayAction({
+      type: "toggle_tool_output",
+      expanded: !this.#transcript.toolOutputExpanded(),
+    });
+  }
+
   isRunning(): boolean {
     if (this.runtimeRunningCallback !== null) {
       return Boolean(this.runtimeRunningCallback());
@@ -1546,6 +1792,71 @@ export class TerminalUI {
     return ["RUNNING_MODEL", "RUNNING_TOOL", "RUNNING_TOOLS", "CANCELLING"].includes(
       this.state.sessionState,
     );
+  }
+
+  shouldQueueDisplayEvent(event: unknown): boolean {
+    if (!isRecord(event) || !("kind" in event)) {
+      return true;
+    }
+    return this.#displayPolicy.shouldQueue({
+      kind: event.kind,
+      payload: event.payload,
+      correlation_id: event.correlation_id,
+    });
+  }
+
+  isHighFrequencyDisplayEvent(event: unknown): boolean {
+    if (!isRecord(event) || !("kind" in event)) {
+      return false;
+    }
+    return this.#displayPolicy.isHighFrequency({
+      kind: event.kind,
+      payload: event.payload,
+      correlation_id: event.correlation_id,
+    });
+  }
+
+  recordDisplayDrop(event: unknown): void {
+    if (!isRecord(event) || !("kind" in event)) {
+      this.#pendingDisplayDrops += 1;
+      return;
+    }
+    this.#pendingDisplayDrops += 1 + this.#displayPolicy.droppedCount({
+      kind: event.kind,
+      payload: event.payload,
+      correlation_id: event.correlation_id,
+    });
+  }
+
+  withDisplayDropMarker(event: unknown): unknown {
+    if (this.#pendingDisplayDrops === 0 || !isRecord(event) || !("kind" in event)) {
+      return event;
+    }
+    const pending = this.#pendingDisplayDrops;
+    this.#pendingDisplayDrops = 0;
+    const payload = isRecord(event.payload) ? event.payload : {};
+    const inherited = this.#displayPolicy.droppedCount({
+      kind: event.kind,
+      payload,
+      correlation_id: event.correlation_id,
+    });
+    return {
+      ...event,
+      payload: { ...payload, _projection_dropped: inherited + pending },
+    };
+  }
+
+  flushDisplayDropMarker(): boolean {
+    if (this.#pendingDisplayDrops === 0) {
+      return false;
+    }
+    const dropped = this.#pendingDisplayDrops;
+    this.#pendingDisplayDrops = 0;
+    this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
+      text: displayGapMessage(dropped),
+      style: "yellow",
+    }));
+    return true;
   }
 
   cancelFromKeybinding(): void {
@@ -1559,15 +1870,11 @@ export class TerminalUI {
   // -- transcript ---------------------------------------------------------
 
   newBlockId(): string {
-    this.#nextBlockId += 1;
-    return `local-${this.#nextBlockId}`;
+    return this.#transcript.newBlockId();
   }
 
   appendTranscript(block: TranscriptBlock): void {
-    this.#transcript.push(block);
-    if (block.key) {
-      this.#byCorrelation.set(`${block.kind}:${block.key}`, block);
-    }
+    this.#transcript.append(block);
   }
 
   acceptUserInput(text: string): void {
@@ -1575,11 +1882,7 @@ export class TerminalUI {
   }
 
   blockFor(kind: string, key: string): TranscriptBlock {
-    const block = this.#byCorrelation.get(`${kind}:${key}`);
-    if (block === undefined) {
-      throw new Error(`no transcript block for ${kind}:${key}`);
-    }
-    return block;
+    return this.#transcript.blockFor(kind, key);
   }
 
   /** Build every persisted transcript line; never crop history here. */
@@ -1589,7 +1892,7 @@ export class TerminalUI {
 
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
     const usableWidth = Math.max(12, width);
-    const blocks = [...this.#transcript];
+    const blocks = this.#transcript.blocks();
     const lines: string[] = [];
     let activeStart: number | null = null;
     for (const block of blocks) {
@@ -1614,27 +1917,14 @@ export class TerminalUI {
     secret?: boolean;
   }): ScreenFrame {
     const { width, editor } = options;
-    const prompt = options.prompt ?? "❯ ";
-    const secret = options.secret ?? false;
     const { lines: history, activeStart } = this.#buildHistoryFrameParts(width);
-    const editorResult = editor.renderLines(width, { prompt, mask: secret });
     const completion = this.#completionLines(width, editor);
-    const footer = this.#footerLine(width);
-    const rows = [
-      ...history,
-      "─".repeat(width),
-      ...editorResult.lines,
-      "─".repeat(width),
-      ...completion,
-      ...(footer !== null ? [footer] : []),
-    ];
-    const editorStart = history.length + 1;
-    return {
-      lines: rows,
-      activeStart: activeStart ?? editorStart,
-      cursorRow: editorStart + editorResult.cursorRow,
-      cursorCol: editorResult.cursorCol,
-    };
+    return this.#frameBuilder.build({
+      ...options,
+      historyLines: history,
+      activeStart,
+      completionLines: completion,
+    }).screen;
   }
 
   #completionLines(width: number, editor: EditorLike): string[] {
@@ -1645,32 +1935,6 @@ export class TerminalUI {
       rows.push(truncateToWidth(text, width));
     });
     return rows;
-  }
-
-  #footerLine(width: number): string | null {
-    const text = this.#footerText();
-    return text ? truncateToWidth(text, width) : null;
-  }
-
-  #footerText(): string {
-    const details: string[] = [];
-    if (this.projectRoot !== null) {
-      details.push(this.projectRoot);
-    }
-    if (this.state.pendingCount || this.state.heldCount) {
-      details.push(
-        `queue ${this.state.pendingCount} pending / ${this.state.heldCount} held`,
-      );
-    }
-    if (this.state.totalTokens) {
-      details.push(`↑${this.state.inputTokens} ↓${this.state.outputTokens}`);
-    }
-    const model = this.state.model || (this.model ?? "");
-    if (model) {
-      const provider = this.state.provider || (this.provider ?? "");
-      details.push(provider ? `${provider}/${model}` : model);
-    }
-    return details.join(" · ");
   }
 
   #renderTranscriptItem(
@@ -1716,6 +1980,9 @@ export class TerminalUI {
       }
       if (item.streamError) {
         detail += `\n${clip(item.streamError, 1_200)}`;
+      }
+      if (item.toolOutputExpanded && item.toolOutput) {
+        detail += `\n${clip(item.toolOutput, 1_200)}`;
       }
       const rendered = this.#backgroundLines(`${title}\n${detail}`, width, background, "text");
       const first = rendered[0];
@@ -1768,149 +2035,39 @@ export class TerminalUI {
       );
       return;
     }
-    if (isHiddenToolStdout(event)) {
-      return;
-    }
-    const dropped = projectionDropped(event);
-    if (dropped) {
-      this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: `… 省略了 ${dropped} 个流式展示事件；Agent 仍继续运行。`,
-          style: "yellow",
-        }),
-      );
-    }
     this.applyProjectedEvent(event as UIEventLike);
   }
 
   /** Reduce a projected event and apply its append-only block change. */
   applyProjectedEvent(event: UIEventLike): void {
-    if (isHiddenToolStdout(event)) {
+    for (const projected of this.#displayPolicy.project(event)) {
+      this.#applyDisplayEvent(projected);
+    }
+  }
+
+  applyDisplayAction(action: DisplayAction): void {
+    if (action.type !== "toggle_tool_output") {
       return;
     }
-    const update = this.reducer.apply(event);
+    this.#transcript.setToolOutputExpanded(action.expanded);
+    this.#loop?.requestRender();
+  }
+
+  #applyDisplayEvent(event: DisplayEvent): void {
+    if (event.kind === "display.gap") {
+      this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
+        text: event.text,
+        style: "yellow",
+      }));
+      return;
+    }
+    const update = this.reducer.apply({
+      kind: event.kind,
+      correlation_id: event.correlationId,
+      payload: event.payload,
+    });
     if (update !== null) {
-      this.applyTranscriptUpdate(update);
-    }
-  }
-
-  /** Mutate transcript state; the raw loop paints it later. */
-  applyTranscriptUpdate(update: UIUpdate): void {
-    const kind = update.kind;
-    const correlationId = update.correlationId;
-    if (kind === "ui.message") {
-      this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: update.text,
-          style: String(update.payload.style ?? ""),
-        }),
-      );
-      return;
-    }
-    if (kind === "model.text_delta") {
-      this.#freezeThinking();
-      const key = `assistant:${correlationId}`;
-      let item = this.#byCorrelation.get(key);
-      if (item === undefined) {
-        item = createTranscriptBlock("assistant", correlationId, { mutable: true });
-        this.#transcript.push(item);
-        this.#byCorrelation.set(key, item);
-      }
-      if (item.mutable) {
-        item.text += update.text;
-      }
-      return;
-    }
-    if (kind === "model.reasoning_delta") {
-      const key = `thinking:${correlationId}`;
-      let item = this.#byCorrelation.get(key);
-      if (item === undefined) {
-        item = createTranscriptBlock("thinking", correlationId, { mutable: true });
-        this.#transcript.push(item);
-        this.#byCorrelation.set(key, item);
-      }
-      if (item.mutable) {
-        item.text += update.text;
-      }
-      return;
-    }
-    if (
-      kind === "model.response_committed" ||
-      kind === "model.response_aborted" ||
-      kind === "model.request_failed"
-    ) {
-      for (const blockKind of ["assistant", "thinking"]) {
-        const block = this.#byCorrelation.get(`${blockKind}:${correlationId}`);
-        if (block !== undefined) {
-          block.mutable = false;
-        }
-      }
-      return;
-    }
-    if (kind === "tool.started") {
-      this.#freezeThinking();
-      const args = update.payload.arguments;
-      let subject = "";
-      if (isRecord(args)) {
-        subject = String(args.command || args.path || "");
-      }
-      this.appendTranscript(
-        createTranscriptBlock("tool", correlationId, {
-          mutable: true,
-          name: String(update.payload.name ?? "tool"),
-          subject,
-          status: "running",
-        }),
-      );
-      return;
-    }
-    if (kind === "tool.output_delta" && update.stream === "stderr") {
-      const item = this.#byCorrelation.get(`tool:${correlationId}`);
-      if (item !== undefined) {
-        item.streamError = (item.streamError + update.text).slice(-20_000);
-      }
-      return;
-    }
-    if (kind === "tool.finished") {
-      const key = `tool:${correlationId}`;
-      let item = this.#byCorrelation.get(key);
-      if (item === undefined) {
-        item = createTranscriptBlock("tool", correlationId);
-        this.#transcript.push(item);
-        this.#byCorrelation.set(key, item);
-      }
-      item.status = String(update.payload.status ?? "completed");
-      const rawExitCode = update.payload.exit_code;
-      item.exitCode = typeof rawExitCode === "number" ? Math.trunc(rawExitCode) : null;
-      const rawDuration = update.payload.duration_ms;
-      item.durationMs = typeof rawDuration === "number" ? Math.trunc(rawDuration) : null;
-      item.mutable = false;
-      return;
-    }
-    if (kind === "task.cancelled") {
-      this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: "任务已取消；已经完成的文件修改不会自动撤销。",
-          style: "yellow",
-        }),
-      );
-      return;
-    }
-    if (kind === "task.failed") {
-      this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: `Error: ${String(update.payload.error ?? "Task failed")}`,
-          style: `bold ${this.theme.color("error")}`,
-        }),
-      );
-    }
-  }
-
-  #freezeThinking(): void {
-    for (const block of this.#transcript) {
-      if (block.kind === "thinking") {
-        block.mutable = false;
-      }
+      this.#transcript.apply(update);
     }
   }
 
@@ -1965,8 +2122,8 @@ export class TerminalUI {
     }
     if (this.#loop !== null) {
       this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: "laoHuangCode  /help for commands",
+        createTranscriptBlock("notice", "welcome", {
+          text: WELCOME_TEXT,
           style: `bold ${this.theme.color("accent")}`,
         }),
       );
@@ -1981,7 +2138,7 @@ export class TerminalUI {
       return;
     }
     this.#output(
-      ansiStyledText(`bold ${this.theme.color("accent")}`, "laoHuangCode") +
+      ansiStyledText(`bold ${this.theme.color("accent")}`, WELCOME_TEXT) +
         "  " +
         ansiStyledText(this.theme.color("dim"), "/help for commands"),
     );
@@ -2020,6 +2177,7 @@ export class PlainEventSink {
   readonly outputFn: (text: string) => void;
   #stopped = false;
   #modelBuffers = new Map<string, string[]>();
+  #displayPolicy = new DisplayPolicy({ audience: "terminal" });
   renderError: unknown = null;
 
   constructor(outputFn: (text: string) => void = (text) => console.log(text)) {
@@ -2027,11 +2185,26 @@ export class PlainEventSink {
   }
 
   publishEvent(event: unknown): void {
-    if (this.#stopped || isHiddenToolStdout(event)) {
+    if (this.#stopped || !isRecord(event) || !("kind" in event)) {
       return;
     }
     try {
-      this.#renderEvent(event);
+      const displayEvent: DisplayEventLike = {
+        kind: event.kind,
+        payload: event.payload,
+        correlation_id: event.correlation_id,
+      };
+      for (const projected of this.#displayPolicy.project(displayEvent)) {
+        if (projected.kind === "display.gap") {
+          this.outputFn(`[stream output omitted: ${projected.payload.dropped} event(s); runtime continued]`);
+          continue;
+        }
+        this.#renderEvent({
+          kind: projected.kind,
+          correlation_id: projected.correlationId,
+          payload: projected.payload,
+        });
+      }
     } catch (error) {
       this.renderError = error;
     }
@@ -2056,14 +2229,7 @@ export class PlainEventSink {
       return;
     }
     const kind = String(event.kind ?? "");
-    const payload = eventPayload(event);
-    if (kind === "tool.output_delta" && String(payload.stream ?? "stdout") === "stdout") {
-      return;
-    }
-    const dropped = toInt(payload._projection_dropped ?? 0);
-    if (dropped) {
-      this.outputFn(`[stream output omitted: ${dropped} event(s); runtime continued]`);
-    }
+    const payload = isRecord(event.payload) ? event.payload : {};
     const correlationId = String(event.correlation_id ?? "").slice(-8);
 
     if (kind === "model.text_delta") {

@@ -8,6 +8,11 @@
  */
 
 import { charCellWidth } from "./screen.ts";
+import {
+  makeKeyInput,
+  type KeyInput,
+  type TuiInputEvent,
+} from "../keybindings/key-id.ts";
 
 // The wcwidth tables and charCellWidth are owned by terminal/screen.ts;
 // re-exported here for existing consumers of this module.
@@ -24,6 +29,7 @@ export const InputActionKind = {
   CursorLeft: "cursor_left",
   CursorRight: "cursor_right",
   Backspace: "backspace",
+  Key: "key",
   Dismiss: "dismiss",
   Cancel: "cancel",
   Eof: "eof",
@@ -40,18 +46,81 @@ export const BufferedInputKind = {
 export type BufferedInputKind =
   (typeof BufferedInputKind)[keyof typeof BufferedInputKind];
 
+export interface BufferedSequenceInput {
+  readonly kind: typeof BufferedInputKind.Sequence;
+  readonly data: Buffer;
+}
+
+export interface BufferedPasteInput {
+  readonly kind: typeof BufferedInputKind.Paste;
+  readonly data: Buffer;
+}
+
+export type BufferedInput = BufferedSequenceInput | BufferedPasteInput;
+
 export interface InputAction {
   readonly kind: InputActionKind;
   readonly text: string;
+  readonly key?: KeyInput;
 }
 
-export function inputAction(kind: InputActionKind, text = ""): InputAction {
-  return { kind, text };
+export function inputAction(kind: InputActionKind, text = "", key?: KeyInput): InputAction {
+  return key === undefined ? { kind, text } : { kind, text, key };
 }
 
-export interface BufferedInput {
-  readonly kind: BufferedInputKind;
-  readonly data: Buffer;
+const KITTY_LOCK_MODIFIER_MASK = 64 | 128;
+
+function matchesKittyModifiers(modifier: number, expected: number): boolean {
+  return (modifier & ~KITTY_LOCK_MODIFIER_MASK) === expected;
+}
+
+function isKittyPressEvent(eventType: string | undefined): boolean {
+  return eventType === undefined || eventType === "1";
+}
+
+/** Convert existing editor actions into the neutral TUI input contract. */
+export function toTuiInputEvent(action: InputAction): TuiInputEvent;
+export function toTuiInputEvent(input: BufferedPasteInput): TuiInputEvent;
+export function toTuiInputEvent(
+  input: InputAction | BufferedPasteInput,
+): TuiInputEvent {
+  if (input.kind === BufferedInputKind.Paste) {
+    return { type: "paste", text: input.data.toString("utf8") };
+  }
+  if (input.kind === InputActionKind.Key) {
+    if (input.key === undefined) {
+      throw new Error("key input action is missing its key");
+    }
+    return { type: "key", key: input.key };
+  }
+
+  switch (input.kind) {
+    case InputActionKind.Insert:
+      return { type: "text", text: input.text };
+    case InputActionKind.Submit:
+      return { type: "key", key: makeKeyInput("enter") };
+    case InputActionKind.Newline:
+      return { type: "key", key: makeKeyInput("enter", { alt: true }) };
+    case InputActionKind.Complete:
+      return { type: "key", key: makeKeyInput("tab") };
+    case InputActionKind.HistoryUp:
+      return { type: "key", key: makeKeyInput("up") };
+    case InputActionKind.HistoryDown:
+      return { type: "key", key: makeKeyInput("down") };
+    case InputActionKind.CursorLeft:
+      return { type: "key", key: makeKeyInput("left") };
+    case InputActionKind.CursorRight:
+      return { type: "key", key: makeKeyInput("right") };
+    case InputActionKind.Backspace:
+      return { type: "key", key: makeKeyInput("backspace") };
+    case InputActionKind.Dismiss:
+      return { type: "key", key: makeKeyInput("escape") };
+    case InputActionKind.Cancel:
+      return { type: "key", key: makeKeyInput("ctrl_c", { ctrl: true }) };
+    case InputActionKind.Eof:
+      return { type: "key", key: makeKeyInput("ctrl_d", { ctrl: true }) };
+  }
+
 }
 
 /** Side effects an {@link EditorState} action asks the caller to perform. */
@@ -364,11 +433,17 @@ const ESCAPE_ACTIONS: ReadonlyMap<string, InputActionKind> = new Map([
 ]);
 
 const CONTROL_ACTIONS: ReadonlyMap<number, InputActionKind> = new Map([
-  [3, InputActionKind.Cancel],
   [4, InputActionKind.Eof],
   [9, InputActionKind.Complete],
   [8, InputActionKind.Backspace],
   [127, InputActionKind.Backspace],
+]);
+
+const CONTROL_KEYS: ReadonlyMap<number, KeyInput> = new Map([
+  [3, makeKeyInput("ctrl_c", { ctrl: true })],
+  [12, makeKeyInput("ctrl_l", { ctrl: true })],
+  [15, makeKeyInput("character", { text: "o", ctrl: true })],
+  [20, makeKeyInput("character", { text: "t", ctrl: true })],
 ]);
 
 type EscapeConsumption =
@@ -401,6 +476,12 @@ export class RawInputDecoder {
       if (byte === 10 || byte === 13) {
         this.buffer = this.buffer.subarray(1);
         actions.push(inputAction(InputActionKind.Submit));
+        continue;
+      }
+      const key = CONTROL_KEYS.get(byte);
+      if (key !== undefined) {
+        this.buffer = this.buffer.subarray(1);
+        actions.push(inputAction(InputActionKind.Key, "", key));
         continue;
       }
       const kind = CONTROL_ACTIONS.get(byte);
@@ -465,7 +546,14 @@ export class RawInputDecoder {
     const second = this.buffer[1]!;
     if (second === 10 || second === 13) {
       this.buffer = this.buffer.subarray(2);
-      return { status: "action", action: inputAction(InputActionKind.Newline) };
+      return {
+        status: "action",
+        action: inputAction(
+          InputActionKind.Key,
+          "",
+          makeKeyInput("enter", { alt: true }),
+        ),
+      };
     }
     if (second === 0x5b /* [ */) {
       let final: number | null = null;
@@ -856,8 +944,62 @@ const SPECIAL_ESCAPE_ACTIONS: ReadonlyMap<string, InputActionKind> = new Map([
 ]);
 
 function decodeSpecialEscapeAction(sequence: string): InputAction | null {
+  const modified = decodeModifiedControlKey(sequence);
+  if (modified !== null) {
+    return modified;
+  }
   const kind = SPECIAL_ESCAPE_ACTIONS.get(sequence);
   return kind !== undefined ? inputAction(kind) : null;
+}
+
+function decodeModifiedControlKey(sequence: string): InputAction | null {
+  const kitty = /^\x1b\[(13|57414|9);(\d+)(?::(\d+))?u$/.exec(sequence);
+  if (kitty !== null) {
+    const code = kitty[1]!;
+    const modifier = Number.parseInt(kitty[2]!, 10) - 1;
+    if (!isKittyPressEvent(kitty[3])) {
+      return null;
+    }
+    if (
+      (code === "13" || code === "57414")
+      && matchesKittyModifiers(modifier, 2)
+    ) {
+      return inputAction(
+        InputActionKind.Key,
+        "",
+        makeKeyInput("enter", { alt: true }),
+      );
+    }
+    if (code === "9" && matchesKittyModifiers(modifier, 1)) {
+      return inputAction(
+        InputActionKind.Key,
+        "",
+        makeKeyInput("tab", { shift: true }),
+      );
+    }
+    return null;
+  }
+  const modifyOtherKeys = /^\x1b\[27;(\d+);(\d+)~$/.exec(sequence);
+  if (modifyOtherKeys === null) {
+    return null;
+  }
+  const modifier = Number.parseInt(modifyOtherKeys[1]!, 10) - 1;
+  const codepoint = Number.parseInt(modifyOtherKeys[2]!, 10);
+  if (codepoint === 13 && modifier === 2) {
+    return inputAction(
+      InputActionKind.Key,
+      "",
+      makeKeyInput("enter", { alt: true }),
+    );
+  }
+  if (codepoint === 9 && modifier === 1) {
+    return inputAction(
+      InputActionKind.Key,
+      "",
+      makeKeyInput("tab", { shift: true }),
+    );
+  }
+  return null;
 }
 
 function decodePrintableKey(sequence: string): string | null {
