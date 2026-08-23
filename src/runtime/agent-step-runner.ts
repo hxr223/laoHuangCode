@@ -4,21 +4,22 @@ import type { CancelToken } from "../cancellation.ts";
 import {
   ModelStreamCancelled,
   ModelStreamError,
-  type AssembledToolCall,
 } from "../model-stream.ts";
-import {
-  modelErrorKind,
-  type ChatClientLike,
-  type ModelAdapter,
-} from "../model-adapter.ts";
+import { modelErrorKind, type ChatClientLike } from "../model-adapter.ts";
 import { touchedPathOf } from "../tools.ts";
-import type { ToolDefinition, ToolExecutionMode, ToolResult, ToolSpec } from "../tools.ts";
+import type { ToolExecutionMode, ToolResult } from "../tools.ts";
 import {
   HistoryCommitter,
   type HistoryCommitContext,
   type PendingInputBatchLike,
 } from "./history-committer.ts";
 import { GuardPolicy } from "./guard-policy.ts";
+import { ModelRuntime } from "./model-runtime.ts";
+import {
+  ToolRuntime,
+  type ToolRuntimeToolEvent,
+  type ToolRuntimeToolResultEvent,
+} from "./tool-runtime.ts";
 
 export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
 Do not call any tools. Give the user the best concise answer possible from the
@@ -32,18 +33,13 @@ export interface AgentStepRunnerContext extends HistoryCommitContext {
   safePoint?(): PendingInputBatchLike | null | undefined;
 }
 
-export interface AgentStepRunnerToolRegistry {
-  readonly definitions: readonly ToolDefinition[];
-  readonly orderedSpecs: readonly ToolSpec[];
-  executionMode(name: string): ToolExecutionMode | undefined;
-}
-
 export interface AgentStepRunnerOptions {
   client: ChatClientLike;
   model: string;
   provider: string | null;
-  adapter: ModelAdapter;
-  tools: AgentStepRunnerToolRegistry;
+  modelRuntime: ModelRuntime;
+  toolRuntime: ToolRuntime;
+  toolDefinitions: Array<Record<string, unknown>>;
   toolExecution: ToolExecutionMode;
   history: HistoryCommitter;
   guardPolicy: GuardPolicy;
@@ -57,13 +53,6 @@ export interface AgentStepRunnerOptions {
   emitLegacy(eventType: string, payload: Record<string, unknown>): void;
   injectBaselineInstructions(cancelToken: CancelToken | null): void;
   discoverForTouchedPaths(touchedPaths: readonly string[]): void;
-  executeTool(
-    name: string,
-    args: Record<string, unknown>,
-    toolCallId: string,
-    cancelToken: CancelToken | null,
-    context: AgentStepRunnerContext | null,
-  ): Promise<ToolResult> | ToolResult;
   onToolEvent(name: string, args: Record<string, unknown>, result: ToolResult): void;
   createError(message: string, cause?: unknown): Error;
   createCancelled(message: string, cause?: unknown): Error;
@@ -148,10 +137,11 @@ export class AgentStepRunner {
       let result;
       try {
         const modelRequestOpened = context?.modelRequestOpened;
-        result = await this.options.adapter.complete(this.options.client, {
+        result = await this.options.modelRuntime.complete({
+          client: this.options.client,
           model: this.options.model,
           messages: requestMessages,
-          tools: this.options.tools.definitions as unknown as Array<Record<string, unknown>>,
+          tools: this.options.toolDefinitions,
           toolChoice: forceFinal ? "none" : "auto",
           requestId,
           cancelToken,
@@ -284,7 +274,13 @@ export class AgentStepRunner {
 
       toolRounds += 1;
       context?.toolsStarted?.();
-      const toolResults = await this.executeToolBatch(toolCalls, modelRound);
+      const toolResults = (await this.options.toolRuntime.execute({
+        toolCalls,
+        executionMode: this.options.toolExecution,
+        cancelToken,
+        onToolStart: (event) => this.startToolEvent(event, modelRound),
+        onToolResult: (event) => this.completeToolEvent(event, modelRound),
+      })).results;
       const repeated = guardPolicy.recordRepeatedToolCalls(toolCalls, toolResults);
       history.commitToolResults(toolCalls, toolResults);
       this.raiseIfCancelled();
@@ -313,98 +309,38 @@ export class AgentStepRunner {
     }
   }
 
-  private async executeToolBatch(
-    toolCalls: readonly AssembledToolCall[],
-    modelRound: number,
-  ): Promise<ToolResult[]> {
-    interface Prepared {
-      offset: number;
-      toolCall: AssembledToolCall;
-      args: Record<string, unknown>;
-      eventContext: Record<string, unknown>;
-    }
-    const results: Array<ToolResult | undefined> = new Array<ToolResult | undefined>(toolCalls.length).fill(undefined);
-    const prepared: Prepared[] = [];
-
-    for (let offset = 0; offset < toolCalls.length; offset += 1) {
-      const toolCall = toolCalls[offset];
-      if (toolCall === undefined) {
-        continue;
-      }
-      let args: Record<string, unknown>;
-      let result: ToolResult | undefined;
-      try {
-        const decoded: unknown = JSON.parse(toolCall.function.arguments);
-        if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
-          throw new Error("Tool arguments must be a JSON object");
-        }
-        args = decoded as Record<string, unknown>;
-      } catch (error) {
-        args = { _raw: toolCall.function.arguments };
-        result = { ok: false, error: errorMessage(error) };
-      }
-      const eventContext: Record<string, unknown> = {
-        round: modelRound,
-        index: offset + 1,
-        batch_size: toolCalls.length,
-        tool_call_id: toolCall.id,
-        name: toolCall.function.name,
-      };
-      this.emit("tool_start", { ...eventContext, arguments: safeArguments(args) });
-      if (result === undefined) {
-        prepared.push({ offset, toolCall, args, eventContext });
-      } else {
-        results[offset] = result;
-        this.finishToolEvent(toolCall.function.name, args, result, eventContext);
-      }
-    }
-
-    const sequentialBatch = this.options.toolExecution === "sequential" ||
-      toolCalls.some((call) => this.options.tools.executionMode(call.function.name) === "sequential") ||
-      toolCalls.some((call) => call.function.name === "write" || call.function.name === "edit");
-    const runOne = async (item: Prepared): Promise<void> => {
-      let result: ToolResult;
-      if (this.isCancelled()) {
-        result = cancelledToolResult(this.options.cancelToken);
-      } else {
-        try {
-          result = await this.options.executeTool(
-            item.toolCall.function.name,
-            item.args,
-            item.toolCall.id,
-            this.options.cancelToken,
-            this.options.context,
-          );
-        } catch (error) {
-          result = { ok: false, error: errorMessage(error) };
-        }
-      }
-      results[item.offset] = result;
-      this.finishToolEvent(item.toolCall.function.name, item.args, result, item.eventContext);
-    };
-    if (sequentialBatch || prepared.length === 1) {
-      for (const item of prepared) {
-        await runOne(item);
-      }
-    } else if (prepared.length > 0) {
-      await Promise.all(prepared.map((item) => runOne(item)));
-    }
-    return results.map((result) => result ?? { ok: false, error: "Tool execution produced no result" });
+  private startToolEvent(event: ToolRuntimeToolEvent, modelRound: number): void {
+    this.emit("tool_start", {
+      ...this.toolEventContext(event, modelRound),
+      arguments: safeArguments(event.args),
+    });
   }
 
-  private finishToolEvent(
-    name: string,
-    args: Record<string, unknown>,
-    result: ToolResult,
-    eventContext: Record<string, unknown>,
+  private completeToolEvent(
+    event: ToolRuntimeToolResultEvent,
+    modelRound: number,
   ): void {
-    this.options.onToolEvent(name, args, result);
-    const status = result["status"];
+    this.options.onToolEvent(event.toolCall.function.name, event.args, event.result);
+    const status = event.result["status"];
     this.emit("tool_result", {
-      ...eventContext,
-      status: (typeof status === "string" && status) || (result["ok"] ? "completed" : "failed"),
-      result: safeResult(result),
+      ...this.toolEventContext(event, modelRound),
+      status: (typeof status === "string" && status) ||
+        (event.result["ok"] ? "completed" : "failed"),
+      result: safeResult(event.result),
     });
+  }
+
+  private toolEventContext(
+    event: ToolRuntimeToolEvent,
+    modelRound: number,
+  ): Record<string, unknown> {
+    return {
+      round: modelRound,
+      index: event.index,
+      batch_size: event.batchSize,
+      tool_call_id: event.toolCall.id,
+      name: event.toolCall.function.name,
+    };
   }
 
   private guardPayload(options: {
@@ -441,10 +377,6 @@ export class AgentStepRunner {
       throw this.options.createCancelled(this.options.cancelToken?.reason || "cancelled");
     }
   }
-}
-
-function cancelledToolResult(token: CancelToken | null): ToolResult {
-  return { ok: false, status: "cancelled", error: token?.reason || "cancelled" };
 }
 
 function usageTotalTokens(usage: unknown): number {
