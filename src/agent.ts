@@ -12,7 +12,6 @@
  * one final answer from the information already gathered.
  */
 
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 
 import { CancelToken } from "./cancellation.ts";
@@ -23,18 +22,11 @@ import {
   type EventBus,
 } from "./events.ts";
 import {
-  ModelStreamCancelled,
-  ModelStreamError,
-  type AssembledToolCall,
-} from "./model-stream.ts";
-import {
   defaultAdapterRegistry,
-  modelErrorKind,
   portableMessage,
   type ChatClientLike,
   type ModelAdapter,
 } from "./model-adapter.ts";
-import { touchedPathOf } from "./tools.ts";
 import type {
   ToolDefinition,
   ToolExecutionContextLike,
@@ -51,11 +43,15 @@ import {
   scopeChain,
   ProjectInstructionState,
 } from "./project-instructions.ts";
+import {
+  AgentStepRunner,
+  FORCED_FINAL_PROMPT,
+  type AgentStepRunnerContext,
+} from "./runtime/agent-step-runner.ts";
+import { GuardPolicy } from "./runtime/guard-policy.ts";
+import { HistoryCommitter } from "./runtime/history-committer.ts";
 
-export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
-Do not call any tools. Give the user the best concise answer possible from the
-information already available. Clearly state any limitation caused by stopping
-tool use, but do not mention internal implementation details unless useful.`;
+export { FORCED_FINAL_PROMPT };
 
 /** Raised when the model response cannot drive the agent loop. */
 export class AgentError extends Error {
@@ -119,27 +115,12 @@ export interface AgentEventPublishOptions {
  * Every member is optional; without a context the agent runs standalone and
  * manages its own history commits and cancellation checks.
  */
-export interface AgentContext {
+export interface AgentContext extends AgentStepRunnerContext {
   readonly sessionId?: string | null;
   readonly taskId?: string | null;
   readonly cancelToken?: CancelToken | null;
   readonly eventBus?: EventBus | null;
   publish?(kind: EventKind, options: AgentEventPublishOptions): unknown;
-  /** Return false to cancel before the model request is sent. */
-  modelStarted?(): boolean | void;
-  /** Called once the SDK acknowledged the streaming request. */
-  modelRequestOpened?(): boolean | void;
-  toolsStarted?(): void;
-  safePoint?(): PendingInputBatchLike | null | undefined;
-  /** Atomically commit the user message; rollback undoes a failed commit. */
-  commitInput?(append: () => void, rollback: () => void): boolean;
-  commitPending?(
-    batch: PendingInputBatchLike,
-    append: () => void,
-    rollback: () => void,
-  ): boolean;
-  /** Atomically reject history commits once cancellation has won. */
-  commitIfActive?(callback: () => void): boolean;
 }
 
 export interface RunOptions {
@@ -282,548 +263,63 @@ export class CodingAgent {
     }
     this.activeContext = context;
     this.turn += 1;
-    let toolRounds = 0;
-    let modelRound = 0;
-    let modelRequests = 0;
-    let totalTokens = 0;
-    const startedAt = performance.now();
-    const repeatedCalls = new Map<string, number>();
-    let guardReason: string | null = null;
-    let guardEmitted = false;
-
     try {
-      const userMessage: Record<string, unknown> = {
-        role: "user",
-        content: userInput,
-      };
-      const commitInput = context?.commitInput;
-      let committed: boolean;
-      if (typeof commitInput === "function") {
-        committed = this.commitContextMessage(
-          (append, rollback) => commitInput.call(context, append, rollback),
-          userMessage,
-        );
-      } else {
-        raiseIfCancelled(cancelToken);
-        this.messages.push(userMessage);
-        committed = true;
-      }
-      if (!committed) {
-        throw new AgentCancelled("cancelled before user input commit");
-      }
-      this.emit("user_message", { content: userInput });
-      this.injectBaselineInstructions(cancelToken);
-
-      for (;;) {
-        raiseIfCancelled(cancelToken);
-        guardReason =
-          guardReason ??
-          this.budgetGuardReason(
-            totalTokens,
-            (performance.now() - startedAt) / 1000,
-          );
-        const forceFinal = guardReason !== null;
-        if (guardReason !== null && !guardEmitted) {
-          guardEmitted = true;
-          this.emit(
-            "agent_guard_triggered",
-            this.guardPayload({
-              reason: guardReason,
-              toolRounds,
-              modelRequests,
-              totalTokens,
-              startedAt,
-            }),
-          );
-        }
-        if (context?.modelStarted?.() === false) {
-          throw new AgentCancelled("cancelled before model request");
-        }
-        modelRound += 1;
-        modelRequests += 1;
-        const currentRequestId =
-          modelRound === 1 && options.requestId
-            ? options.requestId
-            : randomUUID();
-        this.activeRequestId = currentRequestId;
-        this.emit("model_request", {
-          round: modelRound,
-          request_id: currentRequestId,
-          message_count: this.messages.length,
-          tool_rounds: toolRounds,
-          model_requests: modelRequests,
-          total_tokens: totalTokens,
-          force_final: forceFinal,
-          guard_reason: guardReason,
-        });
-        const requestMessages = [...this.messages];
-        if (forceFinal) {
-          const systemMessage: Record<string, unknown> = {
-            ...(requestMessages[0] ?? {}),
-          };
-          systemMessage["content"] =
-            `${String(systemMessage["content"] ?? "")}\n\n${FORCED_FINAL_PROMPT}`;
-          requestMessages[0] = systemMessage;
-        }
-
-        let result;
-        try {
-          const modelRequestOpened = context?.modelRequestOpened;
-          const isRequestActive =
-            options.isRequestActive ??
-            ((requestId: string) => this.activeRequestId === requestId);
-          result = await this.adapter.complete(this.client, {
-            model: this.model,
-            messages: requestMessages,
-            tools: this.tools.definitions as unknown as Array<
-              Record<string, unknown>
-            >,
-            toolChoice: forceFinal ? "none" : "auto",
-            requestId: currentRequestId,
-            cancelToken,
-            isRequestActive,
-            onDelta: (kind, payload) => {
-              this.emit(kind, { round: modelRound, ...payload });
-            },
-            onRequestOpened: modelRequestOpened
-              ? () => modelRequestOpened.call(context)
-              : null,
-          });
-        } catch (error) {
-          if (error instanceof ModelStreamCancelled) {
-            // Covers StaleModelRequest as well.
-            this.emit("model_response_aborted", {
-              round: modelRound,
-              request_id: currentRequestId,
-              reason: errorMessage(error),
-            });
-            throw new AgentCancelled(errorMessage(error), { cause: error });
-          }
-          const errorPayload = {
-            round: modelRound,
-            request_id: currentRequestId,
-            error: errorMessage(error),
-          };
-          if (error instanceof ModelStreamError && error.hadDelta) {
-            this.emit("model_response_aborted", errorPayload);
-            this.emitLegacy("model_error", errorPayload);
-          } else {
-            this.emit("model_error", errorPayload);
-          }
-          if (forceFinal) {
-            const payload = this.guardPayload({
-              reason: guardReason ?? "runtime safety guard",
-              toolRounds,
-              modelRequests,
-              totalTokens,
-              startedAt,
-              finalError: errorMessage(error),
-            });
-            this.emit("agent_guard_failed", payload);
-            let message = guardErrorMessage(payload);
-            if (
-              this.provider &&
-              modelErrorKind(error) === "authentication"
-            ) {
-              message +=
-                ` Authentication failed for ${this.provider}. ` +
-                `Run /login ${this.provider} to update your API key.`;
-            }
-            throw new AgentError(message, { cause: error });
-          }
-          let message = `Model request failed: ${errorMessage(error)}`;
-          if (this.provider && modelErrorKind(error) === "authentication") {
-            message +=
-              `\nAuthentication failed for ${this.provider}. ` +
-              `Run /login ${this.provider} to update your API key.`;
-          }
-          throw new AgentError(message, { cause: error });
-        }
-
-        const toolCalls = [...result.toolCalls];
-        let requestTokens = usageTotalTokens(result.usage);
-        const tokensEstimated = requestTokens === 0;
-        if (tokensEstimated) {
-          requestTokens = estimateRequestTokens(
-            requestMessages,
-            result.messageDict(),
-          );
-        }
-        totalTokens += requestTokens;
-        this.emit("model_response", {
-          round: modelRound,
-          request_id: currentRequestId,
-          finish_reason: result.finishReason,
-          tool_call_count: toolCalls.length,
-          tool_names: toolCalls.map((call) => call.function.name),
-          tool_call_ids: toolCalls.map((call) => call.id),
-          usage: result.usage,
-          request_tokens: requestTokens,
-          tokens_estimated: tokensEstimated,
-          total_tokens: totalTokens,
-          tool_rounds: toolRounds,
-          model_requests: modelRequests,
-          force_final: forceFinal,
-        });
-        if (forceFinal && toolCalls.length > 0) {
-          this.emit("model_response_aborted", {
-            round: modelRound,
-            request_id: currentRequestId,
-            reason: "tool call returned while tools were disabled",
-          });
-          const payload = this.guardPayload({
-            reason: guardReason ?? "runtime safety guard",
-            toolRounds,
-            modelRequests,
-            totalTokens,
-            startedAt,
-          });
-          this.emit("agent_guard_failed", payload);
-          throw new AgentError(guardErrorMessage(payload));
-        }
-
-        const postResponseGuard = this.budgetGuardReason(
-          totalTokens,
-          (performance.now() - startedAt) / 1000,
-        );
-        if (toolCalls.length > 0 && postResponseGuard !== null) {
-          this.emit("model_response_aborted", {
-            round: modelRound,
-            request_id: currentRequestId,
-            reason: postResponseGuard,
-          });
-          guardReason = postResponseGuard;
-          continue;
-        }
-
-        // The complete assistant message is committed only if cancellation
-        // has not won the Session coordination race.
-        const assistantMessage = result.messageDict();
-        const commitIfActive = context?.commitIfActive;
-        if (typeof commitIfActive === "function") {
-          committed = commitIfActive.call(context, () => {
-            this.messages.push(assistantMessage);
-          });
-        } else {
-          raiseIfCancelled(cancelToken);
-          this.messages.push(assistantMessage);
-          committed = true;
-        }
-        if (!committed) {
-          this.emit("model_response_aborted", {
-            round: modelRound,
-            request_id: currentRequestId,
-            reason: "cancelled before history commit",
-          });
-          throw new AgentCancelled("cancelled before history commit");
-        }
-        this.emit("model_response_committed", {
-          round: modelRound,
-          request_id: currentRequestId,
-        });
-        if (toolCalls.length === 0) {
-          const content = result.content;
-          if (content === null) {
-            throw new AgentError("Model response had no content");
-          }
-          this.emit("assistant_response", {
-            round: modelRound,
-            content: truncateForEvent(content),
-          });
-          return content;
-        }
-
-        toolRounds += 1;
-        context?.toolsStarted?.();
-        const toolResults = await this.executeToolBatch(
-          toolCalls,
-          modelRound,
-          cancelToken,
+      const runner = new AgentStepRunner({
+        client: this.client,
+        model: this.model,
+        provider: this.provider,
+        adapter: this.adapter,
+        tools: this.tools,
+        toolExecution: this.toolExecution,
+        history: new HistoryCommitter({
+          messages: this.messages,
           context,
-        );
-        const repeated = this.recordRepeatedToolCalls(
-          toolCalls,
-          toolResults,
-          repeatedCalls,
-        );
-        // Every committed assistant tool call must receive one paired tool
-        // result, including calls cancelled before they start.
-        for (let index = 0; index < toolCalls.length; index += 1) {
-          this.messages.push({
-            role: "tool",
-            tool_call_id: toolCalls[index]?.id,
-            content: JSON.stringify(toolResults[index]),
-          });
-        }
-        raiseIfCancelled(cancelToken);
-        // Dynamic descendant discovery runs only after every paired tool
-        // result is committed, so reminders land between the tool results
-        // and the next model request without touching earlier history.
-        const touchedPaths: string[] = [];
-        for (const result of toolResults) {
-          const touched = touchedPathOf(result);
-          if (typeof touched === "string") {
-            touchedPaths.push(touched);
+          cancelToken,
+          createCancelled: (message) => new AgentCancelled(message),
+        }),
+        guardPolicy: new GuardPolicy({
+          maxTotalTokens: this.maxTotalTokens,
+          maxElapsedSeconds: this.maxElapsedSeconds,
+          repeatedToolCallLimit: this.repeatedToolCallLimit,
+        }),
+        userInput,
+        context,
+        cancelToken,
+        requestId: options.requestId ?? null,
+        isRequestActive: options.isRequestActive ??
+          ((requestId: string) => this.activeRequestId === requestId),
+        onRequestId: (requestId) => {
+          this.activeRequestId = requestId;
+        },
+        emit: (eventType, payload) => this.emit(eventType, payload),
+        emitLegacy: (eventType, payload) => this.emitLegacy(eventType, payload),
+        injectBaselineInstructions: (token) => this.injectBaselineInstructions(token),
+        discoverForTouchedPaths: (paths) => this.discoverForTouchedPaths(paths),
+        executeTool: async (name, args, toolCallId, token) => {
+          if (isCancelled(token)) {
+            return cancelledToolResult(token);
           }
-        }
-        this.discoverForTouchedPaths(touchedPaths);
-        if (repeated !== null) {
-          guardReason =
-            `repeated tool call detected (${repeated.name} repeated ` +
-            `${repeated.count} times with the same arguments and result)`;
-        }
-        const safePoint = context?.safePoint;
-        if (context !== null && typeof safePoint === "function") {
-          const pendingBatch = safePoint.call(context);
-          const pendingContent = pendingBatch?.content ?? "";
-          if (pendingBatch != null && pendingContent) {
-            const pendingMessage: Record<string, unknown> = {
-              role: "user",
-              content: pendingContent,
-            };
-            const commitPending = context.commitPending;
-            let committedPending: boolean;
-            if (typeof commitPending === "function") {
-              committedPending = this.commitContextMessage(
-                (append, rollback) =>
-                  commitPending.call(context, pendingBatch, append, rollback),
-                pendingMessage,
-              );
-            } else {
-              raiseIfCancelled(cancelToken);
-              this.messages.push(pendingMessage);
-              committedPending = true;
-            }
-            if (!committedPending) {
-              throw new AgentCancelled("cancelled before pending input commit");
-            }
-            this.emit("user_message", {
-              content: pendingContent,
-              pending_event_ids: [...(pendingBatch.eventIds ?? [])],
-            });
+          try {
+            return await this.tools.execute(
+              name,
+              args,
+              makeToolContext(context, toolCallId, token),
+            );
+          } catch (error) {
+            return { ok: false, error: errorMessage(error) };
           }
-        }
-      }
+        },
+        onToolEvent: (name, args, result) => {
+          this.onToolEvent?.(name, args, result);
+        },
+        createError: (message, cause) => new AgentError(message, { cause }),
+        createCancelled: (message, cause) => new AgentCancelled(message, { cause }),
+      });
+      return await runner.run();
     } finally {
       this.activeRequestId = null;
       this.activeContext = null;
     }
-  }
-
-  // --- Guard rails -----------------------------------------------------------
-
-  private budgetGuardReason(
-    totalTokens: number,
-    elapsedSeconds: number,
-  ): string | null {
-    if (totalTokens >= this.maxTotalTokens) {
-      return `token budget reached (${this.maxTotalTokens})`;
-    }
-    if (elapsedSeconds >= this.maxElapsedSeconds) {
-      return (
-        `elapsed time budget reached (${String(this.maxElapsedSeconds)} seconds)`
-      );
-    }
-    return null;
-  }
-
-  private guardPayload(options: {
-    reason: string;
-    toolRounds: number;
-    modelRequests: number;
-    totalTokens: number;
-    startedAt: number;
-    finalError?: string | undefined;
-  }): Record<string, unknown> {
-    const payload: Record<string, unknown> = {
-      reason: options.reason,
-      tool_rounds: options.toolRounds,
-      model_requests: options.modelRequests,
-      total_tokens: options.totalTokens,
-      elapsed_ms: Math.round(performance.now() - options.startedAt),
-    };
-    if (options.finalError) {
-      payload["final_error"] = options.finalError;
-    }
-    return payload;
-  }
-
-  private recordRepeatedToolCalls(
-    toolCalls: readonly AssembledToolCall[],
-    toolResults: ToolResult[],
-    counts: Map<string, number>,
-  ): { name: string; count: number } | null {
-    let repeated: { name: string; count: number } | null = null;
-    const seen = new Set<string>();
-    for (let index = 0; index < toolCalls.length; index += 1) {
-      const toolCall = toolCalls[index];
-      if (toolCall === undefined) {
-        continue;
-      }
-      let parsedArguments: unknown;
-      try {
-        parsedArguments = JSON.parse(toolCall.function.arguments);
-      } catch {
-        parsedArguments = toolCall.function.arguments;
-      }
-      const fingerprint = stableStringify({
-        name: toolCall.function.name,
-        arguments: parsedArguments,
-        result: stableToolResult(toolResults[index]),
-      });
-      const count = (counts.get(fingerprint) ?? 0) + 1;
-      counts.set(fingerprint, count);
-      seen.add(fingerprint);
-      if (repeated === null || count > repeated.count) {
-        repeated = { name: toolCall.function.name, count };
-      }
-    }
-    for (const fingerprint of [...counts.keys()]) {
-      if (!seen.has(fingerprint)) {
-        counts.delete(fingerprint);
-      }
-    }
-    return repeated !== null && repeated.count >= this.repeatedToolCallLimit
-      ? repeated
-      : null;
-  }
-
-  // --- Tool batch execution ----------------------------------------------------
-
-  private async executeToolBatch(
-    toolCalls: readonly AssembledToolCall[],
-    modelRound: number,
-    cancelToken: CancelToken | null,
-    context: AgentContext | null,
-  ): Promise<ToolResult[]> {
-    interface Prepared {
-      offset: number;
-      toolCall: AssembledToolCall;
-      args: Record<string, unknown>;
-      eventContext: Record<string, unknown>;
-    }
-    const results: Array<ToolResult | undefined> = new Array<
-      ToolResult | undefined
-    >(toolCalls.length).fill(undefined);
-    const prepared: Prepared[] = [];
-
-    for (let offset = 0; offset < toolCalls.length; offset += 1) {
-      const toolCall = toolCalls[offset];
-      if (toolCall === undefined) {
-        continue;
-      }
-      let args: Record<string, unknown>;
-      let result: ToolResult | undefined;
-      try {
-        const decoded: unknown = JSON.parse(toolCall.function.arguments);
-        if (
-          typeof decoded !== "object" ||
-          decoded === null ||
-          Array.isArray(decoded)
-        ) {
-          throw new Error("Tool arguments must be a JSON object");
-        }
-        args = decoded as Record<string, unknown>;
-      } catch (error) {
-        args = { _raw: toolCall.function.arguments };
-        result = { ok: false, error: errorMessage(error) };
-      }
-      const eventContext: Record<string, unknown> = {
-        round: modelRound,
-        index: offset + 1,
-        batch_size: toolCalls.length,
-        tool_call_id: toolCall.id,
-        name: toolCall.function.name,
-      };
-      this.emit("tool_start", {
-        ...eventContext,
-        arguments: safeArguments(args),
-      });
-      if (result === undefined) {
-        prepared.push({ offset, toolCall, args, eventContext });
-      } else {
-        results[offset] = result;
-        this.finishToolEvent(toolCall.function.name, args, result, eventContext);
-      }
-    }
-
-    const sequentialBatch =
-      this.toolExecution === "sequential" ||
-      toolCalls.some(
-        (call) => this.tools.executionMode(call.function.name) === "sequential",
-      ) ||
-      toolCalls.some(
-        (call) => call.function.name === "write" || call.function.name === "edit",
-      );
-
-    const runOne = async (item: Prepared): Promise<void> => {
-      const result = isCancelled(cancelToken)
-        ? cancelledToolResult(cancelToken)
-        : await this.executeTool(
-            item.toolCall.function.name,
-            item.args,
-            item.toolCall.id,
-            cancelToken,
-            context,
-          );
-      results[item.offset] = result;
-      // Finish events fire in actual completion order; the returned results
-      // array keeps the original call order for the model.
-      this.finishToolEvent(
-        item.toolCall.function.name,
-        item.args,
-        result,
-        item.eventContext,
-      );
-    };
-
-    if (sequentialBatch || prepared.length === 1) {
-      for (const item of prepared) {
-        await runOne(item);
-      }
-    } else if (prepared.length > 0) {
-      await Promise.all(prepared.map((item) => runOne(item)));
-    }
-
-    return results.map(
-      (result) =>
-        result ?? { ok: false, error: "Tool execution produced no result" },
-    );
-  }
-
-  private async executeTool(
-    name: string,
-    args: Record<string, unknown>,
-    toolCallId: string,
-    cancelToken: CancelToken | null,
-    context: AgentContext | null,
-  ): Promise<ToolResult> {
-    if (isCancelled(cancelToken)) {
-      return cancelledToolResult(cancelToken);
-    }
-    try {
-      const toolContext = makeToolContext(context, toolCallId, cancelToken);
-      return await this.tools.execute(name, args, toolContext);
-    } catch (error) {
-      return { ok: false, error: errorMessage(error) };
-    }
-  }
-
-  private finishToolEvent(
-    name: string,
-    args: Record<string, unknown>,
-    result: ToolResult,
-    eventContext: Record<string, unknown>,
-  ): void {
-    this.onToolEvent?.(name, args, result);
-    const status = result["status"];
-    this.emit("tool_result", {
-      ...eventContext,
-      status:
-        (typeof status === "string" && status) ||
-        (result["ok"] ? "completed" : "failed"),
-      result: safeResult(result),
-    });
   }
 
   // --- History commits ---------------------------------------------------------
@@ -893,20 +389,6 @@ export class CodingAgent {
     this.messages.push({ role: "user", content: rendered });
   }
 
-  private commitContextMessage(
-    commit: (append: () => void, rollback: () => void) => boolean,
-    message: Record<string, unknown>,
-  ): boolean {
-    const append = (): void => {
-      this.messages.push(message);
-    };
-    const rollback = (): void => {
-      if (this.messages.at(-1) === message) {
-        this.messages.pop();
-      }
-    };
-    return Boolean(commit(append, rollback));
-  }
 
   // --- Events --------------------------------------------------------------------
 
@@ -1055,131 +537,6 @@ function cancelledToolResult(token: CancelToken | null): ToolResult {
     status: "cancelled",
     error: token?.reason || "cancelled",
   };
-}
-
-function usageTotalTokens(usage: unknown): number {
-  if (usage === null || usage === undefined || typeof usage !== "object") {
-    return 0;
-  }
-  const record = usage as Record<string, unknown>;
-  const total = record["total_tokens"];
-  if (isJsonInteger(total)) {
-    return Math.max(0, total);
-  }
-  const input = record["prompt_tokens"] ?? record["input_tokens"] ?? 0;
-  const output = record["completion_tokens"] ?? record["output_tokens"] ?? 0;
-  let sum = 0;
-  for (const value of [input, output]) {
-    if (isJsonInteger(value) && value > 0) {
-      sum += value;
-    }
-  }
-  return sum;
-}
-
-function isJsonInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value);
-}
-
-/** Rough 4-bytes-per-token estimate when the API returns no usage. */
-function estimateRequestTokens(
-  messages: Array<Record<string, unknown>>,
-  response: Record<string, unknown>,
-): number {
-  const serialized = JSON.stringify([...messages, response]);
-  return Math.max(
-    1,
-    Math.floor((Buffer.byteLength(serialized, "utf8") + 3) / 4),
-  );
-}
-
-/** Recursively drop the volatile duration_ms field from tool results. */
-function stableToolResult(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => stableToolResult(item));
-  }
-  if (value !== null && typeof value === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      if (key !== "duration_ms") {
-        result[key] = stableToolResult(item);
-      }
-    }
-    return result;
-  }
-  return value;
-}
-
-/** Compact JSON with sorted object keys (Python json.dumps sort_keys). */
-function stableStringify(value: unknown): string {
-  if (value === null) {
-    return "null";
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
-  }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const parts = Object.keys(record)
-      .filter((key) => record[key] !== undefined)
-      .sort()
-      .map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`);
-    return `{${parts.join(",")}}`;
-  }
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-    return JSON.stringify(value);
-  }
-  return JSON.stringify(String(value));
-}
-
-function guardErrorMessage(payload: Record<string, unknown>): string {
-  let message =
-    "Agent safety guard stopped tool use but could not produce a final " +
-    `answer: ${String(payload["reason"])}. ` +
-    `Tool rounds: ${String(payload["tool_rounds"])}; ` +
-    `model requests: ${String(payload["model_requests"])}; ` +
-    `tokens counted: ${String(payload["total_tokens"])}; ` +
-    `elapsed: ${String(payload["elapsed_ms"])}ms.`;
-  if (payload["final_error"]) {
-    message += ` Final request failed: ${String(payload["final_error"])}`;
-  }
-  return message;
-}
-
-function safeArguments(
-  args: Record<string, unknown>,
-): Record<string, unknown> {
-  const safe: Record<string, unknown> = { ...args };
-  for (const key of ["content", "old_text", "new_text"]) {
-    const value = safe[key];
-    if (typeof value === "string") {
-      safe[key] = `<${value.length} chars>`;
-    }
-  }
-  const edits = safe["edits"];
-  if (Array.isArray(edits)) {
-    safe["edits"] = `<${edits.length} edits>`;
-  }
-  const result: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(safe)) {
-    result[key] = typeof value === "string" ? truncateForEvent(value) : value;
-  }
-  return result;
-}
-
-function safeResult(result: ToolResult): Record<string, unknown> {
-  const safe: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(result)) {
-    safe[key] = typeof value === "string" ? truncateForEvent(value) : value;
-  }
-  return safe;
-}
-
-function truncateForEvent(value: string, limit = 4_000): string {
-  if (value.length <= limit) {
-    return value;
-  }
-  return `${value.slice(0, limit)}\n...[truncated ${value.length - limit} chars]`;
 }
 
 function errorMessage(error: unknown): string {
