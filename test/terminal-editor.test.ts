@@ -92,6 +92,20 @@ test("decoder emits enhanced alt enter and shift tab as neutral keys", () => {
   assert.deepEqual(decoder.feed(Buffer.from("\x1b[27;2;9~")), [
     inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
   ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;67u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;3:1u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;66u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;2:1u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;3:3u")), []);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;2:3u")), []);
 });
 
 test("decoder keeps shifted enter as editor newline", () => {

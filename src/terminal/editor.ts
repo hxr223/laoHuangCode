@@ -68,6 +68,16 @@ export function inputAction(kind: InputActionKind, text = "", key?: KeyInput): I
   return key === undefined ? { kind, text } : { kind, text, key };
 }
 
+const KITTY_LOCK_MODIFIER_MASK = 64 | 128;
+
+function matchesKittyModifiers(modifier: number, expected: number): boolean {
+  return (modifier & ~KITTY_LOCK_MODIFIER_MASK) === expected;
+}
+
+function isKittyPressEvent(eventType: string | undefined): boolean {
+  return eventType === undefined || eventType === "1";
+}
+
 /** Convert existing editor actions into the neutral TUI input contract. */
 export function toTuiInputEvent(action: InputAction): TuiInputEvent;
 export function toTuiInputEvent(input: BufferedPasteInput): TuiInputEvent;
@@ -943,18 +953,24 @@ function decodeSpecialEscapeAction(sequence: string): InputAction | null {
 }
 
 function decodeModifiedControlKey(sequence: string): InputAction | null {
-  const kitty = /^\x1b\[(13|57414|9);(\d+)u$/.exec(sequence);
+  const kitty = /^\x1b\[(13|57414|9);(\d+)(?::(\d+))?u$/.exec(sequence);
   if (kitty !== null) {
     const code = kitty[1]!;
     const modifier = Number.parseInt(kitty[2]!, 10) - 1;
-    if ((code === "13" || code === "57414") && modifier === 2) {
+    if (!isKittyPressEvent(kitty[3])) {
+      return null;
+    }
+    if (
+      (code === "13" || code === "57414")
+      && matchesKittyModifiers(modifier, 2)
+    ) {
       return inputAction(
         InputActionKind.Key,
         "",
         makeKeyInput("enter", { alt: true }),
       );
     }
-    if (code === "9" && modifier === 1) {
+    if (code === "9" && matchesKittyModifiers(modifier, 1)) {
       return inputAction(
         InputActionKind.Key,
         "",

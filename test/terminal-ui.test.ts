@@ -89,9 +89,16 @@ test("alt enter submits a follow-up action from the live loop", () => {
     submitted.push({ text, strategy: options?.strategy });
   });
   ui.feedInputBytes(bytes("later\x1b[13;3u"));
+  ui.feedInputBytes(bytes("caps\x1b[13;67u"));
+  ui.feedInputBytes(bytes("press\x1b[13;3:1u"));
+  ui.feedInputBytes(bytes("release\x1b[13;3:3u"));
   ui.drainLoop();
 
-  assert.deepEqual(submitted, [{ text: "later", strategy: "follow_up" }]);
+  assert.deepEqual(submitted, [
+    { text: "later", strategy: "follow_up" },
+    { text: "caps", strategy: "follow_up" },
+    { text: "press", strategy: "follow_up" },
+  ]);
 });
 
 test("enhanced shift tab reaches the reasoning cycle action", () => {
@@ -106,10 +113,15 @@ test("enhanced shift tab reaches the reasoning cycle action", () => {
   });
 
   ui.startLoop(() => {});
-  ui.feedInputBytes(bytes("\x1b[9;2u\x1b[27;2;9~"));
+  ui.feedInputBytes(bytes("\x1b[9;2u\x1b[27;2;9~\x1b[9;66u\x1b[9;2:1u\x1b[9;2:3u"));
   ui.drainLoop();
 
-  assert.deepEqual(actions, ["cycle_thinking", "cycle_thinking"]);
+  assert.deepEqual(actions, [
+    "cycle_thinking",
+    "cycle_thinking",
+    "cycle_thinking",
+    "cycle_thinking",
+  ]);
 });
 
 test("ctrl l invokes the model selection key action", () => {

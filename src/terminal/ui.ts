@@ -72,6 +72,16 @@ import { OverlayManager } from "../tui/overlay-manager.ts";
 // Shared input contracts (implemented by terminal/input.ts once landed)
 // ---------------------------------------------------------------------------
 
+const KITTY_LOCK_MODIFIER_MASK = 64 | 128;
+
+function matchesKittyModifiers(modifier: number, expected: number): boolean {
+  return (modifier & ~KITTY_LOCK_MODIFIER_MASK) === expected;
+}
+
+function isKittyPressEvent(eventType: string | undefined): boolean {
+  return eventType === undefined || eventType === "1";
+}
+
 export type InputActionKind =
   | "insert"
   | "submit"
@@ -805,14 +815,20 @@ export class BasicInputDecoder implements InputDecoderLike {
   }
 
   #modifiedControlKey(sequence: string): InputAction | undefined {
-    const kitty = /^\x1b\[(13|57414|9);(\d+)u$/.exec(sequence);
+    const kitty = /^\x1b\[(13|57414|9);(\d+)(?::(\d+))?u$/.exec(sequence);
     if (kitty !== null) {
       const code = kitty[1] as string;
       const modifier = Number.parseInt(kitty[2] as string, 10) - 1;
-      if ((code === "13" || code === "57414") && modifier === 2) {
+      if (!isKittyPressEvent(kitty[3])) {
+        return undefined;
+      }
+      if (
+        (code === "13" || code === "57414")
+        && matchesKittyModifiers(modifier, 2)
+      ) {
         return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
       }
-      if (code === "9" && modifier === 1) {
+      if (code === "9" && matchesKittyModifiers(modifier, 1)) {
         return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
       }
       return undefined;
