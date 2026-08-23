@@ -12,6 +12,7 @@ import {
   type CompletionItem,
   type InputAction,
 } from "../src/terminal/editor.ts";
+import { makeKeyInput } from "../src/keybindings/key-id.ts";
 
 /**
  * Mirror of the Python test helper: StdinBuffer -> TerminalInputFilter ->
@@ -61,6 +62,14 @@ test("decoder distinguishes submit, alt+enter and ctrl+d", () => {
   ]);
   assert.deepEqual(decoder.feed(Buffer.from("\x04")), [
     inputAction(InputActionKind.Eof),
+  ]);
+});
+
+test("decoder emits ctrl+c as neutral key input", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x03")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("ctrl_c", { ctrl: true })),
   ]);
 });
 
