@@ -2,9 +2,9 @@
 
 import { randomUUID } from "node:crypto";
 
-import { CancellationError, type CancelToken } from "./cancellation.ts";
+import type { CancelToken } from "./cancellation.ts";
 import type { CodingAgent } from "./agent.ts";
-import type { QueueStatus } from "./commands.ts";
+import type { CommandResult, QueueStatus } from "./commands.ts";
 import {
   EventBus,
   EventKind,
@@ -18,16 +18,26 @@ import {
   HeldQueue,
   PendingQueue,
   QueueOverflowError,
-  Scheduler,
-  TaskRegistry,
-  TaskState,
   combineInput,
   type RouteDecision,
   type RoutedEvent,
   type SafetyPolicy,
   type SemanticClassifier,
-  type TaskRecord,
 } from "./routing.ts";
+import {
+  QueueDispatcher,
+  QueueDispatchStatus,
+} from "./runtime/queue-dispatcher.ts";
+import { AgentTurnLoop } from "./runtime/agent-turn-loop.ts";
+import type { QueueBridge, QueueInputBatch } from "./runtime/queue-bridge.ts";
+import type { SessionAction } from "./runtime/session-action.ts";
+import {
+  TaskLifecycle,
+  TaskRegistry,
+  TaskState,
+  isTerminalTaskState,
+  type TaskRecord,
+} from "./runtime/task-lifecycle.ts";
 
 export const SessionState = {
   Idle: "idle",
@@ -38,12 +48,6 @@ export const SessionState = {
 
 export type SessionState = (typeof SessionState)[keyof typeof SessionState];
 
-const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
-  TaskState.Cancelled,
-  TaskState.Completed,
-  TaskState.Failed,
-]);
-
 const ROUTE_STRATEGIES: ReadonlySet<string> = new Set([
   "execute",
   "steer",
@@ -53,7 +57,7 @@ const ROUTE_STRATEGIES: ReadonlySet<string> = new Set([
 ]);
 
 /** One compatible batch of pending input claimed at a safe point. */
-export interface PendingInputBatch {
+export interface PendingInputBatch extends QueueInputBatch {
   readonly events: readonly RoutedEvent[];
   readonly content: string;
   readonly eventIds: readonly string[];
@@ -98,6 +102,10 @@ export interface AgentRunnerLike {
 export type TaskRunner =
   | ((content: string, context: TaskContext) => TaskRunnerResult)
   | AgentRunnerLike;
+
+export type CommandDispatcher = (
+  command: string,
+) => CommandResult | Promise<CommandResult>;
 
 // Compile-time contract check (tsc covers src/ only): the real CodingAgent
 // from agent.ts is a valid AgentRunnerLike — its run(userInput, context,
@@ -199,7 +207,7 @@ export class TaskContext {
   }
 
   /** @internal Used by the session worker around each runner invocation. */
-  setClaimedInput(batch: PendingInputBatch | null): void {
+  setClaimedInput(batch: QueueInputBatch | null): void {
     this.#claimedInputEventIds = batch === null ? [] : batch.eventIds;
   }
 
@@ -241,6 +249,7 @@ export interface AgentSessionOptions {
   taskRegistry?: TaskRegistry;
   semanticClassifier?: SemanticClassifier | null;
   safetyPolicy?: SafetyPolicy | null;
+  commandDispatcher?: CommandDispatcher | null;
 }
 
 export interface CloseOptions {
@@ -260,13 +269,16 @@ export interface CloseOptions {
 export class AgentSession {
   readonly sessionId: string;
   readonly eventBus: EventBus;
+  readonly taskLifecycle: TaskLifecycle;
   readonly taskRegistry: TaskRegistry;
   readonly pending: PendingQueue;
   readonly held: HeldQueue;
   readonly deadLetters: DeadLetterQueue;
-  readonly scheduler: Scheduler;
+  readonly queueDispatcher: QueueDispatcher;
   readonly router: EventRouter;
   readonly runner: TaskRunner;
+  readonly #commandDispatcher: CommandDispatcher | null;
+  readonly #queueBridge: QueueBridge;
 
   #state: SessionState = SessionState.Idle;
   #worker: object | null = null;
@@ -282,19 +294,35 @@ export class AgentSession {
     this.sessionId = options.sessionId ?? randomUUID().replaceAll("-", "");
     this.eventBus = options.eventBus ?? new EventBus();
     this.taskRegistry = options.taskRegistry ?? new TaskRegistry();
-    this.pending = new PendingQueue();
-    this.held = new HeldQueue();
-    this.deadLetters = new DeadLetterQueue();
-    this.scheduler = new Scheduler({
-      pending: this.pending,
-      held: this.held,
-      deadLetters: this.deadLetters,
+    this.queueDispatcher = new QueueDispatcher();
+    this.pending = this.queueDispatcher.pending;
+    this.held = this.queueDispatcher.held;
+    this.deadLetters = this.queueDispatcher.deadLetters;
+    this.taskLifecycle = new TaskLifecycle({
+      eventBus: this.eventBus,
+      sessionId: this.sessionId,
+      taskRegistry: this.taskRegistry,
+      queueCounts: () => ({ pending: this.pending.size, held: this.held.size }),
+      onCancelling: (taskId) => {
+        this.setSessionState(SessionState.Cancelling);
+        this.holdTaskInputs(taskId, "held because its task is cancelling");
+      },
     });
+    this.#queueBridge = {
+      drainPending: (taskId) => {
+        const batch = this.drainPending(taskId);
+        return batch.events.length === 0 ? null : batch;
+      },
+      acknowledgeClaimedInput: (taskId, eventIds) =>
+        this.ackClaimedInput(taskId, eventIds),
+      preserveTaskInputs: (taskId, reason) => this.holdTaskInputs(taskId, reason),
+    };
     this.router = new EventRouter(this.taskRegistry, {
       semanticClassifier: options.semanticClassifier ?? null,
       safetyPolicy: options.safetyPolicy ?? null,
     });
     this.runner = runner;
+    this.#commandDispatcher = options.commandDispatcher ?? null;
     this.eventBus.publish(EventKind.SessionReady, {
       source: EventSource.Session,
       session_id: this.sessionId,
@@ -318,6 +346,9 @@ export class AgentSession {
     return this.held.size;
   }
 
+  /**
+   * Compatibility API for existing callers while they migrate to submitAction.
+   */
   async submitInput(
     content: string,
     options: { strategy?: string } = {},
@@ -333,21 +364,6 @@ export class AgentSession {
     if (strategy !== undefined && !ROUTE_STRATEGIES.has(strategy)) {
       throw new Error(`unknown route strategy: ${strategy}`);
     }
-    if (text === "/cancel") {
-      const event = this.publishInput(EventKind.InputSlashCommand, text);
-      const routed = await this.router.route(event);
-      this.cancelRouted(routed);
-      return {
-        event,
-        routed,
-        taskId: routed.decision.taskId,
-        queued: false,
-        control: true,
-        rejected: false,
-        reason: "",
-      };
-    }
-
     const kind = text.startsWith("/")
       ? EventKind.InputSlashCommand
       : EventKind.InputUserMessage;
@@ -362,11 +378,15 @@ export class AgentSession {
     );
     // From here on the section is synchronous and therefore atomic.
     this.publishRoute(routed);
-    const scheduled = this.scheduler.schedule(routed);
+    const dispatched = this.queueDispatcher.dispatch(
+      this.inputAction(event, text, strategy),
+      { state: this.#state },
+      routed,
+    );
     let taskId = routed.decision.taskId;
-    if (routed.decision.destination === "new_task") {
+    if (dispatched.status === QueueDispatchStatus.StartNow) {
       taskId = this.startTask(text, event.event_id);
-    } else if (routed.decision.destination === "pending") {
+    } else if (dispatched.status === QueueDispatchStatus.Pending) {
       this.eventBus.publish(EventKind.InputPending, {
         source: EventSource.Session,
         session_id: this.sessionId,
@@ -374,7 +394,7 @@ export class AgentSession {
         correlation_id: event.event_id,
         payload: { pending_count: this.pending.size },
       });
-    } else if (routed.decision.destination === "held") {
+    } else if (dispatched.status === QueueDispatchStatus.Held) {
       this.eventBus.publish(EventKind.InputHeld, {
         source: EventSource.Session,
         session_id: this.sessionId,
@@ -383,14 +403,14 @@ export class AgentSession {
         payload: { held_count: this.held.size },
       });
     }
-    if (scheduled.rejected) {
+    if (dispatched.status === QueueDispatchStatus.DeadLetter) {
       this.eventBus.publish(EventKind.RoutingRejected, {
         source: EventSource.Router,
         session_id: this.sessionId,
         task_id: taskId,
         correlation_id: event.event_id,
         payload: {
-          reason: scheduled.reason,
+          reason: dispatched.reason ?? "queue dispatch rejected the action",
           destination: "drop",
           layer: 4,
         },
@@ -400,11 +420,43 @@ export class AgentSession {
       event,
       routed,
       taskId,
-      queued: scheduled.queued,
-      control: routed.decision.destination === "control",
-      rejected: scheduled.rejected,
-      reason: scheduled.reason,
+      queued:
+        dispatched.status === QueueDispatchStatus.Pending ||
+        dispatched.status === QueueDispatchStatus.Held,
+      control:
+        dispatched.status === QueueDispatchStatus.CancelNow ||
+        routed.decision.destination === "control",
+      rejected: dispatched.status === QueueDispatchStatus.DeadLetter,
+      reason: dispatched.reason ?? "",
     };
+  }
+
+  /** Compatibility bridge from neutral actions to the existing session API. */
+  async submitAction(action: SessionAction): Promise<Submission | CommandResult | boolean> {
+    switch (action.type) {
+      case "prompt":
+        return this.submitInput(action.text);
+      case "steer":
+        return this.submitInput(action.text, { strategy: "steer" });
+      case "follow_up":
+        return this.submitInput(action.text, { strategy: "follow_up" });
+      case "approval":
+        return this.submitInput(action.text, { strategy: "steer" });
+      case "answer":
+        return this.submitInput(action.text, { strategy: "follow_up" });
+      case "cancel":
+        return this.requestCancel(action.reason);
+      case "command": {
+        if (this.#commandDispatcher === null) {
+          return false;
+        }
+        const command =
+          action.text ?? [action.name, ...action.arguments].join(" ");
+        return this.#commandDispatcher(command);
+      }
+      case "exit":
+        return this.close();
+    }
   }
 
   /** Repair a decision if task state changed during semantic routing. */
@@ -518,6 +570,19 @@ export class AgentSession {
         layer: 4,
       },
     };
+    const dispatched = this.queueDispatcher.dispatch(
+      {
+        id: event.event_id,
+        source: EventSource.User,
+        type: "cancel",
+        reason,
+      },
+      { state: this.#state },
+      routed,
+    );
+    if (dispatched.status !== QueueDispatchStatus.CancelNow) {
+      return false;
+    }
     return this.cancelRouted(routed, reason);
   }
 
@@ -586,15 +651,10 @@ export class AgentSession {
     if (taskId === null) {
       return false;
     }
-    const record = this.taskRegistry.get(taskId);
-    if (record === null || TERMINAL_TASK_STATES.has(record.state)) {
+    if (!this.taskLifecycle.requestCancel(taskId, reason)) {
       return false;
     }
-    this.taskRegistry.transition(taskId, TaskState.Cancelling);
-    this.setSessionState(SessionState.Cancelling);
-    this.holdTaskInputs(taskId, "held because its task is cancelling");
-    this.publishTaskState(taskId, TaskState.Cancelling);
-    return record.cancelToken.cancel(reason);
+    return true;
   }
 
   waitForIdle(timeoutMs?: number): Promise<boolean> {
@@ -737,19 +797,9 @@ export class AgentSession {
 
   private startTask(content: string, inputEventId: string | null): string {
     const taskId = randomUUID().replaceAll("-", "");
-    this.taskRegistry.register(taskId);
+    this.taskLifecycle.createTask(taskId, { correlationId: inputEventId });
     this.setIdle(false);
     this.setSessionState(SessionState.Running);
-    this.eventBus.publish(EventKind.TaskStarted, {
-      source: EventSource.Session,
-      session_id: this.sessionId,
-      task_id: taskId,
-      correlation_id: inputEventId,
-      payload: {
-        pending_count: this.pending.size,
-        held_count: this.held.size,
-      },
-    });
     const workerKey = {};
     this.#worker = workerKey;
     this.#workerActive = true;
@@ -767,79 +817,13 @@ export class AgentSession {
     content: string,
   ): Promise<void> {
     const context = new TaskContext(this, taskId);
-    let currentInput = content;
-    let currentBatch: PendingInputBatch | null = null;
-    let result: string | null = null;
     try {
-      for (;;) {
-        context.cancelToken.throwIfCancelled();
-        this.setRunningState(taskId, TaskState.RunningModel);
-        context.setClaimedInput(currentBatch);
-        result = await this.invokeRunner(currentInput, context);
-        if (currentBatch !== null) {
-          this.ackClaimedInput(taskId, currentBatch.eventIds);
-        }
-        context.cancelToken.throwIfCancelled();
-        let cancelledAtBoundary = false;
-        // Synchronous critical section: drain or complete atomically.
-        const batch = this.drainPending(taskId);
-        if (batch.events.length > 0) {
-          currentInput = batch.content;
-          currentBatch = batch;
-          continue;
-        }
-        const record = this.taskRegistry.get(taskId);
-        cancelledAtBoundary =
-          record === null ||
-          record.state === TaskState.Cancelling ||
-          record.cancelToken.isCancelled();
-        if (!cancelledAtBoundary) {
-          this.taskRegistry.transition(
-            taskId,
-            TaskState.Completed,
-            result === null ? {} : { result },
-          );
-          this.eventBus.publish(EventKind.TaskCompleted, {
-            source: EventSource.Session,
-            session_id: this.sessionId,
-            task_id: taskId,
-            payload: {
-              result: result ?? "",
-              pending_count: this.pending.size,
-              held_count: this.held.size,
-            },
-          });
-        }
-        if (cancelledAtBoundary) {
-          this.finishCancelled(taskId);
-        }
-        break;
-      }
-    } catch (error) {
-      if (error instanceof CancellationError) {
-        this.finishCancelled(taskId);
-      } else {
-        const record = this.taskRegistry.get(taskId);
-        if (record !== null && record.cancelToken.isCancelled()) {
-          this.finishCancelled(taskId);
-        } else {
-          const message = error instanceof Error ? error.message : String(error);
-          this.holdTaskInputs(taskId, "held because its task failed");
-          this.taskRegistry.transition(taskId, TaskState.Failed, {
-            error: message,
-          });
-          this.eventBus.publish(EventKind.TaskFailed, {
-            source: EventSource.Session,
-            session_id: this.sessionId,
-            task_id: taskId,
-            payload: {
-              error: message,
-              pending_count: this.pending.size,
-              held_count: this.held.size,
-            },
-          });
-        }
-      }
+      const turnLoop = new AgentTurnLoop<TaskContext>({
+        lifecycle: this.taskLifecycle,
+        bridge: this.#queueBridge,
+        runner: this.runner,
+      });
+      await turnLoop.run(taskId, content, context);
     } finally {
       this.settleWorker(workerKey);
     }
@@ -874,25 +858,6 @@ export class AgentSession {
   /** @internal Test hook mirroring Python's ``_settle_worker``. */
   _settleWorker(workerKey: object): void {
     this.settleWorker(workerKey);
-  }
-
-  private finishCancelled(taskId: string): void {
-    const record = this.taskRegistry.get(taskId);
-    if (record === null || TERMINAL_TASK_STATES.has(record.state)) {
-      return;
-    }
-    this.holdTaskInputs(taskId, "held because its task was cancelled");
-    this.taskRegistry.transition(taskId, TaskState.Cancelled);
-    this.eventBus.publish(EventKind.TaskCancelled, {
-      source: EventSource.Session,
-      session_id: this.sessionId,
-      task_id: taskId,
-      payload: {
-        reason: record.cancelToken.reason ?? "cancelled",
-        pending_count: this.pending.size,
-        held_count: this.held.size,
-      },
-    });
   }
 
   /** Rollback and preserve every unacknowledged input for a task. */
@@ -942,16 +907,6 @@ export class AgentSession {
     return heldCount;
   }
 
-  private async invokeRunner(
-    content: string,
-    context: TaskContext,
-  ): Promise<string | null> {
-    const runner = this.runner;
-    const fn =
-      typeof runner === "function" ? runner : runner.run.bind(runner);
-    return (await fn(content, context)) ?? null;
-  }
-
   /** @internal Used by {@link TaskContext}. */
   setRunningState(taskId: string, state: TaskState): boolean {
     if (state !== TaskState.RunningModel && state !== TaskState.RunningTools) {
@@ -961,13 +916,14 @@ export class AgentSession {
     if (
       record === null ||
       record.state === TaskState.Cancelling ||
-      TERMINAL_TASK_STATES.has(record.state)
+      isTerminalTaskState(record.state)
     ) {
       return false;
     }
     if (record.state !== state) {
-      this.taskRegistry.transition(taskId, state);
-      this.publishTaskState(taskId, state);
+      return state === TaskState.RunningModel
+        ? this.taskLifecycle.markModelRunning(taskId)
+        : this.taskLifecycle.markToolsRunning(taskId);
     }
     return true;
   }
@@ -1034,20 +990,6 @@ export class AgentSession {
     return true;
   }
 
-  private publishTaskState(taskId: string, state: TaskState): void {
-    this.eventBus.publish(EventKind.TaskStateChanged, {
-      source: EventSource.Session,
-      session_id: this.sessionId,
-      task_id: taskId,
-      payload: {
-        state,
-        state_name: state.toUpperCase(),
-        pending_count: this.pending.size,
-        held_count: this.held.size,
-      },
-    });
-  }
-
   /** @internal Used by {@link TaskContext.safePoint} and the worker loop. */
   drainPending(taskId: string): PendingInputBatch {
     const record = this.taskRegistry.get(taskId);
@@ -1057,16 +999,45 @@ export class AgentSession {
     if (this.#inflightPending.has(taskId)) {
       throw new Error("pending batch is already in flight");
     }
-    const events = this.scheduler.safePoint(taskId);
+    const events = this.pending.drainCompatible({ taskId });
     if (events.length > 0) {
       this.#inflightPending.set(taskId, events);
-      this.publishTaskState(taskId, record.state);
+      this.taskLifecycle.publishCurrentState(taskId);
     }
     return makeBatch(events);
   }
 
   private setSessionState(state: SessionState): void {
     this.#state = state;
+  }
+
+  private inputAction(
+    event: AnyEventEnvelope,
+    text: string,
+    strategy: string | undefined,
+  ): SessionAction {
+    if (event.kind === EventKind.InputSlashCommand) {
+      return {
+        id: event.event_id,
+        source: event.source,
+        type: "command",
+        name: text.slice(1),
+        arguments: [],
+        text,
+      };
+    }
+    if (strategy === "steer") {
+      return { id: event.event_id, source: event.source, type: "steer", text };
+    }
+    if (strategy === "follow_up") {
+      return {
+        id: event.event_id,
+        source: event.source,
+        type: "follow_up",
+        text,
+      };
+    }
+    return { id: event.event_id, source: event.source, type: "prompt", text };
   }
 
   private setIdle(value: boolean): void {
