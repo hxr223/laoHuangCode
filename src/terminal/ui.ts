@@ -241,7 +241,9 @@ export class BasicEditorState implements EditorLike {
     if (action.kind === "submit") {
       if (this.completionVisible) {
         this.#acceptCompletion();
-        return {};
+        if (!this.text.startsWith("/")) {
+          return {};
+        }
       }
       return this.#submit();
     }
@@ -1326,7 +1328,6 @@ export class InteractiveTerminalLoop {
       return;
     }
     if (this.#applyCompletionAction(action)) {
-      this.#refreshCompletions();
       this.#needsRender = true;
       return;
     }
@@ -1343,36 +1344,20 @@ export class InteractiveTerminalLoop {
     if (this.#focus.current() !== COMPLETION_OVERLAY.id) {
       return false;
     }
-    if (action.kind === "dismiss") {
-      this.#editor.setCompletions([]);
-      return true;
+    if (
+      action.kind !== "dismiss" &&
+      action.kind !== "history_up" &&
+      action.kind !== "history_down" &&
+      action.kind !== "complete" &&
+      action.kind !== "submit"
+    ) {
+      return false;
     }
-    if (action.kind === "history_up" || action.kind === "history_down") {
-      const count = this.#editor.completions.length;
-      const selected = this.#editor.selectedCompletion;
-      if (count > 0 && selected !== null) {
-        const offset = action.kind === "history_up" ? -1 : 1;
-        this.#editor.selectedCompletion = ((selected + offset) % count + count) % count;
-      }
-      return true;
-    }
-    if (action.kind === "complete" || action.kind === "submit") {
-      const selected = this.#editor.selectedCompletion;
-      if (selected !== null) {
-        const item = this.#editor.completions[selected];
-        if (item !== undefined) {
-          const start = Math.max(0, this.#editor.cursor + item.start);
-          this.#editor.text =
-            cpSlice(this.#editor.text, 0, start) +
-            item.value +
-            cpSlice(this.#editor.text, this.#editor.cursor);
-          this.#editor.cursor = start + cpLength(item.value);
-          this.#editor.setCompletions([]);
-        }
-      }
-      return true;
-    }
-    return false;
+    this.#applyEffect(
+      this.#editor.apply(action, { runtimeActive: this.#ui.isRunning() }),
+    );
+    this.#syncCompletionOverlay();
+    return true;
   }
 
   #applyEof(): void {
