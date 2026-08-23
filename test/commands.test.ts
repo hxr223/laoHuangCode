@@ -198,9 +198,9 @@ test("queue commands delegate to the agent session", async () => {
   const outputs: string[] = [];
   const fixture = makeCommands(outputs, { session });
 
-  await fixture.commands.handle("/queue");
-  await fixture.commands.handle("/queue resume");
-  await fixture.commands.handle("/queue clear");
+  await fixture.commands.execute("/queue");
+  await fixture.commands.execute("/queue resume");
+  await fixture.commands.execute("/queue clear");
 
   assert.deepEqual(outputs, [
     "Pending: 2 (20 est. tokens) · Held: 1 (10 est. tokens) · Dead letters: 1",
@@ -214,9 +214,9 @@ test("/model current reports the active provider and model", async () => {
   const outputs: string[] = [];
   const fixture = makeCommands(outputs);
 
-  const handled = await fixture.commands.handle("/model current");
+  const handled = await fixture.commands.execute("/model current");
 
-  assert.equal(handled, true);
+  assert.equal(handled.status, "handled");
   assert.deepEqual(outputs, ["Current model: deepseek / deepseek-v4-flash"]);
   fixture.cleanup();
 });
@@ -256,9 +256,9 @@ test("/model switches provider and model without chatting", async () => {
 
   // The Python original drove this through run_repl with an /exit follow-up;
   // cli.ts is owned by another workstream, so dispatch directly here.
-  const handled = await commands.handle("/model deepseek deepseek-v4-pro");
+  const handled = await commands.execute("/model deepseek deepseek-v4-pro");
 
-  assert.equal(handled, true);
+  assert.equal(handled.status, "handled");
   assert.equal(agent.model, "deepseek-v4-pro");
   assert.equal(agent.client, replacementClient);
   assert.ok(outputs.some((line) => line.includes("deepseek-v4-pro")));
@@ -273,9 +273,9 @@ test("/login and /logout manage saved credentials", async () => {
     clientFactory: () => replacementClient,
   });
 
-  await fixture.commands.handle("/login deepseek");
-  await fixture.commands.handle("/apikey");
-  await fixture.commands.handle("/logout deepseek");
+  await fixture.commands.execute("/login deepseek");
+  await fixture.commands.execute("/apikey");
+  await fixture.commands.execute("/logout deepseek");
 
   assert.equal(fixture.agent.client, replacementClient);
   assert.equal(fixture.credentials.get("deepseek"), null);
@@ -291,10 +291,10 @@ test("/apikey commands remain compatible aliases", async () => {
     clientFactory: () => ({}),
   });
 
-  await fixture.commands.handle("/apikey set deepseek");
+  await fixture.commands.execute("/apikey set deepseek");
   assert.equal(fixture.credentials.get("deepseek"), "alias-key");
 
-  await fixture.commands.handle("/apikey remove deepseek");
+  await fixture.commands.execute("/apikey remove deepseek");
   assert.equal(fixture.credentials.get("deepseek"), null);
   fixture.cleanup();
 });
@@ -305,7 +305,7 @@ test("/model does not prompt for missing credentials", async () => {
     secretInput: fail("/model must not log in"),
   });
 
-  await fixture.commands.handle("/model openai gpt-test");
+  await fixture.commands.execute("/model openai gpt-test");
 
   assert.ok(outputs.some((line) => line.includes("/login openai")));
   fixture.cleanup();
@@ -328,7 +328,7 @@ test("/login awaits the injected async secret prompt", async () => {
     clientFactory: () => ({}),
   });
 
-  await fixture.commands.handle("/login deepseek");
+  await fixture.commands.execute("/login deepseek");
 
   assert.deepEqual(prompts, ["Enter deepseek API key: "]);
   assert.equal(fixture.credentials.get("deepseek"), "async-key");

@@ -14,7 +14,7 @@ import {
   createClient,
   type ClientConnectionSettings,
 } from "./client.ts";
-import { SessionCommands, type QueueStatus } from "./commands.ts";
+import { SessionCommands, type CommandResult, type QueueStatus } from "./commands.ts";
 import {
   ConfigManager,
   defaultConfigPath,
@@ -587,7 +587,7 @@ export interface SessionUiLike {
   flushEventRenderer?(): void;
 }
 
-export type CommandHandler = (command: string) => boolean | Promise<boolean>;
+export type CommandHandler = (command: string) => CommandResult | Promise<CommandResult>;
 
 function suggestCommand(ui: SessionUiLike | null, name: string): string | null {
   const registry = ui?.commandRegistry as
@@ -607,29 +607,28 @@ async function handleSessionInput(
   ui: SessionUiLike | null,
   userInput: string,
 ): Promise<boolean> {
-  if (userInput === "/exit") {
-    await session.submitInput(userInput);
-    return false;
-  }
   if (!userInput) {
     return true;
   }
   if (userInput.startsWith("/")) {
-    if (userInput === "/cancel") {
-      const submission = await session.submitInput(userInput);
-      if (submission.taskId === null) {
-        session.publishNotice("No active task to cancel.");
-      }
+    const result = commandHandler === undefined
+      ? { status: "not_found", command: userInput.split(/\s/)[0] ?? userInput } as const
+      : await commandHandler(userInput);
+    if (result.status === "handled" || result.status === "blocked") {
       return true;
     }
-    await session.submitInput(userInput);
-    if (commandHandler !== undefined && (await commandHandler(userInput))) {
+    if (result.status === "exit_requested") {
+      return false;
+    }
+    if (result.status === "error") {
+      session.publishNotice(`Invalid command: ${errorMessage(result.error)}`, {
+        style: "bold red",
+      });
       return true;
     }
-    const commandName = userInput.split(/\s/)[0] ?? userInput;
-    const suggestion = suggestCommand(ui, commandName);
+    const suggestion = suggestCommand(ui, result.command);
     const suffix = suggestion ? ` Did you mean ${suggestion}?` : "";
-    session.publishNotice(`Unknown command: ${commandName}.${suffix}`);
+    session.publishNotice(`Unknown command: ${result.command}.${suffix}`);
     return true;
   }
   let submission: Submission;
@@ -849,7 +848,7 @@ async function runPersistentSessionRepl(
       if (userInput === "/exit") {
         void (async () => {
           try {
-            await session.submitInput(userInput);
+            await handleSessionInput(session, commandHandler, ui, userInput);
           } catch (error) {
             try {
               session.publishNotice(`Error: ${errorMessage(error)}`, {
@@ -936,44 +935,9 @@ export async function runPlainSessionRepl(
         }
         throw error;
       }
-      if (userInput === "/exit") {
-        await session.submitInput(userInput);
+      const keepGoing = await handleSessionInput(session, commandHandler, null, userInput);
+      if (!keepGoing) {
         break;
-      }
-      if (!userInput) {
-        continue;
-      }
-      if (userInput.startsWith("/")) {
-        if (userInput === "/cancel") {
-          const submission = await session.submitInput(userInput);
-          if (submission.taskId === null) {
-            session.publishNotice("No active task to cancel.");
-          }
-          continue;
-        }
-        await session.submitInput(userInput);
-        if (commandHandler !== undefined && (await commandHandler(userInput))) {
-          continue;
-        }
-        session.publishNotice(
-          `Unknown command: ${userInput.split(/\s/)[0] ?? userInput}`,
-        );
-        continue;
-      }
-      let submission: Submission;
-      try {
-        submission = await session.submitInput(userInput);
-      } catch (error) {
-        session.publishNotice(`Error: ${errorMessage(error)}`);
-        continue;
-      }
-      if (submission.queued) {
-        const status = session.queueStatus();
-        session.publishNotice(
-          `Message queued (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`,
-        );
-      } else if (submission.rejected) {
-        session.publishNotice(`Message rejected: ${submission.reason}`);
       }
     }
   } finally {
@@ -1458,7 +1422,8 @@ export async function main(
   let commandDispatcher: CommandHandler | undefined;
   const runtime = new AgentSession(agent, {
     semanticClassifier,
-    commandDispatcher: (command) => commandDispatcher?.(command) ?? false,
+    commandDispatcher: (command) =>
+      commandDispatcher?.(command) ?? { status: "not_found", command },
   });
   const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
   const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
@@ -1534,22 +1499,21 @@ export async function main(
 
   if (terminalUi !== null) {
     terminalUi.setCommandRegistry(commands.registry);
-    terminalUi.setCancelCallback(() => {
-      void commands.handle("/cancel");
+    terminalUi.setCancelCallback((command) => {
+      void commandDispatcher?.(command);
     });
     terminalUi.setRuntimeRunningCallback(() => runtime.activeTask !== null);
   }
 
   const handleCommand: CommandHandler = async (command) => {
-    const handled = await commands.handle(command);
+    const result = await commands.execute(command);
     semanticClassifier.configure({
       client: agent.client as unknown as ChatCompletionsClient,
       model: agent.model,
     });
-    return handled;
+    return result;
   };
-  commandDispatcher = (command) =>
-    handleSessionInput(runtime, handleCommand, terminalUi, command);
+  commandDispatcher = handleCommand;
 
   let cleanShutdown = false;
   try {

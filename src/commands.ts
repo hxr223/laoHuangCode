@@ -17,6 +17,14 @@ export type { CompletionItem } from "./terminal/editor.ts";
 
 export type CommandHandler = (args: string[]) => boolean | Promise<boolean>;
 
+/** Explicit outcome from the one command execution entry. */
+export type CommandResult =
+  | { readonly status: "handled" }
+  | { readonly status: "not_found"; readonly command: string }
+  | { readonly status: "blocked"; readonly command: string }
+  | { readonly status: "exit_requested" }
+  | { readonly status: "error"; readonly error: unknown };
+
 export type ArgumentCompleter = (
   args: readonly string[],
 ) => Iterable<readonly [string, string]>;
@@ -268,29 +276,42 @@ export class CommandRegistry {
     );
   }
 
-  async dispatch(command: string, options: { state?: string } = {}): Promise<boolean> {
+  async execute(command: string, options: { state?: string } = {}): Promise<CommandResult> {
     let parts: string[];
     try {
       parts = shlexSplit(command);
-    } catch {
-      return false;
+    } catch (error) {
+      return { status: "error", error };
     }
     const first = parts[0];
     if (first === undefined) {
-      return false;
+      return { status: "not_found", command: "" };
     }
     const spec = this.get(first);
-    if (spec === undefined || spec.handler === undefined) {
-      return false;
+    if (spec === undefined) {
+      return { status: "not_found", command: first };
+    }
+    if (spec.name === "/exit") {
+      return { status: "exit_requested" };
     }
     if (
       spec.allowedStates !== undefined &&
       spec.allowedStates.size > 0 &&
-      (options.state === undefined || !spec.allowedStates.has(options.state))
+      (options.state === undefined || !spec.allowedStates.has(options.state)) &&
+      !(spec.name === "/model" && parts.length === 2 && parts[1] === "current")
     ) {
-      return false;
+      return { status: "blocked", command: spec.name };
     }
-    return spec.handler(parts.slice(1));
+    if (spec.handler === undefined) {
+      return { status: "not_found", command: first };
+    }
+    try {
+      return (await spec.handler(parts.slice(1)))
+        ? { status: "handled" }
+        : { status: "not_found", command: first };
+    } catch (error) {
+      return { status: "error", error };
+    }
   }
 }
 
@@ -527,38 +548,16 @@ export class SessionCommands {
     return this.#currentConfig;
   }
 
-  async handle(command: string): Promise<boolean> {
-    let parts: string[];
-    try {
-      parts = shlexSplit(command);
-    } catch (error) {
-      this.#output(`Invalid command: ${errorMessage(error)}`);
-      return true;
-    }
-    const first = parts[0];
-    if (first === undefined) {
-      return false;
-    }
-
-    const spec = this.registry.get(first);
-    if (spec === undefined || spec.handler === undefined) {
-      return false;
-    }
-    const state = this.runtimeState();
-    const readOnlyModelQuery =
-      parts.length === 2 && parts[0] === "/model" && parts[1] === "current";
-    if (
-      spec.allowedStates !== undefined &&
-      spec.allowedStates.size > 0 &&
-      !spec.allowedStates.has(state) &&
-      !readOnlyModelQuery
-    ) {
+  async execute(command: string): Promise<CommandResult> {
+    const result = await this.registry.execute(command, {
+      state: this.runtimeState(),
+    });
+    if (result.status === "blocked") {
       this.#output(
-        `${spec.name} is unavailable while the task is ${state.toLowerCase()}.`,
+        `${result.command} is unavailable while the task is ${this.runtimeState().toLowerCase()}.`,
       );
-      return true;
     }
-    return spec.handler(parts.slice(1));
+    return result;
   }
 
   private runtimeState(): string {

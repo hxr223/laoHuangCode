@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 
 import { CancellationError, type CancelToken } from "./cancellation.ts";
 import type { CodingAgent } from "./agent.ts";
-import type { QueueStatus } from "./commands.ts";
+import type { CommandResult, QueueStatus } from "./commands.ts";
 import {
   EventBus,
   EventKind,
@@ -102,7 +102,7 @@ export type TaskRunner =
 
 export type CommandDispatcher = (
   command: string,
-) => boolean | Promise<boolean>;
+) => CommandResult | Promise<CommandResult>;
 
 // Compile-time contract check (tsc covers src/ only): the real CodingAgent
 // from agent.ts is a valid AgentRunnerLike — its run(userInput, context,
@@ -344,21 +344,6 @@ export class AgentSession {
     if (strategy !== undefined && !ROUTE_STRATEGIES.has(strategy)) {
       throw new Error(`unknown route strategy: ${strategy}`);
     }
-    if (text === "/cancel") {
-      const event = this.publishInput(EventKind.InputSlashCommand, text);
-      const routed = await this.router.route(event);
-      this.cancelRouted(routed);
-      return {
-        event,
-        routed,
-        taskId: routed.decision.taskId,
-        queued: false,
-        control: true,
-        rejected: false,
-        reason: "",
-      };
-    }
-
     const kind = text.startsWith("/")
       ? EventKind.InputSlashCommand
       : EventKind.InputUserMessage;
@@ -419,7 +404,7 @@ export class AgentSession {
   }
 
   /** Compatibility bridge from neutral actions to the existing session API. */
-  async submitAction(action: SessionAction): Promise<Submission | boolean> {
+  async submitAction(action: SessionAction): Promise<Submission | CommandResult | boolean> {
     switch (action.type) {
       case "prompt":
         return this.submitInput(action.text);

@@ -1372,7 +1372,7 @@ export interface TerminalUIOptions {
   model?: string;
   dashboardUrl?: string;
   commandRegistry?: CommandRegistryLike | null;
-  cancelCallback?: (() => void) | null;
+  cancelCallback?: ((command: string) => void) | null;
   theme?: string | null;
   driver?: RawTerminalDriver | null;
   editorFactory?: EditorFactory;
@@ -1410,7 +1410,7 @@ export class TerminalUI {
   readonly reducer: UIEventReducer;
 
   commandRegistry: CommandRegistryLike | null;
-  cancelCallback: (() => void) | null;
+  cancelCallback: ((command: string) => void) | null;
   runtimeRunningCallback: (() => boolean) | null = null;
 
   readonly projectRoot: string | null;
@@ -1534,7 +1534,7 @@ export class TerminalUI {
     this.commandRegistry = registry;
   }
 
-  setCancelCallback(callback: () => void): void {
+  setCancelCallback(callback: (command: string) => void): void {
     this.cancelCallback = callback;
   }
 
@@ -1556,7 +1556,7 @@ export class TerminalUI {
       this.write("Cancelling…");
       return;
     }
-    this.cancelCallback?.();
+    this.cancelCallback?.("/cancel");
   }
 
   // -- transcript ---------------------------------------------------------
