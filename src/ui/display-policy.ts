@@ -22,6 +22,7 @@ export interface DisplayEventLike {
 export interface DisplayPolicyOptions {
   audience: DisplayAudience;
   showReasoning?: boolean;
+  foldToolOutput?: boolean;
 }
 
 const LIFECYCLE_EVENTS = new Set([
@@ -54,6 +55,10 @@ function droppedCount(payload: Record<string, unknown>): number {
     : 0;
 }
 
+export function displayGapMessage(dropped: number): string {
+  return `… 省略了 ${dropped} 个流式展示事件；Agent 仍继续运行。`;
+}
+
 /**
  * Projects canonical EventEnvelope-shaped events and RuntimeEvent-shaped
  * values. Runtime events use camelCase task metadata, while terminal/web
@@ -62,10 +67,12 @@ function droppedCount(payload: Record<string, unknown>): number {
 export class DisplayPolicy {
   readonly audience: DisplayAudience;
   readonly showReasoning: boolean;
+  readonly foldToolOutput: boolean;
 
   constructor(options: DisplayPolicyOptions) {
     this.audience = options.audience;
     this.showReasoning = options.showReasoning ?? true;
+    this.foldToolOutput = options.foldToolOutput ?? options.audience === "terminal";
   }
 
   project(event: DisplayEventLike | RuntimeEvent): DisplayEvent[] {
@@ -82,7 +89,7 @@ export class DisplayPolicy {
         kind: "display.gap",
         correlationId,
         stream: "",
-        text: `… 省略了 ${dropped} 个流式展示事件；Agent 仍继续运行。`,
+        text: displayGapMessage(dropped),
         payload: { dropped },
       });
     }
@@ -90,7 +97,7 @@ export class DisplayPolicy {
       return projected;
     }
     if (
-      this.audience === "terminal" &&
+      this.foldToolOutput &&
       kind === "tool.output_delta" &&
       (stream || "stdout") === "stdout"
     ) {
@@ -112,6 +119,10 @@ export class DisplayPolicy {
 
   isHighFrequency(event: DisplayEventLike | RuntimeEvent): boolean {
     return HIGH_FREQUENCY_EVENTS.has(String(event.kind));
+  }
+
+  droppedCount(event: DisplayEventLike | RuntimeEvent): number {
+    return droppedCount(asPayload(event.payload));
   }
 
   #correlationId(event: DisplayEventLike | RuntimeEvent): string {

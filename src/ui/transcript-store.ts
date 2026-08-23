@@ -13,6 +13,8 @@ export interface TranscriptBlock {
   exitCode: number | null;
   durationMs: number | null;
   streamError: string;
+  toolOutput: string;
+  toolOutputExpanded: boolean;
   style: string;
 }
 
@@ -32,6 +34,8 @@ export function createTranscriptBlock(
     exitCode: fields.exitCode ?? null,
     durationMs: fields.durationMs ?? null,
     streamError: fields.streamError ?? "",
+    toolOutput: fields.toolOutput ?? "",
+    toolOutputExpanded: fields.toolOutputExpanded ?? false,
     style: fields.style ?? "",
   };
 }
@@ -51,6 +55,7 @@ export class TranscriptStore {
   readonly #byCorrelation = new Map<string, TranscriptBlock>();
   readonly #errorStyle: string;
   readonly #toolBufferLimit: number;
+  #toolOutputExpanded = false;
   #nextBlockId = 0;
 
   constructor(options: TranscriptStoreOptions = {}) {
@@ -125,7 +130,15 @@ export class TranscriptStore {
         name: String(update.payload.name ?? "tool"),
         subject,
         status: "running",
+        toolOutputExpanded: this.#toolOutputExpanded,
       }));
+      return;
+    }
+    if (kind === "tool.output_delta" && update.stream === "stdout") {
+      const item = this.#byCorrelation.get(`tool:${correlationId}`);
+      if (item !== undefined) {
+        item.toolOutput = (item.toolOutput + update.text).slice(-this.#toolBufferLimit);
+      }
       return;
     }
     if (kind === "tool.output_delta" && update.stream === "stderr") {
@@ -170,6 +183,15 @@ export class TranscriptStore {
     }
   }
 
+  setToolOutputExpanded(expanded: boolean): void {
+    this.#toolOutputExpanded = expanded;
+    for (const block of this.#blocks) {
+      if (block.kind === "tool") {
+        block.toolOutputExpanded = expanded;
+      }
+    }
+  }
+
   #getOrCreate(
     kind: string,
     key: string,
@@ -179,7 +201,10 @@ export class TranscriptStore {
     if (existing !== undefined) {
       return existing;
     }
-    const block = createTranscriptBlock(kind, key, fields);
+    const block = createTranscriptBlock(kind, key, {
+      ...fields,
+      toolOutputExpanded: kind === "tool" ? this.#toolOutputExpanded : fields.toolOutputExpanded,
+    });
     this.append(block);
     return block;
   }

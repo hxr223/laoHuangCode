@@ -29,9 +29,11 @@ import {
 } from "../ui-state.ts";
 import {
   DisplayPolicy,
+  displayGapMessage,
   type DisplayEvent,
   type DisplayEventLike,
 } from "../ui/display-policy.ts";
+import type { DisplayAction } from "../ui/display-actions.ts";
 import {
   TranscriptStore,
   createTranscriptBlock,
@@ -969,9 +971,10 @@ export class InteractiveTerminalLoop {
       this.#work.length >= InteractiveTerminalLoop.WORK_QUEUE_LIMIT - 128 &&
       this.#ui.isHighFrequencyDisplayEvent(event)
     ) {
+      this.#ui.recordDisplayDrop(event);
       return;
     }
-    this.#work.push({ type: "event", event });
+    this.#work.push({ type: "event", event: this.#ui.withDisplayDropMarker(event) });
     this.#scheduleWakeup();
   }
 
@@ -986,9 +989,15 @@ export class InteractiveTerminalLoop {
   /** Synchronously consume queued work; this is also the test hook. */
   drain(): void {
     const changed = this.#drainWork();
-    if (changed || this.#needsRender) {
+    const dropped = this.#ui.flushDisplayDropMarker();
+    if (changed || dropped || this.#needsRender) {
       this.#render();
     }
+  }
+
+  requestRender(): void {
+    this.#needsRender = true;
+    this.#scheduleWakeup();
   }
 
   ask(message: string, options: { secret?: boolean } = {}): Promise<string> {
@@ -1361,8 +1370,12 @@ export class TerminalUI {
   #askFallback: ((message: string, secret: boolean) => Promise<string>) | null;
   #loop: InteractiveTerminalLoop | null = null;
   readonly #transcript: TranscriptStore;
-  readonly #displayPolicy = new DisplayPolicy({ audience: "terminal" });
+  readonly #displayPolicy = new DisplayPolicy({
+    audience: "terminal",
+    foldToolOutput: false,
+  });
   readonly #frameBuilder: FrameBuilder;
+  #pendingDisplayDrops = 0;
 
   constructor(options: TerminalUIOptions = {}) {
     this.theme = resolveTerminalTheme(options.theme);
@@ -1522,6 +1535,49 @@ export class TerminalUI {
     });
   }
 
+  recordDisplayDrop(event: unknown): void {
+    if (!isRecord(event) || !("kind" in event)) {
+      this.#pendingDisplayDrops += 1;
+      return;
+    }
+    this.#pendingDisplayDrops += 1 + this.#displayPolicy.droppedCount({
+      kind: event.kind,
+      payload: event.payload,
+      correlation_id: event.correlation_id,
+    });
+  }
+
+  withDisplayDropMarker(event: unknown): unknown {
+    if (this.#pendingDisplayDrops === 0 || !isRecord(event) || !("kind" in event)) {
+      return event;
+    }
+    const pending = this.#pendingDisplayDrops;
+    this.#pendingDisplayDrops = 0;
+    const payload = isRecord(event.payload) ? event.payload : {};
+    const inherited = this.#displayPolicy.droppedCount({
+      kind: event.kind,
+      payload,
+      correlation_id: event.correlation_id,
+    });
+    return {
+      ...event,
+      payload: { ...payload, _projection_dropped: inherited + pending },
+    };
+  }
+
+  flushDisplayDropMarker(): boolean {
+    if (this.#pendingDisplayDrops === 0) {
+      return false;
+    }
+    const dropped = this.#pendingDisplayDrops;
+    this.#pendingDisplayDrops = 0;
+    this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
+      text: displayGapMessage(dropped),
+      style: "yellow",
+    }));
+    return true;
+  }
+
   cancelFromKeybinding(): void {
     if (this.state.sessionState === "CANCELLING") {
       this.write("Cancelling…");
@@ -1644,6 +1700,9 @@ export class TerminalUI {
       if (item.streamError) {
         detail += `\n${clip(item.streamError, 1_200)}`;
       }
+      if (item.toolOutputExpanded && item.toolOutput) {
+        detail += `\n${clip(item.toolOutput, 1_200)}`;
+      }
       const rendered = this.#backgroundLines(`${title}\n${detail}`, width, background, "text");
       const first = rendered[0];
       if (first !== undefined) {
@@ -1703,6 +1762,14 @@ export class TerminalUI {
     for (const projected of this.#displayPolicy.project(event)) {
       this.#applyDisplayEvent(projected);
     }
+  }
+
+  applyDisplayAction(action: DisplayAction): void {
+    if (action.type !== "toggle_tool_output") {
+      return;
+    }
+    this.#transcript.setToolOutputExpanded(action.expanded);
+    this.#loop?.requestRender();
   }
 
   #applyDisplayEvent(event: DisplayEvent): void {
