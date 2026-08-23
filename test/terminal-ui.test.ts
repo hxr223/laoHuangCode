@@ -235,10 +235,10 @@ test("typing updates editor line without appending prompt history", () => {
   ui.drainLoop();
 
   assert.equal(terminal.writeChunks().length, 1);
-  assert.ok(terminal.writes().includes("\r\x1b[2K❯ as"));
+  assert.ok(terminal.writes().includes("\r\x1b[2K│ ❯ as"));
   assert.equal(terminal.writes().split("\x1b[2K").length - 1, 1);
   assert.ok(!terminal.writes().includes("\r\n"));
-  assert.ok(!terminal.writes().includes("\r\n❯ a"));
+  assert.ok(!terminal.writes().includes("\r\n│ ❯ a"));
 });
 
 test("typing updates editor line semantically in four rows", () => {
@@ -257,7 +257,7 @@ test("typing updates editor line semantically in four rows", () => {
 
   const rendered = emulator.logicalLines.join("\n");
   assert.equal(rendered.split("❯ ").length - 1, 1);
-  assert.ok(emulator.viewportLines.includes("❯ as"));
+  assert.ok(emulator.viewportLines.some((line) => line.includes("❯ as")));
   assert.ok(!emulator.logicalLines.includes("❯ a"));
 });
 
@@ -277,12 +277,12 @@ test("three ascii keystrokes leave cursor after third character", () => {
   }
 
   assert.deepEqual(emulator.viewportLines.slice(0, 3), [
-    "─".repeat(80),
-    "❯ asd",
-    "─".repeat(80),
+    "├" + "─".repeat(78) + "┤",
+    "│ ❯ asd".padEnd(79, " ") + "│",
+    "├" + "─".repeat(78) + "┤",
   ]);
   assert.equal(emulator.cursorRow, 1);
-  assert.equal(emulator.cursorColumn, 5);
+  assert.equal(emulator.cursorColumn, 7);
   assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
 });
 
@@ -384,7 +384,8 @@ test("raw loop owns transcript and editor together", () => {
   ui.drainLoop();
 
   assert.deepEqual(submitted, ["hello"]);
-  assert.ok(terminal.writes().includes("laoHuangCode"));
+  assert.ok(terminal.writes().includes("╭─ laoHuang"));
+  assert.ok(terminal.writes().includes("hello, welcome to laoHuang"));
   assert.ok(terminal.writes().includes("hello"));
 });
 
@@ -576,7 +577,7 @@ test("frame uses only content rows for a completion", () => {
   const frame = ui.buildFrame({ width: 80, editor });
 
   assert.equal(frame.lines.filter((line) => line.includes("/exit")).length, 1);
-  assert.ok((frame.lines[frame.lines.length - 1] as string).includes("deepseek-v4-flash"));
+  assert.ok(frame.lines.some((line) => line.includes("deepseek-v4-flash")));
 });
 
 test("frame lines fit visible width with cjk content", () => {
@@ -663,8 +664,8 @@ test("frame grows only for actual multiline input", () => {
   );
   const frame = ui.buildFrame({ width: 80, editor });
 
-  assert.ok(frame.lines.includes("❯ first line"));
-  assert.ok(frame.lines.includes("  second line"));
+  assert.ok(frame.lines.some((line) => line.includes("❯ first line")));
+  assert.ok(frame.lines.some((line) => line.includes("  second line")));
   assert.equal(
     frame.lines.filter(
       (line) => line.includes("first line") || line.includes("second line"),
@@ -820,7 +821,7 @@ test("welcome panel shows session context", () => {
   ui.showWelcome();
 
   const rendered = stream.join("\n");
-  assert.ok(rendered.includes("laoHuangCode"));
+  assert.ok(rendered.includes("hello, welcome to laoHuang"));
   assert.ok(rendered.includes("/tmp/demo"));
   assert.ok(rendered.includes("deepseek/deepseek-v4-pro"));
   assert.ok(rendered.includes("http://127.0.0.1:8765/"));

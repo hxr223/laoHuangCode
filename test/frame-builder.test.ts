@@ -13,7 +13,8 @@ test("frame builder exposes title, welcome, and status data", () => {
   state.provider = "openai";
   state.model = "gpt-test";
   const store = new TranscriptStore();
-  store.append({ kind: "notice", key: "welcome", text: "laoHuangCode  /help for commands" });
+  store.append({ kind: "notice", key: "welcome", text: "hello, welcome to laoHuang" });
+  store.append({ kind: "notice", key: "other", text: "laoHuangCode diagnostic detail" });
   const editor = new BasicEditorState();
   editor.text = "hello";
   editor.cursor = 5;
@@ -22,13 +23,18 @@ test("frame builder exposes title, welcome, and status data", () => {
     state,
     transcript: store,
     projectRoot: "/Users/example/projects/a-very-long-project-name-that-must-be-truncated-in-the-status-bar",
-    title: "laoHuangCode",
+    title: "laoHuang",
   }).build({ width: 120, editor });
 
-  assert.equal(frame.titleBar, "laoHuangCode");
-  assert.deepEqual(frame.welcomeBlock, ["laoHuangCode  /help for commands"]);
+  assert.equal(frame.titleBar, "laoHuang");
+  assert.deepEqual(frame.welcomeBlock, ["hello, welcome to laoHuang"]);
+  assert.match(frame.screen.lines[0] as string, /^╭─ laoHuang ─+╮$/u);
+  assert.ok(frame.screen.lines.includes("│ hello, welcome to laoHuang".padEnd(119, " ") + "│"));
+  assert.ok(frame.screen.lines.some((line) => line.startsWith("│ ❯ hello")));
+  assert.ok(frame.screen.lines.some((line) => line.startsWith("├") && line.endsWith("┤")));
+  assert.match(frame.screen.lines.at(-1) as string, /^╰─+╯$/u);
   assert.match(frame.statusBar, /queue 2 pending \/ 1 held/);
   assert.match(frame.statusBar, /openai\/gpt-test/);
   assert.ok(frame.statusBar.includes("…"));
-  assert.deepEqual(frame.cursor, { row: frame.screen.cursorRow, col: 7 });
+  assert.deepEqual(frame.cursor, { row: frame.screen.cursorRow, col: 9 });
 });

@@ -2,7 +2,7 @@
 
 import type { EditorLike } from "../terminal/ui.ts";
 import type { ScreenFrame } from "../terminal/screen.ts";
-import { truncateToWidth } from "../terminal/screen.ts";
+import { truncateToWidth, visibleWidth } from "../terminal/screen.ts";
 import type { UIState } from "../ui-state.ts";
 import type { TranscriptStore } from "./transcript-store.ts";
 
@@ -37,6 +37,29 @@ function clippedCwd(path: string): string {
   return path.length <= 40 ? path : `…${path.slice(-39)}`;
 }
 
+function rule(width: number, left: string, right: string, title?: string): string {
+  if (width < 2) {
+    return truncateToWidth(left, width);
+  }
+  const innerWidth = width - 2;
+  if (title === undefined || title === "") {
+    return `${left}${"─".repeat(innerWidth)}${right}`;
+  }
+  const titlePrefix = `─ ${truncateToWidth(title, Math.max(1, innerWidth - 3))} `;
+  const fillWidth = Math.max(0, innerWidth - visibleWidth(titlePrefix));
+  return `${left}${titlePrefix}${"─".repeat(fillWidth)}${right}`;
+}
+
+function frameLine(text: string, width: number): string {
+  if (width < 4) {
+    return truncateToWidth(text, width);
+  }
+  const innerWidth = width - 4;
+  const clipped = truncateToWidth(text, innerWidth);
+  const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
+  return `│ ${clipped}${padding} │`;
+}
+
 /** Builds frame data while leaving ANSI styling and terminal diffs to the renderer. */
 export class FrameBuilder {
   readonly #state: UIState;
@@ -52,31 +75,37 @@ export class FrameBuilder {
     this.#projectRoot = options.projectRoot ?? null;
     this.#provider = options.provider ?? null;
     this.#model = options.model ?? null;
-    this.#title = options.title ?? "laoHuangCode";
+    this.#title = options.title ?? "laoHuang";
   }
 
   build(options: BuildFrameOptions): DisplayFrame {
     const width = Math.max(1, options.width);
-    const editorResult = options.editor.renderLines(width, {
+    const contentWidth = width >= 4 ? width - 4 : width;
+    const editorResult = options.editor.renderLines(contentWidth, {
       prompt: options.prompt ?? "❯ ",
       mask: options.secret ?? false,
     });
     const history = options.historyLines ?? this.#fallbackHistory();
     const completion = options.completionLines ?? [];
-    const statusBar = truncateToWidth(this.statusBar(), width);
+    const statusBar = truncateToWidth(this.statusBar(), contentWidth);
     const rows = [
-      ...history,
-      "─".repeat(width),
-      ...editorResult.lines,
-      "─".repeat(width),
-      ...completion,
-      ...(statusBar ? [statusBar] : []),
+      rule(width, "╭", "╮", this.#title),
+      ...history.map((line) => frameLine(line, width)),
+      rule(width, "├", "┤"),
+      ...editorResult.lines.map((line) => frameLine(line, width)),
+      rule(width, "├", "┤"),
+      ...completion.map((line) => frameLine(line, width)),
+      ...(statusBar ? [frameLine(statusBar, width)] : []),
+      rule(width, "╰", "╯"),
     ];
-    const editorStart = history.length + 1;
+    const editorStart = 1 + history.length + 1;
     const cursor = {
       row: editorStart + editorResult.cursorRow,
-      col: editorResult.cursorCol,
+      col: (width >= 4 ? 2 : 0) + editorResult.cursorCol,
     };
+    const activeStart = options.activeStart === null || options.activeStart === undefined
+      ? editorStart
+      : 1 + options.activeStart;
     return {
       titleBar: this.#title,
       welcomeBlock: this.#welcomeBlock(),
@@ -84,7 +113,7 @@ export class FrameBuilder {
       cursor,
       screen: {
         lines: rows,
-        activeStart: options.activeStart ?? editorStart,
+        activeStart,
         cursorRow: cursor.row,
         cursorCol: cursor.col,
       },
@@ -116,7 +145,7 @@ export class FrameBuilder {
 
   #welcomeBlock(): string[] {
     return this.#transcript.blocks()
-      .filter((block) => block.kind === "notice" && block.text.startsWith("laoHuangCode"))
+      .filter((block) => block.kind === "notice" && block.key === "welcome")
       .map((block) => block.text);
   }
 }
