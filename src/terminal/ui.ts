@@ -745,6 +745,10 @@ export class BasicInputDecoder implements InputDecoderLike {
     if (sequence === "\x1b[Z") {
       return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
     }
+    const modifiedControl = this.#modifiedControlKey(sequence);
+    if (modifiedControl !== undefined) {
+      return modifiedControl;
+    }
     const special = SPECIAL_ESCAPE_ACTIONS[sequence];
     if (special !== undefined) {
       return { kind: special };
@@ -796,6 +800,34 @@ export class BasicInputDecoder implements InputDecoderLike {
       } catch {
         return undefined;
       }
+    }
+    return undefined;
+  }
+
+  #modifiedControlKey(sequence: string): InputAction | undefined {
+    const kitty = /^\x1b\[(13|57414|9);(\d+)u$/.exec(sequence);
+    if (kitty !== null) {
+      const code = kitty[1] as string;
+      const modifier = Number.parseInt(kitty[2] as string, 10) - 1;
+      if ((code === "13" || code === "57414") && modifier === 2) {
+        return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
+      }
+      if (code === "9" && modifier === 1) {
+        return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
+      }
+      return undefined;
+    }
+    const modifyOtherKeys = /^\x1b\[27;(\d+);(\d+)~$/.exec(sequence);
+    if (modifyOtherKeys === null) {
+      return undefined;
+    }
+    const modifier = Number.parseInt(modifyOtherKeys[1] as string, 10) - 1;
+    const codepoint = Number.parseInt(modifyOtherKeys[2] as string, 10);
+    if (codepoint === 13 && modifier === 2) {
+      return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
+    }
+    if (codepoint === 9 && modifier === 1) {
+      return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
     }
     return undefined;
   }

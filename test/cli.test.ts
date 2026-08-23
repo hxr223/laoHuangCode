@@ -386,6 +386,36 @@ test("session repl routes submitted text through neutral session actions", async
   assert.deepEqual(actions, ["prompt"]);
 });
 
+test("session repl reports malformed slash input without exiting", async () => {
+  const notices: string[] = [];
+  const session = new AgentSession(async () => "unused");
+  session.eventBus.subscribe((event) => {
+    if (event.kind === EventKind.UiMessage) {
+      notices.push(String((event.payload as { text?: unknown }).text ?? ""));
+    }
+  });
+
+  class FakeUI {
+    commandRegistry = null;
+    inputs = ['/model "unterminated', "/exit"];
+    prompt(): string {
+      const value = this.inputs.shift();
+      if (value === undefined) {
+        throw new PromptEofError();
+      }
+      return value;
+    }
+    showWelcome(): void {}
+    showGoodbye(): void {}
+    showError(): void {}
+    stopEventRenderer(): void {}
+  }
+
+  await runSessionRepl(session, { ui: new FakeUI() });
+
+  assert.ok(notices.some((notice) => notice.includes("No closing quotation")));
+});
+
 test("persistent repl preserves follow-up submit metadata", async () => {
   const actions: Array<{ type: string; text?: string }> = [];
   const session = new AgentSession(async () => null);
