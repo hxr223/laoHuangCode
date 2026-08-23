@@ -1,6 +1,6 @@
 # laoHuangCode
 
-一个最小的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
+一个轻量级的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
 Chat Completions 原生工具调用。
 
 当前提供四个工具：`read`、`write`、`edit`、`bash`。所有工具均直接执行，当前原型
