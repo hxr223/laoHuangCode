@@ -27,6 +27,11 @@ export interface KeyInput {
   readonly shift: boolean;
 }
 
+export type TuiInputEvent =
+  | { readonly type: "key"; readonly key: KeyInput }
+  | { readonly type: "text"; readonly text: string }
+  | { readonly type: "paste"; readonly text: string };
+
 export function makeKeyInput(
   id: KeyId,
   options: Partial<Omit<KeyInput, "id">> = {},

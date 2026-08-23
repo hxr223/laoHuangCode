@@ -8,6 +8,10 @@
  */
 
 import { charCellWidth } from "./screen.ts";
+import {
+  makeKeyInput,
+  type TuiInputEvent,
+} from "../keybindings/key-id.ts";
 
 // The wcwidth tables and charCellWidth are owned by terminal/screen.ts;
 // re-exported here for existing consumers of this module.
@@ -40,6 +44,18 @@ export const BufferedInputKind = {
 export type BufferedInputKind =
   (typeof BufferedInputKind)[keyof typeof BufferedInputKind];
 
+export interface BufferedSequenceInput {
+  readonly kind: typeof BufferedInputKind.Sequence;
+  readonly data: Buffer;
+}
+
+export interface BufferedPasteInput {
+  readonly kind: typeof BufferedInputKind.Paste;
+  readonly data: Buffer;
+}
+
+export type BufferedInput = BufferedSequenceInput | BufferedPasteInput;
+
 export interface InputAction {
   readonly kind: InputActionKind;
   readonly text: string;
@@ -49,9 +65,43 @@ export function inputAction(kind: InputActionKind, text = ""): InputAction {
   return { kind, text };
 }
 
-export interface BufferedInput {
-  readonly kind: BufferedInputKind;
-  readonly data: Buffer;
+/** Convert existing editor actions into the neutral TUI input contract. */
+export function toTuiInputEvent(action: InputAction): TuiInputEvent;
+export function toTuiInputEvent(input: BufferedPasteInput): TuiInputEvent;
+export function toTuiInputEvent(
+  input: InputAction | BufferedPasteInput,
+): TuiInputEvent {
+  if (input.kind === BufferedInputKind.Paste) {
+    return { type: "paste", text: input.data.toString("utf8") };
+  }
+
+  switch (input.kind) {
+    case InputActionKind.Insert:
+      return { type: "text", text: input.text };
+    case InputActionKind.Submit:
+      return { type: "key", key: makeKeyInput("enter") };
+    case InputActionKind.Newline:
+      return { type: "key", key: makeKeyInput("enter", { shift: true }) };
+    case InputActionKind.Complete:
+      return { type: "key", key: makeKeyInput("tab") };
+    case InputActionKind.HistoryUp:
+      return { type: "key", key: makeKeyInput("up") };
+    case InputActionKind.HistoryDown:
+      return { type: "key", key: makeKeyInput("down") };
+    case InputActionKind.CursorLeft:
+      return { type: "key", key: makeKeyInput("left") };
+    case InputActionKind.CursorRight:
+      return { type: "key", key: makeKeyInput("right") };
+    case InputActionKind.Backspace:
+      return { type: "key", key: makeKeyInput("backspace") };
+    case InputActionKind.Dismiss:
+      return { type: "key", key: makeKeyInput("escape") };
+    case InputActionKind.Cancel:
+      return { type: "key", key: makeKeyInput("ctrl_c", { ctrl: true }) };
+    case InputActionKind.Eof:
+      return { type: "key", key: makeKeyInput("ctrl_d", { ctrl: true }) };
+  }
+
 }
 
 /** Side effects an {@link EditorState} action asks the caller to perform. */

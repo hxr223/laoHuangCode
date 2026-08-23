@@ -22,6 +22,9 @@ import {
   type InputAction,
 } from "./editor.ts";
 
+export { toTuiInputEvent } from "./editor.ts";
+export type { TuiInputEvent } from "../keybindings/key-id.ts";
+
 /** Raised when the user aborts the prompt with Ctrl+C (mirrors KeyboardInterrupt). */
 export class PromptCancelledError extends Error {
   constructor() {

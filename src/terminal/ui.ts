@@ -18,6 +18,9 @@
 
 import { appendFileSync } from "node:fs";
 
+export { toTuiInputEvent } from "./editor.ts";
+export type { TuiInputEvent } from "../keybindings/key-id.ts";
+
 import {
   createUIState,
   UIEventReducer,
