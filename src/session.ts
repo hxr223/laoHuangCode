@@ -18,7 +18,6 @@ import {
   HeldQueue,
   PendingQueue,
   QueueOverflowError,
-  Scheduler,
   TaskRegistry,
   TaskState,
   combineInput,
@@ -28,6 +27,10 @@ import {
   type SemanticClassifier,
   type TaskRecord,
 } from "./routing.ts";
+import {
+  QueueDispatcher,
+  QueueDispatchStatus,
+} from "./runtime/queue-dispatcher.ts";
 import type { SessionAction } from "./runtime/session-action.ts";
 
 export const SessionState = {
@@ -270,7 +273,7 @@ export class AgentSession {
   readonly pending: PendingQueue;
   readonly held: HeldQueue;
   readonly deadLetters: DeadLetterQueue;
-  readonly scheduler: Scheduler;
+  readonly queueDispatcher: QueueDispatcher;
   readonly router: EventRouter;
   readonly runner: TaskRunner;
   readonly #commandDispatcher: CommandDispatcher | null;
@@ -289,14 +292,10 @@ export class AgentSession {
     this.sessionId = options.sessionId ?? randomUUID().replaceAll("-", "");
     this.eventBus = options.eventBus ?? new EventBus();
     this.taskRegistry = options.taskRegistry ?? new TaskRegistry();
-    this.pending = new PendingQueue();
-    this.held = new HeldQueue();
-    this.deadLetters = new DeadLetterQueue();
-    this.scheduler = new Scheduler({
-      pending: this.pending,
-      held: this.held,
-      deadLetters: this.deadLetters,
-    });
+    this.queueDispatcher = new QueueDispatcher();
+    this.pending = this.queueDispatcher.pending;
+    this.held = this.queueDispatcher.held;
+    this.deadLetters = this.queueDispatcher.deadLetters;
     this.router = new EventRouter(this.taskRegistry, {
       semanticClassifier: options.semanticClassifier ?? null,
       safetyPolicy: options.safetyPolicy ?? null,
@@ -358,11 +357,15 @@ export class AgentSession {
     );
     // From here on the section is synchronous and therefore atomic.
     this.publishRoute(routed);
-    const scheduled = this.scheduler.schedule(routed);
+    const dispatched = this.queueDispatcher.dispatch(
+      this.inputAction(event, text, strategy),
+      { state: this.#state },
+      routed,
+    );
     let taskId = routed.decision.taskId;
-    if (routed.decision.destination === "new_task") {
+    if (dispatched.status === QueueDispatchStatus.StartNow) {
       taskId = this.startTask(text, event.event_id);
-    } else if (routed.decision.destination === "pending") {
+    } else if (dispatched.status === QueueDispatchStatus.Pending) {
       this.eventBus.publish(EventKind.InputPending, {
         source: EventSource.Session,
         session_id: this.sessionId,
@@ -370,7 +373,7 @@ export class AgentSession {
         correlation_id: event.event_id,
         payload: { pending_count: this.pending.size },
       });
-    } else if (routed.decision.destination === "held") {
+    } else if (dispatched.status === QueueDispatchStatus.Held) {
       this.eventBus.publish(EventKind.InputHeld, {
         source: EventSource.Session,
         session_id: this.sessionId,
@@ -379,14 +382,14 @@ export class AgentSession {
         payload: { held_count: this.held.size },
       });
     }
-    if (scheduled.rejected) {
+    if (dispatched.status === QueueDispatchStatus.DeadLetter) {
       this.eventBus.publish(EventKind.RoutingRejected, {
         source: EventSource.Router,
         session_id: this.sessionId,
         task_id: taskId,
         correlation_id: event.event_id,
         payload: {
-          reason: scheduled.reason,
+          reason: dispatched.reason ?? "queue dispatch rejected the action",
           destination: "drop",
           layer: 4,
         },
@@ -396,10 +399,14 @@ export class AgentSession {
       event,
       routed,
       taskId,
-      queued: scheduled.queued,
-      control: routed.decision.destination === "control",
-      rejected: scheduled.rejected,
-      reason: scheduled.reason,
+      queued:
+        dispatched.status === QueueDispatchStatus.Pending ||
+        dispatched.status === QueueDispatchStatus.Held,
+      control:
+        dispatched.status === QueueDispatchStatus.CancelNow ||
+        routed.decision.destination === "control",
+      rejected: dispatched.status === QueueDispatchStatus.DeadLetter,
+      reason: dispatched.reason ?? "",
     };
   }
 
@@ -542,6 +549,19 @@ export class AgentSession {
         layer: 4,
       },
     };
+    const dispatched = this.queueDispatcher.dispatch(
+      {
+        id: event.event_id,
+        source: EventSource.User,
+        type: "cancel",
+        reason,
+      },
+      { state: this.#state },
+      routed,
+    );
+    if (dispatched.status !== QueueDispatchStatus.CancelNow) {
+      return false;
+    }
     return this.cancelRouted(routed, reason);
   }
 
@@ -1081,7 +1101,7 @@ export class AgentSession {
     if (this.#inflightPending.has(taskId)) {
       throw new Error("pending batch is already in flight");
     }
-    const events = this.scheduler.safePoint(taskId);
+    const events = this.pending.drainCompatible({ taskId });
     if (events.length > 0) {
       this.#inflightPending.set(taskId, events);
       this.publishTaskState(taskId, record.state);
@@ -1091,6 +1111,35 @@ export class AgentSession {
 
   private setSessionState(state: SessionState): void {
     this.#state = state;
+  }
+
+  private inputAction(
+    event: AnyEventEnvelope,
+    text: string,
+    strategy: string | undefined,
+  ): SessionAction {
+    if (event.kind === EventKind.InputSlashCommand) {
+      return {
+        id: event.event_id,
+        source: event.source,
+        type: "command",
+        name: text.slice(1),
+        arguments: [],
+        text,
+      };
+    }
+    if (strategy === "steer") {
+      return { id: event.event_id, source: event.source, type: "steer", text };
+    }
+    if (strategy === "follow_up") {
+      return {
+        id: event.event_id,
+        source: event.source,
+        type: "follow_up",
+        text,
+      };
+    }
+    return { id: event.event_id, source: event.source, type: "prompt", text };
   }
 
   private setIdle(value: boolean): void {
