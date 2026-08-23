@@ -58,6 +58,10 @@ export function makePromptIntent(text: string, source: string): UserIntent {
   return { type: "prompt", text, source };
 }
 
+export function makeFollowUpIntent(text: string, source: string): UserIntent {
+  return { type: "follow_up", text, source };
+}
+
 export function makeCancelIntent(reason: string, source: string): UserIntent {
   return { type: "cancel", reason, source };
 }

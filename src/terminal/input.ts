@@ -86,7 +86,7 @@ function resolveSetupPromptAction(action: InputAction): InputAction {
   if (binding === "cancel") {
     return inputAction(InputActionKind.Cancel);
   }
-  if (binding === "editor_newline") {
+  if (binding === "editor_newline" || binding === "submit_follow_up") {
     return inputAction(InputActionKind.Newline);
   }
   if (binding === "dismiss") {

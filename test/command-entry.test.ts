@@ -99,8 +99,8 @@ test("keyboard cancellation reaches the neutral cancellation action", async () =
   });
   const ui = new TerminalUI();
   let submitted: Promise<unknown> | null = null;
-  ui.setCancelCallback((command) => {
-    submitted = commands.execute(command);
+  ui.setCancelCallback(() => {
+    submitted = commands.execute("/cancel");
   });
 
   ui.cancelFromKeybinding();
@@ -118,6 +118,15 @@ test("command entry reports exit requests", async () => {
   const result = await commands.execute("/exit");
 
   assert.equal(result.status, "exit_requested");
+});
+
+test("command entry rejects unexpected exit arguments", async () => {
+  const { commands } = makeCommands();
+
+  const result = await commands.execute("/exit unexpected");
+
+  assert.equal(result.status, "error");
+  assert.equal(result.error instanceof Error ? result.error.message : "", "Usage: /exit");
 });
 
 test("command entry reports unknown commands without handling them", async () => {

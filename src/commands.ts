@@ -294,6 +294,9 @@ export class CommandRegistry {
       return { status: "not_found", command: first };
     }
     if (spec.name === "/exit") {
+      if (parts.length > 1) {
+        return { status: "error", error: new Error("Usage: /exit") };
+      }
       return { status: "exit_requested" };
     }
     if (

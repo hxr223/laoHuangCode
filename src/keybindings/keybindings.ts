@@ -5,6 +5,8 @@ export type ActionId =
   | "toggle_tool_output"
   | "clear_screen"
   | "editor_newline"
+  | "select_model"
+  | "submit_follow_up"
   | "dismiss"
   | "cancel"
   | "toggle_thinking"

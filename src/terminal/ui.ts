@@ -684,7 +684,10 @@ export class BasicInputDecoder implements InputDecoderLike {
     }
     const second = bytes[start + 1] as number;
     if (second === 10 || second === 13) {
-      return { next: start + 2, action: { kind: "newline" } };
+      return {
+        next: start + 2,
+        action: { kind: "key", key: makeKeyInput("enter", { alt: true }) },
+      };
     }
     if (second === 0x5b) {
       let final = -1;
@@ -919,6 +922,12 @@ type LoopWorkItem =
   | { type: "input"; data: Uint8Array }
   | { type: "event"; event: unknown };
 
+export interface SubmitOptions {
+  readonly strategy?: "follow_up";
+}
+
+type SubmitCallback = (text: string, options?: SubmitOptions) => void;
+
 /** Minimal readable-source contract for the production run loop. */
 export interface LoopInputSource {
   on(event: "data", listener: (data: Uint8Array) => void): unknown;
@@ -980,7 +989,7 @@ export class InteractiveTerminalLoop {
   #renderer: PiMainScreenRenderer;
   #overlays = new OverlayManager();
   #focus = new FocusManager(this.#overlays, COMPOSER_COMPONENT);
-  #onSubmit: (text: string) => void = () => {};
+  #onSubmit: SubmitCallback = () => {};
   #exitRequested = false;
   #closed = false;
   #running = false;
@@ -1027,7 +1036,7 @@ export class InteractiveTerminalLoop {
     return this.#running;
   }
 
-  start(onSubmit: (text: string) => void): void {
+  start(onSubmit: SubmitCallback): void {
     this.#onSubmit = onSubmit;
     this.#exitRequested = false;
     this.#running = true;
@@ -1242,6 +1251,9 @@ export class InteractiveTerminalLoop {
     while (item !== undefined) {
       if (item.type === "input") {
         this.#applyActions(this.#decoder.feed(item.data));
+        if (!this.#wakeupEnabled) {
+          this.#applyActions(this.#decoder.flush());
+        }
         changed = true;
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
@@ -1280,6 +1292,10 @@ export class InteractiveTerminalLoop {
 
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
+      if (action.kind === "newline") {
+        this.#applyEditorAction(action);
+        continue;
+      }
       this.#applyInputEvent(inputEventFromAction(action));
     }
   }
@@ -1309,6 +1325,8 @@ export class InteractiveTerminalLoop {
     }
     if (action === "editor_newline") {
       this.#applyEditorAction({ kind: "newline" });
+    } else if (action === "submit_follow_up") {
+      this.#applyFollowUpSubmit();
     } else if (action === "dismiss") {
       this.#applyEditorAction({ kind: "dismiss" });
     } else if (action === "cancel") {
@@ -1320,6 +1338,36 @@ export class InteractiveTerminalLoop {
       this.#ui.handleKeyAction(action);
       this.#needsRender = true;
     }
+  }
+
+  #applyFollowUpSubmit(): void {
+    if (this.#applyQuestionAction({ kind: "submit" })) {
+      this.#needsRender = true;
+      return;
+    }
+    if (this.#applyCompletionAction({ kind: "submit" })) {
+      this.#needsRender = true;
+      return;
+    }
+    const effect = this.#editor.apply(
+      { kind: "submit" },
+      { runtimeActive: this.#ui.isRunning() },
+    );
+    if (effect.submit !== null && effect.submit !== undefined) {
+      this.#ui.acceptUserInput(effect.submit);
+      this.#onSubmit(effect.submit, { strategy: "follow_up" });
+    }
+    if (effect.notice) {
+      this.#appendNotice(effect.notice);
+    }
+    if (effect.cancelRequested) {
+      this.#ui.cancelFromKeybinding();
+    }
+    if (effect.exitRequested) {
+      this.requestExit();
+    }
+    this.#syncCompletionOverlay();
+    this.#needsRender = true;
   }
 
   #applyEditorAction(action: InputAction): void {
@@ -1470,7 +1518,7 @@ export interface TerminalUIOptions {
   model?: string;
   dashboardUrl?: string;
   commandRegistry?: CommandRegistryLike | null;
-  cancelCallback?: ((command: string) => void) | null;
+  cancelCallback?: (() => void) | null;
   theme?: string | null;
   driver?: RawTerminalDriver | null;
   editorFactory?: EditorFactory;
@@ -1479,7 +1527,7 @@ export interface TerminalUIOptions {
   askFallback?: (message: string, secret: boolean) => Promise<string>;
   capabilities?: Partial<RuntimeCapabilities>;
   keybindingOverrides?: KeybindingOverrides;
-  keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "dismiss" | "cancel">) => void;
+  keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void;
 }
 
 /**
@@ -1511,7 +1559,7 @@ export class TerminalUI {
   readonly reducer: UIEventReducer;
 
   commandRegistry: CommandRegistryLike | null;
-  cancelCallback: ((command: string) => void) | null;
+  cancelCallback: (() => void) | null;
   runtimeRunningCallback: (() => boolean) | null = null;
 
   readonly projectRoot: string | null;
@@ -1531,7 +1579,7 @@ export class TerminalUI {
   });
   readonly #frameBuilder: FrameBuilder;
   #pendingDisplayDrops = 0;
-  #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "dismiss" | "cancel">) => void) | null;
+  #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void) | null;
 
   constructor(options: TerminalUIOptions = {}) {
     this.theme = resolveTerminalTheme(options.theme);
@@ -1613,7 +1661,7 @@ export class TerminalUI {
   // -- loop lifecycle -----------------------------------------------------
 
   /** Run the single-owner interactive terminal for the whole session. */
-  async run(onSubmit: (text: string) => void): Promise<void> {
+  async run(onSubmit: SubmitCallback): Promise<void> {
     if (this.#loop === null) {
       throw new Error("single-renderer mode is unavailable for this UI");
     }
@@ -1629,7 +1677,7 @@ export class TerminalUI {
     this.#loop?.close();
   }
 
-  startLoop(onSubmit: (text: string) => void): void {
+  startLoop(onSubmit: SubmitCallback): void {
     if (this.#loop === null) {
       throw new Error("a terminal driver is required");
     }
@@ -1658,7 +1706,7 @@ export class TerminalUI {
     this.commandRegistry = registry;
   }
 
-  setCancelCallback(callback: (command: string) => void): void {
+  setCancelCallback(callback: () => void): void {
     this.cancelCallback = callback;
   }
 
@@ -1666,8 +1714,18 @@ export class TerminalUI {
     this.runtimeRunningCallback = callback;
   }
 
-  handleKeyAction(action: Exclude<ActionId, "editor_newline" | "dismiss" | "cancel">): void {
-    this.#keyActionCallback?.(action);
+  setKeyActionCallback(
+    callback: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void,
+  ): void {
+    this.#keyActionCallback = callback;
+  }
+
+  handleKeyAction(action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">): void {
+    if (this.#keyActionCallback === null) {
+      this.write(`Key action is unavailable: ${action}.`);
+      return;
+    }
+    this.#keyActionCallback(action);
   }
 
   toggleToolOutputFromKeybinding(): void {
@@ -1756,7 +1814,7 @@ export class TerminalUI {
       this.write("Cancelling…");
       return;
     }
-    this.cancelCallback?.("/cancel");
+    this.cancelCallback?.();
   }
 
   // -- transcript ---------------------------------------------------------

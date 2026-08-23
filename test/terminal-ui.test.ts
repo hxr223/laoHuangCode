@@ -80,6 +80,38 @@ test("loop preserves first turn while second response streams", () => {
   assert.ok(terminal.writes().includes("answer two"));
 });
 
+test("alt enter submits a follow-up action from the live loop", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const submitted: Array<{ text: string; strategy?: string }> = [];
+
+  ui.startLoop((text, options) => {
+    submitted.push({ text, strategy: options?.strategy });
+  });
+  ui.feedInputBytes(bytes("later\x1b\r"));
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  ui.drainLoop();
+
+  assert.deepEqual(submitted, [{ text: "later", strategy: "follow_up" }]);
+});
+
+test("ctrl l invokes the model selection key action", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const actions: string[] = [];
+  const ui = new TerminalUI({
+    driver: terminal,
+    keyActionCallback: (action) => {
+      actions.push(action);
+    },
+  });
+
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("\f"));
+  ui.drainLoop();
+
+  assert.deepEqual(actions, ["select_model"]);
+});
+
 test("second response does not rewrite frozen first turn bytes", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });

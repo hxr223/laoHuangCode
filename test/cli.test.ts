@@ -203,6 +203,7 @@ test("persistent exit does not wait for slow prior routing", async () => {
     release: Promise<void>;
     #startedResolve!: () => void;
     #releaseResolve!: () => void;
+    state = "idle";
 
     constructor() {
       this.started = new Promise<void>((resolve) => {
@@ -230,6 +231,16 @@ test("persistent exit does not wait for slow prior routing", async () => {
         rejected: false,
         reason: "",
       });
+    }
+
+    submitAction(action: { type: string; text?: string }): Promise<unknown> {
+      if (action.type === "prompt" && action.text !== undefined) {
+        return this.submitInput(action.text);
+      }
+      if (action.type === "exit") {
+        return this.close();
+      }
+      return Promise.resolve(false);
     }
 
     close(): Promise<boolean> {
@@ -343,6 +354,67 @@ test("plain repl uses agent session and waits for pipe eof", async () => {
   assert.deepEqual(calls, ["hello"]);
   assert.ok(outputs.some((output) => output.includes("ready")));
   assert.equal(outputs.at(-1), "Goodbye.");
+});
+
+test("session repl routes submitted text through neutral session actions", async () => {
+  const actions: string[] = [];
+  const session = new AgentSession(async () => "done");
+  const originalSubmitAction = session.submitAction.bind(session);
+  session.submitAction = async (action) => {
+    actions.push(action.type);
+    return originalSubmitAction(action);
+  };
+
+  class FakeUI {
+    commandRegistry = null;
+    inputs = ["hello", "/exit"];
+    prompt(): string {
+      const value = this.inputs.shift();
+      if (value === undefined) {
+        throw new PromptEofError();
+      }
+      return value;
+    }
+    showWelcome(): void {}
+    showGoodbye(): void {}
+    showError(): void {}
+    stopEventRenderer(): void {}
+  }
+
+  await runSessionRepl(session, { ui: new FakeUI() });
+
+  assert.deepEqual(actions, ["prompt"]);
+});
+
+test("persistent repl preserves follow-up submit metadata", async () => {
+  const actions: Array<{ type: string; text?: string }> = [];
+  const session = new AgentSession(async () => null);
+  const originalSubmitAction = session.submitAction.bind(session);
+  session.submitAction = async (action) => {
+    actions.push({ type: action.type, text: "text" in action ? action.text : undefined });
+    return originalSubmitAction(action);
+  };
+
+  class FakePiLoopUI {
+    commandRegistry = null;
+    renderError: unknown = null;
+    run(submit: (text: string, options?: { strategy?: "follow_up" }) => void): void {
+      submit("later", { strategy: "follow_up" });
+      submit("/exit");
+    }
+    showWelcome(): void {}
+    requestExit(): void {}
+    flushEventRenderer(): void {}
+    close(): void {}
+    showGoodbye(): void {}
+    showError(message: string): void {
+      throw new Error(message);
+    }
+  }
+
+  await runSessionRepl(session, { ui: new FakePiLoopUI() });
+
+  assert.deepEqual(actions, [{ type: "follow_up", text: "later" }]);
 });
 
 test("terminal ui is only enabled for the real interactive streams", () => {

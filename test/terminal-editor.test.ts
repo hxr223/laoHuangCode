@@ -58,7 +58,11 @@ test("decoder distinguishes submit, alt+enter and ctrl+d", () => {
     inputAction(InputActionKind.Submit),
   ]);
   assert.deepEqual(decoder.feed(Buffer.from("\x1b\r")), [
-    inputAction(InputActionKind.Newline),
+    inputAction(
+      InputActionKind.Key,
+      "",
+      { id: "enter", text: null, ctrl: false, alt: true, shift: false },
+    ),
   ]);
   assert.deepEqual(decoder.feed(Buffer.from("\x04")), [
     inputAction(InputActionKind.Eof),

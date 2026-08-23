@@ -64,6 +64,19 @@ test("settles a cancelling task as cancelled", () => {
   );
 });
 
+test("repeated cancel is idempotent without republishing state", () => {
+  const { lifecycle, eventBus } = makeLifecycle();
+  lifecycle.createTask("task-1");
+
+  assert.equal(lifecycle.requestCancel("task-1", "first"), true);
+  assert.equal(lifecycle.requestCancel("task-1", "second"), true);
+
+  assert.deepEqual(
+    eventBus.drain().map((event) => event.kind),
+    [EventKind.TaskStarted, EventKind.TaskStateChanged],
+  );
+});
+
 test("allows only one active task", () => {
   const { lifecycle } = makeLifecycle();
   lifecycle.createTask("task-1");

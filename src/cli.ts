@@ -25,11 +25,18 @@ import { EventProjector } from "./events.ts";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
 import { findProjectRoot } from "./project-instructions.ts";
+import { routeHumanIntent } from "./runtime/human-intent-router.ts";
+import type { SessionAction } from "./runtime/session-action.ts";
+import {
+  makeCancelIntent,
+  makeFollowUpIntent,
+  makePromptIntent,
+} from "./runtime/user-intent.ts";
 import {
   SmallModelSemanticClassifier,
   type ChatCompletionsClient,
 } from "./semantic-classifier.ts";
-import { AgentSession, type Submission } from "./session.ts";
+import { AgentSession, SessionState, type Submission } from "./session.ts";
 import {
   BufferedInputKind,
   EditorState,
@@ -52,6 +59,7 @@ import {
   type InputDecoderHooks,
   type InputDecoderLike,
   type LoopInputSource,
+  type SubmitOptions,
 } from "./terminal/ui.ts";
 import { ToolRegistry } from "./tools.ts";
 import { EventLog, WebDashboard, consumePullBuffer } from "./web.ts";
@@ -564,8 +572,10 @@ export async function runRepl(
 
 /** Minimal structural view of AgentSession the REPL loops rely on. */
 export interface SessionReplSession {
+  readonly state: SessionState;
   readonly eventBus: { flush(): Promise<unknown> };
   submitInput(content: string): Promise<Submission>;
+  submitAction(action: SessionAction): Promise<Submission | CommandResult | boolean>;
   queueStatus(): QueueStatus;
   publishNotice(text: string, options?: { style?: string }): unknown;
   waitForIdle(timeoutMs?: number): Promise<boolean>;
@@ -579,7 +589,7 @@ export interface SessionUiLike {
   showGoodbye?(): void;
   showError?(message: string): void;
   prompt?(): string | Promise<string>;
-  run?(onSubmit: (text: string) => void): void | Promise<void>;
+  run?(onSubmit: (text: string, options?: SubmitOptions) => void): void | Promise<void>;
   requestExit?(): void;
   close?(): void;
   startEventRenderer?(): void;
@@ -588,6 +598,11 @@ export interface SessionUiLike {
 }
 
 export type CommandHandler = (command: string) => CommandResult | Promise<CommandResult>;
+
+interface SubmissionRequest {
+  readonly text: string;
+  readonly options?: SubmitOptions;
+}
 
 function suggestCommand(ui: SessionUiLike | null, name: string): string | null {
   const registry = ui?.commandRegistry as
@@ -606,38 +621,41 @@ async function handleSessionInput(
   commandHandler: CommandHandler | undefined,
   ui: SessionUiLike | null,
   userInput: string,
+  options: SubmitOptions = {},
 ): Promise<boolean> {
   if (!userInput) {
     return true;
   }
-  if (userInput.startsWith("/")) {
-    const result = commandHandler === undefined
-      ? { status: "not_found", command: userInput.split(/\s/)[0] ?? userInput } as const
-      : await commandHandler(userInput);
-    if (result.status === "handled" || result.status === "blocked") {
-      return true;
-    }
-    if (result.status === "exit_requested") {
-      return false;
-    }
-    if (result.status === "error") {
-      session.publishNotice(`Invalid command: ${errorMessage(result.error)}`, {
-        style: "bold red",
-      });
-      return true;
-    }
-    const suggestion = suggestCommand(ui, result.command);
-    const suffix = suggestion ? ` Did you mean ${suggestion}?` : "";
-    session.publishNotice(`Unknown command: ${result.command}.${suffix}`);
-    return true;
+  const intent = options.strategy === "follow_up"
+    ? makeFollowUpIntent(userInput, "editor")
+    : makePromptIntent(userInput, "editor");
+  const action = routeHumanIntent(intent, session.state);
+  if (action.type === "exit") {
+    return false;
   }
+  let result: Submission | CommandResult | boolean;
   let submission: Submission;
   try {
-    submission = await session.submitInput(userInput);
+    result = await session.submitAction(action);
   } catch (error) {
     session.publishNotice(`Error: ${errorMessage(error)}`, { style: "bold red" });
     return true;
   }
+  if (isCommandResult(result)) {
+    return handleCommandResult(session, ui, result);
+  }
+  if (typeof result === "boolean") {
+    if (action.type === "command") {
+      const commandResult = result
+        ? { status: "handled" } as const
+        : commandHandler === undefined
+          ? { status: "not_found", command: action.name } as const
+          : await commandHandler(action.text ?? [action.name, ...action.arguments].join(" "));
+      return handleCommandResult(session, ui, commandResult);
+    }
+    return true;
+  }
+  submission = result;
   if (submission.queued) {
     const status = session.queueStatus();
     session.publishNotice(
@@ -651,6 +669,38 @@ async function handleSessionInput(
   return true;
 }
 
+function isCommandResult(value: unknown): value is CommandResult {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "status" in value &&
+    typeof (value as { status?: unknown }).status === "string"
+  );
+}
+
+async function handleCommandResult(
+  session: SessionReplSession,
+  ui: SessionUiLike | null,
+  result: CommandResult,
+): Promise<boolean> {
+  if (result.status === "handled" || result.status === "blocked") {
+    return true;
+  }
+  if (result.status === "exit_requested") {
+    return false;
+  }
+  if (result.status === "error") {
+    session.publishNotice(`Invalid command: ${errorMessage(result.error)}`, {
+      style: "bold red",
+    });
+    return true;
+  }
+  const suggestion = suggestCommand(ui, result.command);
+  const suffix = suggestion ? ` Did you mean ${suggestion}?` : "";
+  session.publishNotice(`Unknown command: ${result.command}.${suffix}`);
+  return true;
+}
+
 /** Keep accepting input while AgentSession executes in the background. */
 export async function runSessionRepl(
   session: SessionReplSession,
@@ -658,7 +708,7 @@ export async function runSessionRepl(
     commandHandler?: CommandHandler | undefined;
     ui: SessionUiLike;
     /** Override for driving a UI whose run() does not read real stdin. */
-    runUi?: ((onSubmit: (text: string) => void) => void | Promise<void>) | undefined;
+    runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
   },
 ): Promise<boolean> {
   if (options.runUi !== undefined || typeof options.ui.run === "function") {
@@ -720,7 +770,7 @@ async function runClassicSessionRepl(
 }
 
 interface Coordinator {
-  submit(text: string): void;
+  submit(request: SubmissionRequest): void;
   stop(): void;
   readonly done: Promise<void>;
   readonly errors: unknown[];
@@ -737,7 +787,7 @@ function startCoordinator(
   commandHandler: CommandHandler | undefined,
   ui: SessionUiLike,
 ): Coordinator {
-  const queue: Array<string | null> = [];
+  const queue: Array<SubmissionRequest | null> = [];
   let wake: (() => void) | null = null;
   let stopping = false;
   let unfinished = 0;
@@ -758,7 +808,13 @@ function startCoordinator(
         if (item === null || stopping) {
           return;
         }
-        await handleSessionInput(session, commandHandler, ui, item);
+        await handleSessionInput(
+          session,
+          commandHandler,
+          ui,
+          item.text,
+          item.options ?? {},
+        );
       } catch (error) {
         errors.push(error);
       } finally {
@@ -767,9 +823,9 @@ function startCoordinator(
     }
   })();
   return {
-    submit(text: string): void {
+    submit(request: SubmissionRequest): void {
       unfinished += 1;
-      queue.push(text);
+      queue.push(request);
       wake?.();
     },
     stop(): void {
@@ -832,23 +888,30 @@ async function runPersistentSessionRepl(
   options: {
     commandHandler?: CommandHandler | undefined;
     ui: SessionUiLike;
-    runUi?: ((onSubmit: (text: string) => void) => void | Promise<void>) | undefined;
+    runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
   },
 ): Promise<boolean> {
   const { commandHandler, ui } = options;
   const runUi =
-    options.runUi ?? ((onSubmit: (text: string) => void) => ui.run!(onSubmit));
+    options.runUi ??
+    ((onSubmit: (text: string, options?: SubmitOptions) => void) => ui.run!(onSubmit));
   ui.showWelcome?.();
   const coordinator = startCoordinator(session, commandHandler, ui);
   let cleanShutdown = false;
   try {
-    const enqueue = (userInput: string): void => {
+    const enqueue = (userInput: string, submitOptions: SubmitOptions = {}): void => {
       // Exit is a local UI operation and should not wait behind a slow
       // semantic classification of an earlier queued message.
       if (userInput === "/exit") {
         void (async () => {
           try {
-            await handleSessionInput(session, commandHandler, ui, userInput);
+            await handleSessionInput(
+              session,
+              commandHandler,
+              ui,
+              userInput,
+              submitOptions,
+            );
           } catch (error) {
             try {
               session.publishNotice(`Error: ${errorMessage(error)}`, {
@@ -862,7 +925,7 @@ async function runPersistentSessionRepl(
         ui.requestExit?.();
         return;
       }
-      coordinator.submit(userInput);
+      coordinator.submit({ text: userInput, options: submitOptions });
     };
     await runUi(enqueue);
   } finally {
@@ -1101,7 +1164,7 @@ class ProductionEditor implements EditorLike {
 async function runTerminalUi(
   ui: TerminalUI,
   driver: StdTerminalDriver,
-  onSubmit: (text: string) => void,
+  onSubmit: (text: string, options?: SubmitOptions) => void,
 ): Promise<void> {
   const loop = ui.interactiveLoop;
   if (loop === null) {
@@ -1499,8 +1562,23 @@ export async function main(
 
   if (terminalUi !== null) {
     terminalUi.setCommandRegistry(commands.registry);
-    terminalUi.setCancelCallback((command) => {
-      void commandDispatcher?.(command);
+    terminalUi.setCancelCallback(() => {
+      const action = routeHumanIntent(
+        makeCancelIntent("keyboard", "editor"),
+        runtime.state,
+      );
+      void runtime.submitAction(action);
+    });
+    terminalUi.setKeyActionCallback((action) => {
+      if (action === "select_model") {
+        void commandDispatcher?.("/model");
+        return;
+      }
+      if (action === "clear_screen") {
+        void commandDispatcher?.("/clear");
+        return;
+      }
+      runtime.publishNotice(`Key action is unavailable: ${action}.`);
     });
     terminalUi.setRuntimeRunningCallback(() => runtime.activeTask !== null);
   }
