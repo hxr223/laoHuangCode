@@ -72,6 +72,8 @@ import { OverlayManager } from "../tui/overlay-manager.ts";
 // Shared input contracts (implemented by terminal/input.ts once landed)
 // ---------------------------------------------------------------------------
 
+const WELCOME_TEXT = "hello, welcome to laoHuang";
+
 const KITTY_LOCK_MODIFIER_MASK = 64 | 128;
 
 function matchesKittyModifiers(modifier: number, expected: number): boolean {
@@ -2120,8 +2122,8 @@ export class TerminalUI {
     }
     if (this.#loop !== null) {
       this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: "laoHuangCode  /help for commands",
+        createTranscriptBlock("notice", "welcome", {
+          text: WELCOME_TEXT,
           style: `bold ${this.theme.color("accent")}`,
         }),
       );
@@ -2136,7 +2138,7 @@ export class TerminalUI {
       return;
     }
     this.#output(
-      ansiStyledText(`bold ${this.theme.color("accent")}`, "laoHuangCode") +
+      ansiStyledText(`bold ${this.theme.color("accent")}`, WELCOME_TEXT) +
         "  " +
         ansiStyledText(this.theme.color("dim"), "/help for commands"),
     );
