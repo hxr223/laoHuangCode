@@ -1,165 +1,16 @@
-/** Deterministic routing, task registry, and runtime input queues. */
+/** Deterministic routing and runtime input queues. */
 
-import { CancelToken } from "./cancellation.ts";
 import {
   EventKind,
   EventSource,
   type AnyEventEnvelope,
 } from "./events.ts";
-
-// ---------------------------------------------------------------------------
-// Task registry
-// ---------------------------------------------------------------------------
-
-export const TaskState = {
-  RunningModel: "running_model",
-  RunningTools: "running_tools",
-  Cancelling: "cancelling",
-  Cancelled: "cancelled",
-  Completed: "completed",
-  Failed: "failed",
-} as const;
-
-export type TaskState = (typeof TaskState)[keyof typeof TaskState];
-
-const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
-  TaskState.Cancelled,
-  TaskState.Completed,
-  TaskState.Failed,
-]);
-
-const ALLOWED_TASK_TRANSITIONS: ReadonlyMap<TaskState, ReadonlySet<TaskState>> =
-  new Map([
-    [
-      TaskState.RunningModel,
-      new Set([
-        TaskState.RunningTools,
-        TaskState.Cancelling,
-        TaskState.Completed,
-        TaskState.Failed,
-      ]),
-    ],
-    [
-      TaskState.RunningTools,
-      new Set([
-        TaskState.RunningModel,
-        TaskState.Cancelling,
-        TaskState.Completed,
-        TaskState.Failed,
-      ]),
-    ],
-    [TaskState.Cancelling, new Set([TaskState.Cancelled])],
-    [TaskState.Cancelled, new Set()],
-    [TaskState.Completed, new Set()],
-    [TaskState.Failed, new Set()],
-  ]);
-
-export interface TaskRecord {
-  readonly taskId: string;
-  readonly state: TaskState;
-  readonly cancelToken: CancelToken;
-  readonly result: string | null;
-  readonly error: string | null;
-}
-
-export interface RegisterTaskOptions {
-  state?: TaskState;
-  cancelToken?: CancelToken;
-  activate?: boolean;
-}
-
-export interface TransitionOptions {
-  result?: string;
-  error?: string;
-}
-
-/** Task records with at most one active task. */
-export class TaskRegistry {
-  private readonly tasks = new Map<string, TaskRecord>();
-  private activeTaskIdValue: string | null = null;
-
-  get activeTaskId(): string | null {
-    return this.activeTaskIdValue;
-  }
-
-  register(taskId: string, options: RegisterTaskOptions = {}): TaskRecord {
-    const state = options.state ?? TaskState.RunningModel;
-    const activate = options.activate ?? true;
-    if (this.tasks.has(taskId)) {
-      throw new Error(`task already exists: ${taskId}`);
-    }
-    if (activate && this.activeTaskIdValue !== null) {
-      throw new Error("another task is already active");
-    }
-    const record: TaskRecord = {
-      taskId,
-      state,
-      cancelToken: options.cancelToken ?? new CancelToken(),
-      result: null,
-      error: null,
-    };
-    this.tasks.set(taskId, record);
-    if (activate && !TERMINAL_TASK_STATES.has(state)) {
-      this.activeTaskIdValue = taskId;
-    }
-    return { ...record };
-  }
-
-  get(taskId: string): TaskRecord | null {
-    const record = this.tasks.get(taskId);
-    return record === undefined ? null : { ...record };
-  }
-
-  active(): TaskRecord | null {
-    if (this.activeTaskIdValue === null) {
-      return null;
-    }
-    const record = this.tasks.get(this.activeTaskIdValue);
-    return record === undefined ? null : { ...record };
-  }
-
-  transition(
-    taskId: string,
-    state: TaskState,
-    options: TransitionOptions = {},
-  ): TaskRecord {
-    const record = this.tasks.get(taskId);
-    if (record === undefined) {
-      throw new Error(`unknown task: ${taskId}`);
-    }
-    if (
-      state !== record.state &&
-      !ALLOWED_TASK_TRANSITIONS.get(record.state)?.has(state)
-    ) {
-      throw new Error(
-        `invalid task transition: ${record.state} -> ${state}`,
-      );
-    }
-    const next: TaskRecord = {
-      ...record,
-      state,
-      result: options.result !== undefined ? options.result : record.result,
-      error: options.error !== undefined ? options.error : record.error,
-    };
-    if (TERMINAL_TASK_STATES.has(state)) {
-      if (this.activeTaskIdValue === taskId) {
-        this.activeTaskIdValue = null;
-      }
-    } else {
-      const active = this.activeTaskIdValue;
-      if (active !== null && active !== taskId) {
-        throw new Error("another task is already active");
-      }
-      this.activeTaskIdValue = taskId;
-    }
-    this.tasks.set(taskId, next);
-    return { ...next };
-  }
-
-  records(): TaskRecord[] {
-    return [...this.tasks.values()].map((record) => ({ ...record }));
-  }
-}
+import {
+  TaskState,
+  isTerminalTaskState,
+  type TaskRecord,
+  type TaskRegistry,
+} from "./runtime/task-lifecycle.ts";
 
 // ---------------------------------------------------------------------------
 // Route decisions
@@ -359,7 +210,7 @@ export class EventRouter {
       if (
         active === null ||
         target.taskId !== active.taskId ||
-        TERMINAL_TASK_STATES.has(target.state)
+        isTerminalTaskState(target.state)
       ) {
         return {
           taskId: target.taskId,

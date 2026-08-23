@@ -11,9 +11,8 @@ import {
   EventRouter,
   PendingQueue,
   QueueOverflowError,
-  TaskRegistry,
-  TaskState,
 } from "../src/routing.ts";
+import { TaskRegistry, TaskState } from "../src/runtime/task-lifecycle.ts";
 
 function userEvent(
   content: string,
