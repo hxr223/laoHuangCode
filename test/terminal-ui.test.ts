@@ -13,6 +13,7 @@ import {
   type CommandRegistryLike,
   type LoopInputSource,
 } from "../src/terminal/ui.ts";
+import { makeToggleToolOutputDisplayAction } from "../src/ui/display-actions.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
@@ -111,6 +112,36 @@ test("event publication does not write before loop drains", () => {
   assert.equal(terminal.writes(), "");
   ui.drainLoop();
   assert.ok(terminal.writes().includes("queued"));
+});
+
+test("terminal-local backpressure produces a dropped display marker", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  for (let index = 0; index < 4_100; index += 1) {
+    ui.publishEvent(event("model.reasoning_delta", "request-1", {
+      text: "x",
+      ...(index === 4_099 ? { _projection_dropped: 5 } : {}),
+    }));
+  }
+  ui.publishEvent(event("task.completed", "task-1"));
+  ui.drainLoop();
+
+  assert.match(ui.buildHistoryLines(80).join("\n"), /省略了 137 个流式展示事件/);
+});
+
+test("tool output is folded by default and shown by a local display toggle", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-1", { name: "bash", arguments: {} }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-1", {
+    stream: "stdout",
+    text: "full tool output",
+  }));
+
+  assert.ok(!ui.buildHistoryLines(80).join("\n").includes("full tool output"));
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  assert.ok(ui.buildHistoryLines(80).join("\n").includes("full tool output"));
 });
 
 test("input bytes do not mutate before loop drains", () => {
