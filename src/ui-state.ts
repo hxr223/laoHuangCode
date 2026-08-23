@@ -214,15 +214,14 @@ export class UIEventReducer {
     }
     if (kind === "tool.output_delta") {
       const stream = String(payload.stream ?? "stdout");
-      if (stream === "stdout") {
-        // Stdout remains available to the model in the tool result,
-        // but it is intentionally absent from user-facing UI state.
-        return null;
-      }
       const text = String(payload.text ?? payload.chunk ?? "");
       const tool = this.state.activeTools.get(correlationId);
       if (tool !== undefined) {
-        tool.stderr = (tool.stderr + text).slice(-UIEventReducer.#TOOL_BUFFER_LIMIT);
+        if (stream === "stdout") {
+          tool.stdout = (tool.stdout + text).slice(-UIEventReducer.#TOOL_BUFFER_LIMIT);
+        } else {
+          tool.stderr = (tool.stderr + text).slice(-UIEventReducer.#TOOL_BUFFER_LIMIT);
+        }
       }
       return createUpdate(kind, { text, correlationId, stream });
     }
