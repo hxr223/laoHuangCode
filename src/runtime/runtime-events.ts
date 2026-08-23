@@ -15,6 +15,18 @@ export const RuntimeEventKind = {
 export type RuntimeEventKind =
   (typeof RuntimeEventKind)[keyof typeof RuntimeEventKind];
 
+/** Model-stream event names forwarded through the runtime boundary. */
+export type ModelRuntimeEventType =
+  | "model_text_delta"
+  | "model_reasoning_delta"
+  | "model_tool_call_delta"
+  | "model_response_validating";
+
+export type ModelRuntimeEventHandler = (
+  eventType: ModelRuntimeEventType,
+  payload: Record<string, unknown>,
+) => void;
+
 export interface RuntimeEvent<
   K extends RuntimeEventKind = RuntimeEventKind,
   P = unknown,

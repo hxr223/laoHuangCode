@@ -11,6 +11,8 @@ import {
 } from "../src/runtime/agent-step-runner.ts";
 import { HistoryCommitter } from "../src/runtime/history-committer.ts";
 import { GuardPolicy } from "../src/runtime/guard-policy.ts";
+import { ModelRuntime } from "../src/runtime/model-runtime.ts";
+import { ToolRuntime } from "../src/runtime/tool-runtime.ts";
 import type { ToolResult } from "../src/tools.ts";
 
 class TestCancelToken {
@@ -95,13 +97,14 @@ function createRunner(options: {
     client: { chat: { completions: undefined as never } },
     model: "test-model",
     provider: null,
-    adapter: options.adapter,
-    tools: {
+    modelRuntime: new ModelRuntime(options.adapter),
+    toolRuntime: new ToolRuntime({
       definitions: [],
       orderedSpecs: [],
       executionMode: () => undefined,
-      execute: () => ({ ok: true }),
-    },
+      execute: async () => options.executeTool?.() ?? { ok: true, content: "tool result" },
+    }),
+    toolDefinitions: [],
     toolExecution: "parallel",
     history: committer,
     guardPolicy: new GuardPolicy({
@@ -119,8 +122,6 @@ function createRunner(options: {
     emitLegacy: () => {},
     injectBaselineInstructions: () => {},
     discoverForTouchedPaths: () => {},
-    executeTool: async () =>
-      options.executeTool?.() ?? { ok: true, content: "tool result" },
     onToolEvent: () => {},
     createError: (message, cause) => new Error(message, { cause }),
     createCancelled: (message, cause) => new AgentCancelled(message, { cause }),

@@ -28,11 +28,10 @@ import {
   type ModelAdapter,
 } from "./model-adapter.ts";
 import type {
-  ToolDefinition,
   ToolExecutionContextLike,
   ToolExecutionMode,
+  ToolRegistryLike,
   ToolResult,
-  ToolSpec,
 } from "./tools.ts";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import {
@@ -50,6 +49,8 @@ import {
 } from "./runtime/agent-step-runner.ts";
 import { GuardPolicy } from "./runtime/guard-policy.ts";
 import { HistoryCommitter } from "./runtime/history-committer.ts";
+import { ModelRuntime } from "./runtime/model-runtime.ts";
+import { ToolRuntime } from "./runtime/tool-runtime.ts";
 
 export { FORCED_FINAL_PROMPT };
 
@@ -86,16 +87,7 @@ export type ToolEventCallback = (
 export type { ChatClientLike } from "./model-adapter.ts";
 
 /** Structural minimum of ToolRegistry (tools.ts) the agent relies on. */
-export interface AgentToolRegistry {
-  readonly definitions: readonly ToolDefinition[];
-  readonly orderedSpecs: readonly ToolSpec[];
-  executionMode(name: string): ToolExecutionMode | undefined;
-  execute(
-    name: string,
-    args: Record<string, unknown>,
-    context?: ToolExecutionContextLike,
-  ): Promise<ToolResult> | ToolResult;
-}
+export type AgentToolRegistry = ToolRegistryLike;
 
 /** Pending user input handed over at a session safe point. */
 export interface PendingInputBatchLike {
@@ -179,6 +171,8 @@ export class CodingAgent {
   provider: string | null;
   /** Provider-neutral model access; resolved from `provider`. */
   private adapter: ModelAdapter;
+  private modelRuntime: ModelRuntime;
+  private readonly toolRuntime: ToolRuntime;
   readonly tools: AgentToolRegistry;
   readonly maxTotalTokens: number;
   readonly maxElapsedSeconds: number;
@@ -216,7 +210,12 @@ export class CodingAgent {
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider ?? null;
     this.adapter = defaultAdapterRegistry.resolve(this.provider);
+    this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
+    this.toolRuntime = new ToolRuntime(this.tools, {
+      createExecutionContext: (toolCallId, cancelToken) =>
+        makeToolContext(this.activeContext, toolCallId, cancelToken),
+    });
     // Canonicalize so instruction scopes line up with the registry's
     // realpath-resolved touched paths even when the cwd contains symlinks.
     this.instructionRoot =
@@ -243,6 +242,7 @@ export class CodingAgent {
     this.model = options.model;
     this.provider = options.provider;
     this.adapter = defaultAdapterRegistry.resolve(this.provider);
+    this.modelRuntime = new ModelRuntime(this.adapter);
     this.emit("model_switched", {
       provider: options.provider,
       model: options.model,
@@ -268,8 +268,9 @@ export class CodingAgent {
         client: this.client,
         model: this.model,
         provider: this.provider,
-        adapter: this.adapter,
-        tools: this.tools,
+        modelRuntime: this.modelRuntime,
+        toolRuntime: this.toolRuntime,
+        toolDefinitions: this.tools.definitions as unknown as Array<Record<string, unknown>>,
         toolExecution: this.toolExecution,
         history: new HistoryCommitter({
           messages: this.messages,
@@ -295,20 +296,6 @@ export class CodingAgent {
         emitLegacy: (eventType, payload) => this.emitLegacy(eventType, payload),
         injectBaselineInstructions: (token) => this.injectBaselineInstructions(token),
         discoverForTouchedPaths: (paths) => this.discoverForTouchedPaths(paths),
-        executeTool: async (name, args, toolCallId, token) => {
-          if (isCancelled(token)) {
-            return cancelledToolResult(token);
-          }
-          try {
-            return await this.tools.execute(
-              name,
-              args,
-              makeToolContext(context, toolCallId, token),
-            );
-          } catch (error) {
-            return { ok: false, error: errorMessage(error) };
-          }
-        },
         onToolEvent: (name, args, result) => {
           this.onToolEvent?.(name, args, result);
         },
@@ -529,16 +516,4 @@ function raiseIfCancelled(token: CancelToken | null): void {
   if (isCancelled(token)) {
     throw new AgentCancelled(token?.reason || "cancelled");
   }
-}
-
-function cancelledToolResult(token: CancelToken | null): ToolResult {
-  return {
-    ok: false,
-    status: "cancelled",
-    error: token?.reason || "cancelled",
-  };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
