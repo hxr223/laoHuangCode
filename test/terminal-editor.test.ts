@@ -77,6 +77,31 @@ test("decoder emits ctrl+c as neutral key input", () => {
   ]);
 });
 
+test("decoder emits enhanced alt enter and shift tab as neutral keys", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;3u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[27;3;13~")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;2u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[27;2;9~")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+});
+
+test("decoder keeps shifted enter as editor newline", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;2u")), [
+    inputAction(InputActionKind.Newline),
+  ]);
+});
+
 test("decoder drops unknown controls and unrecognized csi as units", () => {
   const decoder = new RawInputDecoder();
 

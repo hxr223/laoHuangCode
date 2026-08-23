@@ -934,8 +934,56 @@ const SPECIAL_ESCAPE_ACTIONS: ReadonlyMap<string, InputActionKind> = new Map([
 ]);
 
 function decodeSpecialEscapeAction(sequence: string): InputAction | null {
+  const modified = decodeModifiedControlKey(sequence);
+  if (modified !== null) {
+    return modified;
+  }
   const kind = SPECIAL_ESCAPE_ACTIONS.get(sequence);
   return kind !== undefined ? inputAction(kind) : null;
+}
+
+function decodeModifiedControlKey(sequence: string): InputAction | null {
+  const kitty = /^\x1b\[(13|57414|9);(\d+)u$/.exec(sequence);
+  if (kitty !== null) {
+    const code = kitty[1]!;
+    const modifier = Number.parseInt(kitty[2]!, 10) - 1;
+    if ((code === "13" || code === "57414") && modifier === 2) {
+      return inputAction(
+        InputActionKind.Key,
+        "",
+        makeKeyInput("enter", { alt: true }),
+      );
+    }
+    if (code === "9" && modifier === 1) {
+      return inputAction(
+        InputActionKind.Key,
+        "",
+        makeKeyInput("tab", { shift: true }),
+      );
+    }
+    return null;
+  }
+  const modifyOtherKeys = /^\x1b\[27;(\d+);(\d+)~$/.exec(sequence);
+  if (modifyOtherKeys === null) {
+    return null;
+  }
+  const modifier = Number.parseInt(modifyOtherKeys[1]!, 10) - 1;
+  const codepoint = Number.parseInt(modifyOtherKeys[2]!, 10);
+  if (codepoint === 13 && modifier === 2) {
+    return inputAction(
+      InputActionKind.Key,
+      "",
+      makeKeyInput("enter", { alt: true }),
+    );
+  }
+  if (codepoint === 9 && modifier === 1) {
+    return inputAction(
+      InputActionKind.Key,
+      "",
+      makeKeyInput("tab", { shift: true }),
+    );
+  }
+  return null;
 }
 
 function decodePrintableKey(sequence: string): string | null {

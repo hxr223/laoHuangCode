@@ -629,13 +629,14 @@ async function handleSessionInput(
   const intent = options.strategy === "follow_up"
     ? makeFollowUpIntent(userInput, "editor")
     : makePromptIntent(userInput, "editor");
-  const action = routeHumanIntent(intent, session.state);
-  if (action.type === "exit") {
-    return false;
-  }
+  let action: SessionAction;
   let result: Submission | CommandResult | boolean;
   let submission: Submission;
   try {
+    action = routeHumanIntent(intent, session.state);
+    if (action.type === "exit") {
+      return false;
+    }
     result = await session.submitAction(action);
   } catch (error) {
     session.publishNotice(`Error: ${errorMessage(error)}`, { style: "bold red" });

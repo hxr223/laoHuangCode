@@ -80,7 +80,7 @@ test("loop preserves first turn while second response streams", () => {
   assert.ok(terminal.writes().includes("answer two"));
 });
 
-test("alt enter submits a follow-up action from the live loop", async () => {
+test("alt enter submits a follow-up action from the live loop", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
   const submitted: Array<{ text: string; strategy?: string }> = [];
@@ -88,11 +88,28 @@ test("alt enter submits a follow-up action from the live loop", async () => {
   ui.startLoop((text, options) => {
     submitted.push({ text, strategy: options?.strategy });
   });
-  ui.feedInputBytes(bytes("later\x1b\r"));
-  await new Promise((resolve) => setTimeout(resolve, 60));
+  ui.feedInputBytes(bytes("later\x1b[13;3u"));
   ui.drainLoop();
 
   assert.deepEqual(submitted, [{ text: "later", strategy: "follow_up" }]);
+});
+
+test("enhanced shift tab reaches the reasoning cycle action", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const actions: string[] = [];
+  const ui = new TerminalUI({
+    driver: terminal,
+    capabilities: { reasoning: true },
+    keyActionCallback: (action) => {
+      actions.push(action);
+    },
+  });
+
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("\x1b[9;2u\x1b[27;2;9~"));
+  ui.drainLoop();
+
+  assert.deepEqual(actions, ["cycle_thinking", "cycle_thinking"]);
 });
 
 test("ctrl l invokes the model selection key action", () => {
