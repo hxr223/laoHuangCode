@@ -73,17 +73,37 @@ export function isSessionAction(value: unknown): value is SessionAction {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  const action = value as { id?: unknown; type?: unknown; source?: unknown };
-  return (
-    typeof action.id === "string" &&
-    typeof action.source === "string" &&
-    (action.type === "prompt" ||
-      action.type === "command" ||
-      action.type === "steer" ||
-      action.type === "follow_up" ||
-      action.type === "cancel" ||
-      action.type === "approval" ||
-      action.type === "answer" ||
-      action.type === "exit")
-  );
+  const action = value as {
+    id?: unknown;
+    type?: unknown;
+    source?: unknown;
+    text?: unknown;
+    name?: unknown;
+    arguments?: unknown;
+    reason?: unknown;
+  };
+  if (typeof action.id !== "string" || typeof action.source !== "string") {
+    return false;
+  }
+  switch (action.type) {
+    case "prompt":
+    case "steer":
+    case "follow_up":
+    case "approval":
+    case "answer":
+      return typeof action.text === "string";
+    case "command":
+      return (
+        typeof action.name === "string" &&
+        Array.isArray(action.arguments) &&
+        action.arguments.every((item) => typeof item === "string") &&
+        (action.text === undefined || typeof action.text === "string")
+      );
+    case "cancel":
+      return typeof action.reason === "string";
+    case "exit":
+      return true;
+    default:
+      return false;
+  }
 }

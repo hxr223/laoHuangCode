@@ -1,10 +1,7 @@
 /** Convert user-facing intents into the session action protocol. */
 
 import { shlexSplit } from "../commands.ts";
-import {
-  SessionState,
-  type SessionState as SessionStateValue,
-} from "../session.ts";
+import type { SessionState as SessionStateValue } from "../session.ts";
 import type { UserIntent } from "./user-intent.ts";
 import type { SessionAction } from "./session-action.ts";
 import {
@@ -13,15 +10,18 @@ import {
   makeCancelAction,
   makeCommandAction,
   makeExitAction,
-  makeFollowUpAction,
   makePromptAction,
   makeSteerAction,
+  makeFollowUpAction,
 } from "./session-action-protocol.ts";
 
 function commandAction(text: string, source: string): SessionAction {
   const [name, ...arguments_] = shlexSplit(text);
   if (name === undefined) {
     return makePromptAction(text, source);
+  }
+  if (name === "/exit" && arguments_.length === 0) {
+    return makeExitAction(source);
   }
   return makeCommandAction(name, arguments_, source, text);
 }
@@ -35,9 +35,8 @@ export function routeHumanIntent(
       if (intent.text.startsWith("/")) {
         return commandAction(intent.text, intent.source);
       }
-      return state === SessionState.Idle
-        ? makePromptAction(intent.text, intent.source)
-        : makeFollowUpAction(intent.text, intent.source);
+      void state;
+      return makePromptAction(intent.text, intent.source);
     case "command":
       return makeCommandAction(intent.name, intent.arguments, intent.source);
     case "steer":

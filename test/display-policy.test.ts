@@ -84,3 +84,10 @@ test("tool output toggles remain local display actions", () => {
   assert.deepEqual(action, { type: "toggle_tool_output", expanded: true });
   assert.equal(isSessionAction(action), false);
 });
+
+test("session action guard rejects malformed variants", () => {
+  assert.equal(
+    isSessionAction({ id: "action-1", type: "prompt", source: "editor" }),
+    false,
+  );
+});

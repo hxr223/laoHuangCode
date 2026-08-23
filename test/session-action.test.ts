@@ -5,6 +5,7 @@ import {
   makeAnswerIntent,
   makeApprovalIntent,
   makeCancelIntent,
+  makeFollowUpIntent,
   makePromptIntent,
 } from "../src/runtime/user-intent.ts";
 import { routeHumanIntent } from "../src/runtime/human-intent-router.ts";
@@ -81,6 +82,30 @@ test("keyboard cancellation creates a cancel action", () => {
     type: action.type,
     reason: "reason" in action ? action.reason : undefined,
   }, { type: "cancel", reason: "keyboard" });
+});
+
+test("ordinary prompt action leaves semantic routing unresolved", () => {
+  const action = routeHumanIntent(
+    makePromptIntent("classify this", "editor"),
+    SessionState.Running,
+  );
+
+  assert.deepEqual(
+    { type: action.type, text: "text" in action ? action.text : undefined },
+    { type: "prompt", text: "classify this" },
+  );
+});
+
+test("follow-up intent creates an explicit follow-up action", () => {
+  const action = routeHumanIntent(
+    makeFollowUpIntent("next", "editor"),
+    SessionState.Running,
+  );
+
+  assert.deepEqual(
+    { type: action.type, text: "text" in action ? action.text : undefined },
+    { type: "follow_up", text: "next" },
+  );
 });
 
 test("approval creates an approval action", () => {

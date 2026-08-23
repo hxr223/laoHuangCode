@@ -536,7 +536,14 @@ export class RawInputDecoder {
     const second = this.buffer[1]!;
     if (second === 10 || second === 13) {
       this.buffer = this.buffer.subarray(2);
-      return { status: "action", action: inputAction(InputActionKind.Newline) };
+      return {
+        status: "action",
+        action: inputAction(
+          InputActionKind.Key,
+          "",
+          makeKeyInput("enter", { alt: true }),
+        ),
+      };
     }
     if (second === 0x5b /* [ */) {
       let final: number | null = null;

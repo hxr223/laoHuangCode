@@ -61,6 +61,13 @@ test("uses an empty action binding to disable a default", () => {
   assert.equal(manager.resolve(parseKey("ctrl+o"), ["terminal"]), null);
 });
 
+test("default session bindings expose model selection and follow-up submit", () => {
+  const manager = new KeybindingsManager(DEFAULT_KEYBINDINGS);
+
+  assert.equal(manager.resolve(parseKey("ctrl+l"), ["terminal"]), "select_model");
+  assert.equal(manager.resolve(parseKey("alt+enter"), ["editor"]), "submit_follow_up");
+});
+
 test("finds the primary key hint for an action", () => {
   const manager = new KeybindingsManager([
     { context: "editor", key: "ctrl+o", action: "toggle_tool_output" },

@@ -220,6 +220,9 @@ export class TaskLifecycle {
     if (record === null || isTerminalTaskState(record.state)) {
       return false;
     }
+    if (record.state === TaskState.Cancelling) {
+      return true;
+    }
     this.taskRegistry.transition(taskId, TaskState.Cancelling);
     this.onCancelling(taskId);
     this.publishState(taskId, TaskState.Cancelling);
