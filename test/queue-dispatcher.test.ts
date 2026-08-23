@@ -11,11 +11,14 @@ import {
   DeadLetterQueue,
   EventRouter,
   PendingQueue,
-  TaskRegistry,
-  TaskState,
   type RoutedEvent,
 } from "../src/routing.ts";
 import { QueueDispatcher } from "../src/runtime/queue-dispatcher.ts";
+import {
+  TaskRegistry,
+  TaskState,
+  type TaskState as TaskStateValue,
+} from "../src/runtime/task-lifecycle.ts";
 import type { SessionAction } from "../src/runtime/session-action.ts";
 
 function action(
@@ -62,7 +65,9 @@ function withDestination(
   };
 }
 
-function runningRegistry(state: TaskState = TaskState.RunningModel): TaskRegistry {
+function runningRegistry(
+  state: TaskStateValue = TaskState.RunningModel,
+): TaskRegistry {
   const registry = new TaskRegistry();
   registry.register("task-1", { state });
   return registry;

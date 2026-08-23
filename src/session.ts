@@ -18,20 +18,24 @@ import {
   HeldQueue,
   PendingQueue,
   QueueOverflowError,
-  TaskRegistry,
-  TaskState,
   combineInput,
   type RouteDecision,
   type RoutedEvent,
   type SafetyPolicy,
   type SemanticClassifier,
-  type TaskRecord,
 } from "./routing.ts";
 import {
   QueueDispatcher,
   QueueDispatchStatus,
 } from "./runtime/queue-dispatcher.ts";
 import type { SessionAction } from "./runtime/session-action.ts";
+import {
+  TaskLifecycle,
+  TaskRegistry,
+  TaskState,
+  isTerminalTaskState,
+  type TaskRecord,
+} from "./runtime/task-lifecycle.ts";
 
 export const SessionState = {
   Idle: "idle",
@@ -41,12 +45,6 @@ export const SessionState = {
 } as const;
 
 export type SessionState = (typeof SessionState)[keyof typeof SessionState];
-
-const TERMINAL_TASK_STATES: ReadonlySet<TaskState> = new Set([
-  TaskState.Cancelled,
-  TaskState.Completed,
-  TaskState.Failed,
-]);
 
 const ROUTE_STRATEGIES: ReadonlySet<string> = new Set([
   "execute",
@@ -269,6 +267,7 @@ export interface CloseOptions {
 export class AgentSession {
   readonly sessionId: string;
   readonly eventBus: EventBus;
+  readonly taskLifecycle: TaskLifecycle;
   readonly taskRegistry: TaskRegistry;
   readonly pending: PendingQueue;
   readonly held: HeldQueue;
@@ -296,6 +295,16 @@ export class AgentSession {
     this.pending = this.queueDispatcher.pending;
     this.held = this.queueDispatcher.held;
     this.deadLetters = this.queueDispatcher.deadLetters;
+    this.taskLifecycle = new TaskLifecycle({
+      eventBus: this.eventBus,
+      sessionId: this.sessionId,
+      taskRegistry: this.taskRegistry,
+      queueCounts: () => ({ pending: this.pending.size, held: this.held.size }),
+      onCancelling: (taskId) => {
+        this.setSessionState(SessionState.Cancelling);
+        this.holdTaskInputs(taskId, "held because its task is cancelling");
+      },
+    });
     this.router = new EventRouter(this.taskRegistry, {
       semanticClassifier: options.semanticClassifier ?? null,
       safetyPolicy: options.safetyPolicy ?? null,
@@ -630,15 +639,10 @@ export class AgentSession {
     if (taskId === null) {
       return false;
     }
-    const record = this.taskRegistry.get(taskId);
-    if (record === null || TERMINAL_TASK_STATES.has(record.state)) {
+    if (!this.taskLifecycle.requestCancel(taskId, reason)) {
       return false;
     }
-    this.taskRegistry.transition(taskId, TaskState.Cancelling);
-    this.setSessionState(SessionState.Cancelling);
-    this.holdTaskInputs(taskId, "held because its task is cancelling");
-    this.publishTaskState(taskId, TaskState.Cancelling);
-    return record.cancelToken.cancel(reason);
+    return true;
   }
 
   waitForIdle(timeoutMs?: number): Promise<boolean> {
@@ -781,19 +785,9 @@ export class AgentSession {
 
   private startTask(content: string, inputEventId: string | null): string {
     const taskId = randomUUID().replaceAll("-", "");
-    this.taskRegistry.register(taskId);
+    this.taskLifecycle.createTask(taskId, { correlationId: inputEventId });
     this.setIdle(false);
     this.setSessionState(SessionState.Running);
-    this.eventBus.publish(EventKind.TaskStarted, {
-      source: EventSource.Session,
-      session_id: this.sessionId,
-      task_id: taskId,
-      correlation_id: inputEventId,
-      payload: {
-        pending_count: this.pending.size,
-        held_count: this.held.size,
-      },
-    });
     const workerKey = {};
     this.#worker = workerKey;
     this.#workerActive = true;
@@ -838,21 +832,7 @@ export class AgentSession {
           record.state === TaskState.Cancelling ||
           record.cancelToken.isCancelled();
         if (!cancelledAtBoundary) {
-          this.taskRegistry.transition(
-            taskId,
-            TaskState.Completed,
-            result === null ? {} : { result },
-          );
-          this.eventBus.publish(EventKind.TaskCompleted, {
-            source: EventSource.Session,
-            session_id: this.sessionId,
-            task_id: taskId,
-            payload: {
-              result: result ?? "",
-              pending_count: this.pending.size,
-              held_count: this.held.size,
-            },
-          });
+          this.taskLifecycle.completeTask(taskId, result);
         }
         if (cancelledAtBoundary) {
           this.finishCancelled(taskId);
@@ -869,19 +849,7 @@ export class AgentSession {
         } else {
           const message = error instanceof Error ? error.message : String(error);
           this.holdTaskInputs(taskId, "held because its task failed");
-          this.taskRegistry.transition(taskId, TaskState.Failed, {
-            error: message,
-          });
-          this.eventBus.publish(EventKind.TaskFailed, {
-            source: EventSource.Session,
-            session_id: this.sessionId,
-            task_id: taskId,
-            payload: {
-              error: message,
-              pending_count: this.pending.size,
-              held_count: this.held.size,
-            },
-          });
+          this.taskLifecycle.failTask(taskId, message);
         }
       }
     } finally {
@@ -922,21 +890,11 @@ export class AgentSession {
 
   private finishCancelled(taskId: string): void {
     const record = this.taskRegistry.get(taskId);
-    if (record === null || TERMINAL_TASK_STATES.has(record.state)) {
+    if (record === null || isTerminalTaskState(record.state)) {
       return;
     }
     this.holdTaskInputs(taskId, "held because its task was cancelled");
-    this.taskRegistry.transition(taskId, TaskState.Cancelled);
-    this.eventBus.publish(EventKind.TaskCancelled, {
-      source: EventSource.Session,
-      session_id: this.sessionId,
-      task_id: taskId,
-      payload: {
-        reason: record.cancelToken.reason ?? "cancelled",
-        pending_count: this.pending.size,
-        held_count: this.held.size,
-      },
-    });
+    this.taskLifecycle.finishCancelled(taskId);
   }
 
   /** Rollback and preserve every unacknowledged input for a task. */
@@ -1005,13 +963,14 @@ export class AgentSession {
     if (
       record === null ||
       record.state === TaskState.Cancelling ||
-      TERMINAL_TASK_STATES.has(record.state)
+      isTerminalTaskState(record.state)
     ) {
       return false;
     }
     if (record.state !== state) {
-      this.taskRegistry.transition(taskId, state);
-      this.publishTaskState(taskId, state);
+      return state === TaskState.RunningModel
+        ? this.taskLifecycle.markModelRunning(taskId)
+        : this.taskLifecycle.markToolsRunning(taskId);
     }
     return true;
   }
@@ -1078,20 +1037,6 @@ export class AgentSession {
     return true;
   }
 
-  private publishTaskState(taskId: string, state: TaskState): void {
-    this.eventBus.publish(EventKind.TaskStateChanged, {
-      source: EventSource.Session,
-      session_id: this.sessionId,
-      task_id: taskId,
-      payload: {
-        state,
-        state_name: state.toUpperCase(),
-        pending_count: this.pending.size,
-        held_count: this.held.size,
-      },
-    });
-  }
-
   /** @internal Used by {@link TaskContext.safePoint} and the worker loop. */
   drainPending(taskId: string): PendingInputBatch {
     const record = this.taskRegistry.get(taskId);
@@ -1104,7 +1049,7 @@ export class AgentSession {
     const events = this.pending.drainCompatible({ taskId });
     if (events.length > 0) {
       this.#inflightPending.set(taskId, events);
-      this.publishTaskState(taskId, record.state);
+      this.taskLifecycle.publishCurrentState(taskId);
     }
     return makeBatch(events);
   }
