@@ -28,6 +28,7 @@ import {
   type SemanticClassifier,
   type TaskRecord,
 } from "./routing.ts";
+import type { SessionAction } from "./runtime/session-action.ts";
 
 export const SessionState = {
   Idle: "idle",
@@ -318,6 +319,9 @@ export class AgentSession {
     return this.held.size;
   }
 
+  /**
+   * Compatibility API for existing callers while they migrate to submitAction.
+   */
   async submitInput(
     content: string,
     options: { strategy?: string } = {},
@@ -405,6 +409,28 @@ export class AgentSession {
       rejected: scheduled.rejected,
       reason: scheduled.reason,
     };
+  }
+
+  /** Compatibility bridge from neutral actions to the existing session API. */
+  async submitAction(action: SessionAction): Promise<Submission | boolean> {
+    switch (action.type) {
+      case "prompt":
+        return this.submitInput(action.text);
+      case "steer":
+        return this.submitInput(action.text, { strategy: "steer" });
+      case "follow_up":
+        return this.submitInput(action.text, { strategy: "follow_up" });
+      case "approval":
+        return this.submitInput(action.text, { strategy: "steer" });
+      case "answer":
+        return this.submitInput(action.text, { strategy: "follow_up" });
+      case "cancel":
+        return this.requestCancel(action.reason);
+      case "command":
+        return this.submitInput([action.name, ...action.arguments].join(" "));
+      case "exit":
+        return this.close();
+    }
   }
 
   /** Repair a decision if task state changed during semantic routing. */

@@ -16,9 +16,31 @@ export interface CommandAction extends SessionActionBase {
   readonly arguments: readonly string[];
 }
 
+export interface SteerAction extends SessionActionBase {
+  readonly type: "steer";
+  readonly text: string;
+}
+
+export interface FollowUpAction extends SessionActionBase {
+  readonly type: "follow_up";
+  readonly text: string;
+}
+
 export interface CancelAction extends SessionActionBase {
   readonly type: "cancel";
   readonly reason: string;
+}
+
+/** Compatibility shape until approvals have a dedicated runtime path. */
+export interface ApprovalAction extends SessionActionBase {
+  readonly type: "approval";
+  readonly text: string;
+}
+
+/** Compatibility shape until answers have a dedicated runtime path. */
+export interface AnswerAction extends SessionActionBase {
+  readonly type: "answer";
+  readonly text: string;
 }
 
 export interface ExitAction extends SessionActionBase {
@@ -28,5 +50,9 @@ export interface ExitAction extends SessionActionBase {
 export type SessionAction =
   | PromptAction
   | CommandAction
+  | SteerAction
+  | FollowUpAction
   | CancelAction
+  | ApprovalAction
+  | AnswerAction
   | ExitAction;
