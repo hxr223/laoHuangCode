@@ -22,6 +22,19 @@ export { toTuiInputEvent } from "./editor.ts";
 export type { TuiInputEvent } from "../keybindings/key-id.ts";
 
 import {
+  ACTION_CAPABILITIES,
+  DEFAULT_RUNTIME_CAPABILITIES,
+  unavailableActionNotice,
+  type RuntimeCapabilities,
+} from "../capabilities.ts";
+import { DEFAULT_KEYBINDINGS } from "../keybindings/default-keybindings.ts";
+import { makeKeyInput, type KeyInput, type TuiInputEvent } from "../keybindings/key-id.ts";
+import {
+  KeybindingsManager,
+  type ActionId,
+  type KeybindingOverrides,
+} from "../keybindings/keybindings.ts";
+import {
   createUIState,
   UIEventReducer,
   type UIEventLike,
@@ -66,6 +79,7 @@ export type InputActionKind =
   | "cursor_left"
   | "cursor_right"
   | "backspace"
+  | "key"
   | "dismiss"
   | "cancel"
   | "eof";
@@ -73,6 +87,7 @@ export type InputActionKind =
 export interface InputAction {
   kind: InputActionKind;
   text?: string;
+  key?: KeyInput;
 }
 
 export interface EditorEffect {
@@ -443,6 +458,12 @@ const CONTROL_ACTIONS: Record<number, InputActionKind> = {
   127: "backspace",
 };
 
+const CONTROL_KEYS: Readonly<Record<number, KeyInput>> = {
+  12: makeKeyInput("ctrl_l", { ctrl: true }),
+  15: makeKeyInput("character", { text: "o", ctrl: true }),
+  20: makeKeyInput("character", { text: "t", ctrl: true }),
+};
+
 const SPECIAL_ESCAPE_ACTIONS: Record<string, InputActionKind> = {
   "\x1b[13;2u": "newline",
   "\x1b[57414;2u": "newline",
@@ -617,6 +638,12 @@ export class BasicInputDecoder implements InputDecoderLike {
         }
         continue;
       }
+      const key = CONTROL_KEYS[byte];
+      if (key !== undefined) {
+        index += 1;
+        actions.push({ kind: "key", key });
+        continue;
+      }
       const control = CONTROL_ACTIONS[byte];
       if (control !== undefined) {
         index += 1;
@@ -706,6 +733,9 @@ export class BasicInputDecoder implements InputDecoderLike {
     if (sequence.startsWith("\x1b[?")) {
       // Other negotiation responses (or their abandoned tails) are swallowed.
       return undefined;
+    }
+    if (sequence === "\x1b[Z") {
+      return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
     }
     const special = SPECIAL_ESCAPE_ACTIONS[sequence];
     if (special !== undefined) {
@@ -895,6 +925,42 @@ export interface LoopInputSource {
 
 /** A terminal driver that may support raw-mode entry (POSIX TTY). */
 export type RawTerminalDriver = TerminalDriver & { enterRawMode?: () => void };
+
+function inputEventFromAction(action: InputAction): TuiInputEvent {
+  if (action.kind === "insert") {
+    return { type: "text", text: action.text ?? "" };
+  }
+  if (action.kind === "key") {
+    if (action.key === undefined) {
+      throw new Error("key input action is missing its key");
+    }
+    return { type: "key", key: action.key };
+  }
+  const key = action.kind === "submit" ? makeKeyInput("enter")
+    : action.kind === "newline" ? makeKeyInput("enter", { alt: true })
+    : action.kind === "complete" ? makeKeyInput("tab")
+    : action.kind === "history_up" ? makeKeyInput("up")
+    : action.kind === "history_down" ? makeKeyInput("down")
+    : action.kind === "cursor_left" ? makeKeyInput("left")
+    : action.kind === "cursor_right" ? makeKeyInput("right")
+    : action.kind === "backspace" ? makeKeyInput("backspace")
+    : action.kind === "dismiss" ? makeKeyInput("escape")
+    : action.kind === "cancel" ? makeKeyInput("ctrl_c", { ctrl: true })
+    : makeKeyInput("ctrl_d", { ctrl: true });
+  return { type: "key", key };
+}
+
+function editorActionForKey(key: KeyInput): InputAction | null {
+  if (key.id === "enter") return { kind: "submit" };
+  if (key.id === "tab") return { kind: "complete" };
+  if (key.id === "up") return { kind: "history_up" };
+  if (key.id === "down") return { kind: "history_down" };
+  if (key.id === "left") return { kind: "cursor_left" };
+  if (key.id === "right") return { kind: "cursor_right" };
+  if (key.id === "backspace") return { kind: "backspace" };
+  if (key.id === "ctrl_d") return { kind: "eof" };
+  return null;
+}
 
 /** Serialize stdin, UI events, and all terminal writes in one loop. */
 export class InteractiveTerminalLoop {
@@ -1207,17 +1273,59 @@ export class InteractiveTerminalLoop {
 
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
-      if (this.#applyQuestionAction(action)) {
-        this.#needsRender = true;
-        continue;
-      }
-      const effect = this.#editor.apply(action, {
-        runtimeActive: this.#ui.isRunning(),
-      });
-      this.#applyEffect(effect);
-      this.#refreshCompletions();
+      this.#applyInputEvent(inputEventFromAction(action));
+    }
+  }
+
+  #applyInputEvent(event: TuiInputEvent): void {
+    if (event.type === "text" || event.type === "paste") {
+      this.#applyEditorAction({ kind: "insert", text: event.text });
+      return;
+    }
+    const action = this.#ui.keybindings.resolve(event.key, ["terminal", "editor"]);
+    if (action !== null) {
+      this.#applyKeyAction(action);
+      return;
+    }
+    const editorAction = editorActionForKey(event.key);
+    if (editorAction !== null) {
+      this.#applyEditorAction(editorAction);
+    }
+  }
+
+  #applyKeyAction(action: ActionId): void {
+    const capability = ACTION_CAPABILITIES[action as keyof typeof ACTION_CAPABILITIES];
+    if (capability !== undefined && !this.#ui.capabilities[capability]) {
+      this.#appendNotice(unavailableActionNotice(action as keyof typeof ACTION_CAPABILITIES));
+      this.#needsRender = true;
+      return;
+    }
+    if (action === "editor_newline") {
+      this.#applyEditorAction({ kind: "newline" });
+    } else if (action === "dismiss") {
+      this.#applyEditorAction({ kind: "dismiss" });
+    } else if (action === "cancel") {
+      this.#applyEditorAction({ kind: "cancel" });
+    } else if (action === "toggle_tool_output") {
+      this.#ui.toggleToolOutputFromKeybinding();
+      this.#needsRender = true;
+    } else {
+      this.#ui.handleKeyAction(action);
       this.#needsRender = true;
     }
+  }
+
+  #applyEditorAction(action: InputAction): void {
+    if (this.#applyQuestionAction(action)) {
+      this.#needsRender = true;
+      return;
+    }
+    const effect = this.#editor.apply(action, {
+      runtimeActive: this.#ui.isRunning(),
+    });
+    this.#applyEffect(effect);
+    this.#refreshCompletions();
+    this.#needsRender = true;
   }
 
   #applyEof(): void {
@@ -1238,12 +1346,7 @@ export class InteractiveTerminalLoop {
       this.#ui.cancelFromKeybinding();
     }
     if (effect.notice) {
-      this.#ui.appendTranscript(
-        createTranscriptBlock("notice", this.#ui.newBlockId(), {
-          text: effect.notice,
-          style: "yellow",
-        }),
-      );
+      this.#appendNotice(effect.notice);
     }
     if (effect.exitRequested) {
       this.requestExit();
@@ -1274,14 +1377,18 @@ export class InteractiveTerminalLoop {
     }
     const effect = this.#editor.apply(action, { runtimeActive: false });
     if (effect.notice) {
-      this.#ui.appendTranscript(
-        createTranscriptBlock("notice", this.#ui.newBlockId(), {
-          text: effect.notice,
-          style: "yellow",
-        }),
-      );
+      this.#appendNotice(effect.notice);
     }
     return true;
+  }
+
+  #appendNotice(text: string): void {
+    this.#ui.appendTranscript(
+      createTranscriptBlock("notice", this.#ui.newBlockId(), {
+        text,
+        style: "yellow",
+      }),
+    );
   }
 
   #resetEditor(): void {
@@ -1327,6 +1434,9 @@ export interface TerminalUIOptions {
   decoderFactory?: InputDecoderFactory;
   /** Non-loop prompt fallback (setup questions outside a live session). */
   askFallback?: (message: string, secret: boolean) => Promise<string>;
+  capabilities?: Partial<RuntimeCapabilities>;
+  keybindingOverrides?: KeybindingOverrides;
+  keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "dismiss" | "cancel">) => void;
 }
 
 /**
@@ -1365,6 +1475,8 @@ export class TerminalUI {
   readonly provider: string | null;
   readonly model: string | null;
   readonly dashboardUrl: string | null;
+  readonly capabilities: RuntimeCapabilities;
+  readonly keybindings: KeybindingsManager;
 
   #output: (text: string) => void;
   #askFallback: ((message: string, secret: boolean) => Promise<string>) | null;
@@ -1376,6 +1488,7 @@ export class TerminalUI {
   });
   readonly #frameBuilder: FrameBuilder;
   #pendingDisplayDrops = 0;
+  #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "dismiss" | "cancel">) => void) | null;
 
   constructor(options: TerminalUIOptions = {}) {
     this.theme = resolveTerminalTheme(options.theme);
@@ -1383,10 +1496,16 @@ export class TerminalUI {
     this.provider = options.provider ?? null;
     this.model = options.model ?? null;
     this.dashboardUrl = options.dashboardUrl ?? null;
+    this.capabilities = { ...DEFAULT_RUNTIME_CAPABILITIES, ...options.capabilities };
+    this.keybindings = new KeybindingsManager(
+      DEFAULT_KEYBINDINGS,
+      options.keybindingOverrides,
+    );
     this.commandRegistry = options.commandRegistry ?? null;
     this.cancelCallback = options.cancelCallback ?? null;
     this.#output = options.output ?? ((text) => console.log(text));
     this.#askFallback = options.askFallback ?? null;
+    this.#keyActionCallback = options.keyActionCallback ?? null;
     this.state = createUIState();
     this.state.provider = options.provider ?? "";
     this.state.model = options.model ?? "";
@@ -1502,6 +1621,17 @@ export class TerminalUI {
 
   setRuntimeRunningCallback(callback: () => boolean): void {
     this.runtimeRunningCallback = callback;
+  }
+
+  handleKeyAction(action: Exclude<ActionId, "editor_newline" | "dismiss" | "cancel">): void {
+    this.#keyActionCallback?.(action);
+  }
+
+  toggleToolOutputFromKeybinding(): void {
+    this.applyDisplayAction({
+      type: "toggle_tool_output",
+      expanded: !this.#transcript.toolOutputExpanded(),
+    });
   }
 
   isRunning(): boolean {

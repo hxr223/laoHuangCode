@@ -10,6 +10,7 @@
 import { charCellWidth } from "./screen.ts";
 import {
   makeKeyInput,
+  type KeyInput,
   type TuiInputEvent,
 } from "../keybindings/key-id.ts";
 
@@ -28,6 +29,7 @@ export const InputActionKind = {
   CursorLeft: "cursor_left",
   CursorRight: "cursor_right",
   Backspace: "backspace",
+  Key: "key",
   Dismiss: "dismiss",
   Cancel: "cancel",
   Eof: "eof",
@@ -59,10 +61,11 @@ export type BufferedInput = BufferedSequenceInput | BufferedPasteInput;
 export interface InputAction {
   readonly kind: InputActionKind;
   readonly text: string;
+  readonly key?: KeyInput;
 }
 
-export function inputAction(kind: InputActionKind, text = ""): InputAction {
-  return { kind, text };
+export function inputAction(kind: InputActionKind, text = "", key?: KeyInput): InputAction {
+  return key === undefined ? { kind, text } : { kind, text, key };
 }
 
 /** Convert existing editor actions into the neutral TUI input contract. */
@@ -74,6 +77,12 @@ export function toTuiInputEvent(
   if (input.kind === BufferedInputKind.Paste) {
     return { type: "paste", text: input.data.toString("utf8") };
   }
+  if (input.kind === InputActionKind.Key) {
+    if (input.key === undefined) {
+      throw new Error("key input action is missing its key");
+    }
+    return { type: "key", key: input.key };
+  }
 
   switch (input.kind) {
     case InputActionKind.Insert:
@@ -81,7 +90,7 @@ export function toTuiInputEvent(
     case InputActionKind.Submit:
       return { type: "key", key: makeKeyInput("enter") };
     case InputActionKind.Newline:
-      return { type: "key", key: makeKeyInput("enter", { shift: true }) };
+      return { type: "key", key: makeKeyInput("enter", { alt: true }) };
     case InputActionKind.Complete:
       return { type: "key", key: makeKeyInput("tab") };
     case InputActionKind.HistoryUp:
@@ -421,6 +430,12 @@ const CONTROL_ACTIONS: ReadonlyMap<number, InputActionKind> = new Map([
   [127, InputActionKind.Backspace],
 ]);
 
+const CONTROL_KEYS: ReadonlyMap<number, KeyInput> = new Map([
+  [12, makeKeyInput("ctrl_l", { ctrl: true })],
+  [15, makeKeyInput("character", { text: "o", ctrl: true })],
+  [20, makeKeyInput("character", { text: "t", ctrl: true })],
+]);
+
 type EscapeConsumption =
   | { readonly status: "incomplete" }
   | { readonly status: "consumed" }
@@ -451,6 +466,12 @@ export class RawInputDecoder {
       if (byte === 10 || byte === 13) {
         this.buffer = this.buffer.subarray(1);
         actions.push(inputAction(InputActionKind.Submit));
+        continue;
+      }
+      const key = CONTROL_KEYS.get(byte);
+      if (key !== undefined) {
+        this.buffer = this.buffer.subarray(1);
+        actions.push(inputAction(InputActionKind.Key, "", key));
         continue;
       }
       const kind = CONTROL_ACTIONS.get(byte);

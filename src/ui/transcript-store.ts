@@ -192,6 +192,10 @@ export class TranscriptStore {
     }
   }
 
+  toolOutputExpanded(): boolean {
+    return this.#toolOutputExpanded;
+  }
+
   #getOrCreate(
     kind: string,
     key: string,

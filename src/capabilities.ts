@@ -17,3 +17,22 @@ export const DEFAULT_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   tools: true,
   reasoning: true,
 };
+
+export type RuntimeCapability = keyof RuntimeCapabilities;
+
+export const ACTION_CAPABILITIES = {
+  cancel: "cancellation",
+  toggle_tool_output: "tools",
+  toggle_thinking: "reasoning",
+  cycle_thinking: "reasoning",
+} as const;
+
+export function unavailableActionNotice(action: keyof typeof ACTION_CAPABILITIES): string {
+  if (action === "toggle_thinking" || action === "cycle_thinking") {
+    return "Thinking controls are unavailable for this runtime.";
+  }
+  if (action === "toggle_tool_output") {
+    return "Tool output controls are unavailable for this runtime.";
+  }
+  return "Cancellation is unavailable for this runtime.";
+}
