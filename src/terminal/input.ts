@@ -18,9 +18,15 @@ import {
   TerminalInputFilter,
   charCellWidth,
   inputAction,
+  toTuiInputEvent,
   type CompletionItem,
   type InputAction,
 } from "./editor.ts";
+import { DEFAULT_KEYBINDINGS } from "../keybindings/default-keybindings.ts";
+import { KeybindingsManager } from "../keybindings/keybindings.ts";
+
+export { toTuiInputEvent } from "./editor.ts";
+export type { TuiInputEvent } from "../keybindings/key-id.ts";
 
 /** Raised when the user aborts the prompt with Ctrl+C (mirrors KeyboardInterrupt). */
 export class PromptCancelledError extends Error {
@@ -66,6 +72,28 @@ export interface PiInputSessionOptions {
 const PROMPT = "❯ ";
 /** Delay before a buffered standalone Escape resolves into a dismissal. */
 const ESCAPE_FLUSH_MS = 25;
+const SETUP_PROMPT_KEYBINDINGS = new KeybindingsManager(DEFAULT_KEYBINDINGS);
+
+function resolveSetupPromptAction(action: InputAction): InputAction {
+  if (action.kind !== InputActionKind.Key) {
+    return action;
+  }
+  const event = toTuiInputEvent(action);
+  if (event.type !== "key") {
+    return action;
+  }
+  const binding = SETUP_PROMPT_KEYBINDINGS.resolve(event.key, ["editor"]);
+  if (binding === "cancel") {
+    return inputAction(InputActionKind.Cancel);
+  }
+  if (binding === "editor_newline" || binding === "submit_follow_up") {
+    return inputAction(InputActionKind.Newline);
+  }
+  if (binding === "dismiss") {
+    return inputAction(InputActionKind.Dismiss);
+  }
+  return action;
+}
 
 /** Compact PromptSession-compatible editor for setup questions only. */
 export class PiInputSession {
@@ -224,20 +252,21 @@ export class PiInputSession {
         if (settled) {
           return;
         }
-        if (action.kind === InputActionKind.Cancel) {
+        const resolvedAction = resolveSetupPromptAction(action);
+        if (resolvedAction.kind === InputActionKind.Cancel) {
           finish(new PromptCancelledError(), "");
           return;
         }
-        if (action.kind === InputActionKind.Eof) {
+        if (resolvedAction.kind === InputActionKind.Eof) {
           if (!editor.text) {
             finish(new PromptEofError(), "");
           }
           return;
         }
-        if (action.kind === InputActionKind.Submit) {
+        if (resolvedAction.kind === InputActionKind.Submit) {
           refreshCompletions();
           if (editor.completionVisible) {
-            const effect = editor.apply(action, { runtimeActive: false });
+            const effect = editor.apply(resolvedAction, { runtimeActive: false });
             refreshCompletions();
             if (effect.submit !== null) {
               // Slash commands accept and submit in one Enter (pi semantics);
@@ -249,10 +278,10 @@ export class PiInputSession {
           }
           return;
         }
-        if (action.kind === InputActionKind.Newline && !this.multiline) {
+        if (resolvedAction.kind === InputActionKind.Newline && !this.multiline) {
           return;
         }
-        editor.apply(action, { runtimeActive: false });
+        editor.apply(resolvedAction, { runtimeActive: false });
         refreshCompletions();
       };
 
