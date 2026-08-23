@@ -9,6 +9,18 @@ import {
 } from "../src/tui/components.ts";
 import { FocusManager } from "../src/tui/focus-manager.ts";
 import { OverlayManager } from "../src/tui/overlay-manager.ts";
+import { TerminalUI, type CommandRegistryLike } from "../src/terminal/ui.ts";
+import { MemoryTerminalDriver } from "../src/terminal/screen.ts";
+
+const encoder = new TextEncoder();
+
+const exitRegistry: CommandRegistryLike = {
+  complete(text) {
+    return text.startsWith("/") && "/exit".startsWith(text)
+      ? [{ value: "/exit", description: "Exit", start: -text.length }]
+      : [];
+  },
+};
 
 function createFocus(): { overlays: OverlayManager; focus: FocusManager } {
   const overlays = new OverlayManager();
@@ -58,4 +70,45 @@ test("closing the focused overlay restores the previous focus", () => {
 
   overlays.close("completion");
   assert.equal(focus.current(), "composer");
+});
+
+test("live completion Enter accepts a partial command and submits it", () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+    commandRegistry: exitRegistry,
+  });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  ui.feedInputBytes(encoder.encode("/e\r"));
+  ui.drainLoop();
+
+  assert.deepEqual(submitted, ["/exit"]);
+});
+
+test("live completion Enter submits an exact command", () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+    commandRegistry: exitRegistry,
+  });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  ui.feedInputBytes(encoder.encode("/exit\r"));
+  ui.drainLoop();
+
+  assert.deepEqual(submitted, ["/exit"]);
+});
+
+test("live completion Escape dismisses the completion menu", () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+    commandRegistry: exitRegistry,
+  });
+  ui.startLoop(() => {});
+
+  ui.feedInputBytes(encoder.encode("/e\x1b[27u"));
+  ui.drainLoop();
+
+  assert.deepEqual(ui.interactiveLoop?.editor.completions, []);
 });
