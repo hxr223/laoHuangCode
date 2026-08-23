@@ -13,6 +13,7 @@ import {
   type CommandRegistryLike,
   type LoopInputSource,
 } from "../src/terminal/ui.ts";
+import { makeToggleToolOutputDisplayAction } from "../src/ui/display-actions.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
@@ -79,6 +80,67 @@ test("loop preserves first turn while second response streams", () => {
   assert.ok(terminal.writes().includes("answer two"));
 });
 
+test("alt enter submits a follow-up action from the live loop", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const submitted: Array<{ text: string; strategy?: string }> = [];
+
+  ui.startLoop((text, options) => {
+    submitted.push({ text, strategy: options?.strategy });
+  });
+  ui.feedInputBytes(bytes("later\x1b[13;3u"));
+  ui.feedInputBytes(bytes("caps\x1b[13;67u"));
+  ui.feedInputBytes(bytes("press\x1b[13;3:1u"));
+  ui.feedInputBytes(bytes("release\x1b[13;3:3u"));
+  ui.drainLoop();
+
+  assert.deepEqual(submitted, [
+    { text: "later", strategy: "follow_up" },
+    { text: "caps", strategy: "follow_up" },
+    { text: "press", strategy: "follow_up" },
+  ]);
+});
+
+test("enhanced shift tab reaches the reasoning cycle action", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const actions: string[] = [];
+  const ui = new TerminalUI({
+    driver: terminal,
+    capabilities: { reasoning: true },
+    keyActionCallback: (action) => {
+      actions.push(action);
+    },
+  });
+
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("\x1b[9;2u\x1b[27;2;9~\x1b[9;66u\x1b[9;2:1u\x1b[9;2:3u"));
+  ui.drainLoop();
+
+  assert.deepEqual(actions, [
+    "cycle_thinking",
+    "cycle_thinking",
+    "cycle_thinking",
+    "cycle_thinking",
+  ]);
+});
+
+test("ctrl l invokes the model selection key action", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const actions: string[] = [];
+  const ui = new TerminalUI({
+    driver: terminal,
+    keyActionCallback: (action) => {
+      actions.push(action);
+    },
+  });
+
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("\f"));
+  ui.drainLoop();
+
+  assert.deepEqual(actions, ["select_model"]);
+});
+
 test("second response does not rewrite frozen first turn bytes", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
@@ -113,6 +175,36 @@ test("event publication does not write before loop drains", () => {
   assert.ok(terminal.writes().includes("queued"));
 });
 
+test("terminal-local backpressure produces a dropped display marker", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  for (let index = 0; index < 4_100; index += 1) {
+    ui.publishEvent(event("model.reasoning_delta", "request-1", {
+      text: "x",
+      ...(index === 4_099 ? { _projection_dropped: 5 } : {}),
+    }));
+  }
+  ui.publishEvent(event("task.completed", "task-1"));
+  ui.drainLoop();
+
+  assert.match(ui.buildHistoryLines(80).join("\n"), /省略了 137 个流式展示事件/);
+});
+
+test("tool output is folded by default and shown by a local display toggle", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-1", { name: "bash", arguments: {} }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-1", {
+    stream: "stdout",
+    text: "full tool output",
+  }));
+
+  assert.ok(!ui.buildHistoryLines(80).join("\n").includes("full tool output"));
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  assert.ok(ui.buildHistoryLines(80).join("\n").includes("full tool output"));
+});
+
 test("input bytes do not mutate before loop drains", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
@@ -143,10 +235,10 @@ test("typing updates editor line without appending prompt history", () => {
   ui.drainLoop();
 
   assert.equal(terminal.writeChunks().length, 1);
-  assert.ok(terminal.writes().includes("\r\x1b[2K❯ as"));
+  assert.ok(terminal.writes().includes("\r\x1b[2K│ ❯ as"));
   assert.equal(terminal.writes().split("\x1b[2K").length - 1, 1);
   assert.ok(!terminal.writes().includes("\r\n"));
-  assert.ok(!terminal.writes().includes("\r\n❯ a"));
+  assert.ok(!terminal.writes().includes("\r\n│ ❯ a"));
 });
 
 test("typing updates editor line semantically in four rows", () => {
@@ -165,7 +257,7 @@ test("typing updates editor line semantically in four rows", () => {
 
   const rendered = emulator.logicalLines.join("\n");
   assert.equal(rendered.split("❯ ").length - 1, 1);
-  assert.ok(emulator.viewportLines.includes("❯ as"));
+  assert.ok(emulator.viewportLines.some((line) => line.includes("❯ as")));
   assert.ok(!emulator.logicalLines.includes("❯ a"));
 });
 
@@ -185,12 +277,12 @@ test("three ascii keystrokes leave cursor after third character", () => {
   }
 
   assert.deepEqual(emulator.viewportLines.slice(0, 3), [
-    "─".repeat(80),
-    "❯ asd",
-    "─".repeat(80),
+    "├" + "─".repeat(78) + "┤",
+    "│ ❯ asd".padEnd(79, " ") + "│",
+    "├" + "─".repeat(78) + "┤",
   ]);
   assert.equal(emulator.cursorRow, 1);
-  assert.equal(emulator.cursorColumn, 5);
+  assert.equal(emulator.cursorColumn, 7);
   assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
 });
 
@@ -292,7 +384,8 @@ test("raw loop owns transcript and editor together", () => {
   ui.drainLoop();
 
   assert.deepEqual(submitted, ["hello"]);
-  assert.ok(terminal.writes().includes("laoHuangCode"));
+  assert.ok(terminal.writes().includes("╭─ laoHuang"));
+  assert.ok(terminal.writes().includes("hello, welcome to laoHuang"));
   assert.ok(terminal.writes().includes("hello"));
 });
 
@@ -484,7 +577,7 @@ test("frame uses only content rows for a completion", () => {
   const frame = ui.buildFrame({ width: 80, editor });
 
   assert.equal(frame.lines.filter((line) => line.includes("/exit")).length, 1);
-  assert.ok((frame.lines[frame.lines.length - 1] as string).includes("deepseek-v4-flash"));
+  assert.ok(frame.lines.some((line) => line.includes("deepseek-v4-flash")));
 });
 
 test("frame lines fit visible width with cjk content", () => {
@@ -571,8 +664,8 @@ test("frame grows only for actual multiline input", () => {
   );
   const frame = ui.buildFrame({ width: 80, editor });
 
-  assert.ok(frame.lines.includes("❯ first line"));
-  assert.ok(frame.lines.includes("  second line"));
+  assert.ok(frame.lines.some((line) => line.includes("❯ first line")));
+  assert.ok(frame.lines.some((line) => line.includes("  second line")));
   assert.equal(
     frame.lines.filter(
       (line) => line.includes("first line") || line.includes("second line"),
@@ -728,7 +821,7 @@ test("welcome panel shows session context", () => {
   ui.showWelcome();
 
   const rendered = stream.join("\n");
-  assert.ok(rendered.includes("laoHuangCode"));
+  assert.ok(rendered.includes("hello, welcome to laoHuang"));
   assert.ok(rendered.includes("/tmp/demo"));
   assert.ok(rendered.includes("deepseek/deepseek-v4-pro"));
   assert.ok(rendered.includes("http://127.0.0.1:8765/"));

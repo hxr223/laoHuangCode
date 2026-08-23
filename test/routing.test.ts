@@ -8,14 +8,11 @@ import {
   type AnyEventEnvelope,
 } from "../src/events.ts";
 import {
-  DeadLetterQueue,
   EventRouter,
   PendingQueue,
   QueueOverflowError,
-  Scheduler,
-  TaskRegistry,
-  TaskState,
 } from "../src/routing.ts";
+import { TaskRegistry, TaskState } from "../src/runtime/task-lifecycle.ts";
 
 function userEvent(
   content: string,
@@ -121,22 +118,4 @@ test("pending queue enforces estimated token budget", async () => {
     userEvent("this message is too large", { strategy: "steer" }),
   );
   assert.throws(() => queue.put(routed), /token budget/);
-});
-
-test("scheduler sends capacity rejections to dead letters", async () => {
-  const registry = activeRegistry();
-  const pending = new PendingQueue(1);
-  const deadLetters = new DeadLetterQueue();
-  const scheduler = new Scheduler({ pending, deadLetters });
-  const router = new EventRouter(registry);
-  scheduler.schedule(
-    await router.route(userEvent("first", { strategy: "steer" })),
-  );
-
-  const result = scheduler.schedule(
-    await router.route(userEvent("second", { strategy: "steer" })),
-  );
-
-  assert.equal(result.rejected, true);
-  assert.equal(deadLetters.size, 1);
 });

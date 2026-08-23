@@ -12,6 +12,7 @@ import {
   type CompletionItem,
   type InputAction,
 } from "../src/terminal/editor.ts";
+import { makeKeyInput } from "../src/keybindings/key-id.ts";
 
 /**
  * Mirror of the Python test helper: StdinBuffer -> TerminalInputFilter ->
@@ -57,10 +58,61 @@ test("decoder distinguishes submit, alt+enter and ctrl+d", () => {
     inputAction(InputActionKind.Submit),
   ]);
   assert.deepEqual(decoder.feed(Buffer.from("\x1b\r")), [
-    inputAction(InputActionKind.Newline),
+    inputAction(
+      InputActionKind.Key,
+      "",
+      { id: "enter", text: null, ctrl: false, alt: true, shift: false },
+    ),
   ]);
   assert.deepEqual(decoder.feed(Buffer.from("\x04")), [
     inputAction(InputActionKind.Eof),
+  ]);
+});
+
+test("decoder emits ctrl+c as neutral key input", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x03")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("ctrl_c", { ctrl: true })),
+  ]);
+});
+
+test("decoder emits enhanced alt enter and shift tab as neutral keys", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;3u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[27;3;13~")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;2u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[27;2;9~")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;67u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;3:1u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("enter", { alt: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;66u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;2:1u")), [
+    inputAction(InputActionKind.Key, "", makeKeyInput("tab", { shift: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;3:3u")), []);
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[9;2:3u")), []);
+});
+
+test("decoder keeps shifted enter as editor newline", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x1b[13;2u")), [
+    inputAction(InputActionKind.Newline),
   ]);
 });
 
