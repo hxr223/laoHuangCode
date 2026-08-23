@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { parseKey } from "../src/keybindings/key-parser.ts";
+import { DEFAULT_KEYBINDINGS } from "../src/keybindings/default-keybindings.ts";
 import {
   KeybindingsManager,
   type Keybinding,
@@ -53,13 +54,11 @@ test("reports conflicts for duplicate keys in the same context", () => {
 });
 
 test("uses an empty action binding to disable a default", () => {
-  const manager = new KeybindingsManager([
-    { context: "editor", key: "ctrl+o", action: "toggle_tool_output" },
-  ], {
+  const manager = new KeybindingsManager(DEFAULT_KEYBINDINGS, {
     toggle_tool_output: [],
   });
 
-  assert.equal(manager.resolve(parseKey("ctrl+o"), ["editor"]), null);
+  assert.equal(manager.resolve(parseKey("ctrl+o"), ["terminal"]), null);
 });
 
 test("finds the primary key hint for an action", () => {

@@ -423,7 +423,6 @@ const ESCAPE_ACTIONS: ReadonlyMap<string, InputActionKind> = new Map([
 ]);
 
 const CONTROL_ACTIONS: ReadonlyMap<number, InputActionKind> = new Map([
-  [3, InputActionKind.Cancel],
   [4, InputActionKind.Eof],
   [9, InputActionKind.Complete],
   [8, InputActionKind.Backspace],
@@ -431,6 +430,7 @@ const CONTROL_ACTIONS: ReadonlyMap<number, InputActionKind> = new Map([
 ]);
 
 const CONTROL_KEYS: ReadonlyMap<number, KeyInput> = new Map([
+  [3, makeKeyInput("ctrl_c", { ctrl: true })],
   [12, makeKeyInput("ctrl_l", { ctrl: true })],
   [15, makeKeyInput("character", { text: "o", ctrl: true })],
   [20, makeKeyInput("character", { text: "t", ctrl: true })],

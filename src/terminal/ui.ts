@@ -451,7 +451,6 @@ const CSI_ARROW_ACTIONS: Record<string, InputActionKind> = {
 };
 
 const CONTROL_ACTIONS: Record<number, InputActionKind> = {
-  3: "cancel",
   4: "eof",
   9: "complete",
   8: "backspace",
@@ -459,6 +458,7 @@ const CONTROL_ACTIONS: Record<number, InputActionKind> = {
 };
 
 const CONTROL_KEYS: Readonly<Record<number, KeyInput>> = {
+  3: makeKeyInput("ctrl_c", { ctrl: true }),
   12: makeKeyInput("ctrl_l", { ctrl: true }),
   15: makeKeyInput("character", { text: "o", ctrl: true }),
   20: makeKeyInput("character", { text: "t", ctrl: true }),
