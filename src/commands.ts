@@ -1,6 +1,8 @@
 /** Slash commands available inside an interactive agent session. */
 
 import { EventKind, EventSource } from "./events.ts";
+import { makeCancelAction } from "./runtime/session-action-protocol.ts";
+import type { SessionAction } from "./runtime/session-action.ts";
 import type {
   InputFn,
   ModelSelection,
@@ -415,6 +417,7 @@ export interface SessionLike {
   readonly eventBus?: SessionEventBusLike | null | undefined;
   readonly sessionId?: string | null | undefined;
   cancelActiveTask(): boolean;
+  submitAction(action: SessionAction): unknown | Promise<unknown>;
   clearQueues(): number;
   resumeHeld(): number;
   queueStatus(): QueueStatus;
@@ -591,7 +594,7 @@ export class SessionCommands {
     return true;
   }
 
-  private handleCancel(args: string[]): boolean {
+  private async handleCancel(args: string[]): Promise<boolean> {
     if (args.length > 0) {
       this.#output("Usage: /cancel");
       return true;
@@ -600,9 +603,13 @@ export class SessionCommands {
       this.#output("No active task to cancel.");
       return true;
     }
-    const cancelled = this.#session.cancelActiveTask();
+    const cancelled = await this.#session.submitAction(
+      makeCancelAction("command", "command"),
+    );
     this.#output(
-      cancelled ? "Cancelling current task…" : "No active task to cancel.",
+      cancelled === true
+        ? "Cancelling current task…"
+        : "No active task to cancel.",
     );
     return true;
   }

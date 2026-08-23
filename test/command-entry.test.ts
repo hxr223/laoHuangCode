@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CommandRegistry,
   SessionCommands,
   type AgentLike,
   type SessionLike,
@@ -10,6 +11,7 @@ import { CredentialStore } from "../src/credentials.ts";
 import { ModelSelector, type ProviderRegistry } from "../src/model-selection.ts";
 import { createClient } from "../src/client.ts";
 import { getProvider, providerNames } from "../src/providers.ts";
+import { TerminalUI } from "../src/terminal/ui.ts";
 
 const providers: ProviderRegistry = { get: getProvider, names: providerNames };
 
@@ -56,13 +58,13 @@ function makeCommands(options: { session?: SessionLike | null } = {}): {
   return { commands, outputs };
 }
 
-test("command entry cancels through the session command API", async () => {
-  let cancelled = 0;
+test("typed cancel submits a neutral cancellation action", async () => {
+  const actions: unknown[] = [];
   const { commands, outputs } = makeCommands({
     session: {
       activeTask: { state: "RUNNING_MODEL" },
-      cancelActiveTask: () => {
-        cancelled += 1;
+      submitAction: (action) => {
+        actions.push(action);
         return true;
       },
       clearQueues: () => 0,
@@ -74,7 +76,39 @@ test("command entry cancels through the session command API", async () => {
   const result = await commands.execute("/cancel");
 
   assert.equal(result.status, "handled");
-  assert.equal(cancelled, 1);
+  assert.deepEqual(actions.map((action) => ({
+    type: (action as { type: string }).type,
+    source: (action as { source: string }).source,
+  })), [{ type: "cancel", source: "command" }]);
+  assert.deepEqual(outputs, ["Cancelling current task…"]);
+});
+
+test("keyboard cancellation reaches the neutral cancellation action", async () => {
+  const actions: unknown[] = [];
+  const { commands, outputs } = makeCommands({
+    session: {
+      activeTask: { state: "RUNNING_MODEL" },
+      submitAction: (action) => {
+        actions.push(action);
+        return true;
+      },
+      clearQueues: () => 0,
+      resumeHeld: () => 0,
+      queueStatus: () => ({}),
+    },
+  });
+  const ui = new TerminalUI();
+  let submitted: Promise<unknown> | null = null;
+  ui.setCancelCallback((command) => {
+    submitted = commands.execute(command);
+  });
+
+  ui.cancelFromKeybinding();
+  await submitted;
+
+  assert.deepEqual(actions.map((action) => (action as { type: string }).type), [
+    "cancel",
+  ]);
   assert.deepEqual(outputs, ["Cancelling current task…"]);
 });
 
@@ -99,6 +133,7 @@ test("command entry blocks clear while a task runs", async () => {
     session: {
       activeTask: { state: "RUNNING_MODEL" },
       cancelActiveTask: () => false,
+      submitAction: () => false,
       clearQueues: () => 0,
       resumeHeld: () => 0,
       queueStatus: () => ({}),
@@ -116,6 +151,7 @@ test("command entry permits model current while a task runs", async () => {
     session: {
       activeTask: { state: "RUNNING_MODEL" },
       cancelActiveTask: () => false,
+      submitAction: () => false,
       clearQueues: () => 0,
       resumeHeld: () => 0,
       queueStatus: () => ({}),
@@ -126,4 +162,31 @@ test("command entry permits model current while a task runs", async () => {
 
   assert.equal(result.status, "handled");
   assert.deepEqual(outputs, ["Current model: deepseek / deepseek-v4-flash"]);
+});
+
+test("command entry returns an error result for malformed quotes", async () => {
+  const { commands } = makeCommands();
+
+  const result = await commands.execute('/help "');
+
+  assert.equal(result.status, "error");
+  assert.equal(result.error instanceof Error ? result.error.message : "", "No closing quotation");
+});
+
+test("registry returns an error result when a handler throws", async () => {
+  const registry = new CommandRegistry([
+    {
+      name: "/broken",
+      description: "broken",
+      usage: "/broken",
+      handler: () => {
+        throw new Error("broken handler");
+      },
+    },
+  ]);
+
+  const result = await registry.execute("/broken");
+
+  assert.equal(result.status, "error");
+  assert.equal(result.error instanceof Error ? result.error.message : "", "broken handler");
 });
