@@ -22,7 +22,7 @@ import {
   type StreamResult,
 } from "../src/model-stream.ts";
 
-// --- Fakes (mirror test/model-stream.test.ts helpers) -------------------------
+// --- Fakes (mirror scripts/model-stream.test.ts helpers) ---------------------
 
 function delta(
   init: {

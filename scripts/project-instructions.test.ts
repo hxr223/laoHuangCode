@@ -19,7 +19,7 @@ import {
 } from "../src/project-instructions.ts";
 import { ToolRegistry } from "../src/tools.ts";
 
-// --- Fakes (mirrors test/agent.test.ts FakeCompletions) ----------------------
+// --- Fakes (mirrors scripts/agent.test.ts FakeCompletions) -------------------
 
 class FakeToolCall {
   readonly id: string;

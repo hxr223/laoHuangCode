@@ -50,29 +50,10 @@ jobs:
         id: package
         run: echo "version=$(node --print 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
       - name: Require an unpublished npm version
-        env:
-          EXPECTED_VERSION: ${{ steps.package.outputs.version }}
-        run: |
-          if npm view "laohuang@$EXPECTED_VERSION" version 2>/dev/null | grep -q .; then
-            echo "::error::laohuang@$EXPECTED_VERSION is already published; bump the version."
-            exit 1
-          fi
+        run: npm run check:version
       - name: Publish npm package with trusted publishing
         run: npm publish --access public
       - name: Verify the published version
         env:
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
-        run: |
-          # The registry can take a few seconds to propagate a fresh publish;
-          # retry instead of racing it.
-          published_version=""
-          for attempt in 1 2 3 4 5; do
-            published_version="$(npm view "laohuang@$EXPECTED_VERSION" version 2>/dev/null || true)"
-            if [[ "$published_version" == "$EXPECTED_VERSION" ]]; then
-              echo "Published laohuang@$EXPECTED_VERSION verified."
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::error::Expected laohuang@$EXPECTED_VERSION, got ${published_version:-<not found>}"
-          exit 1
+        run: npm run verify:published -- "$EXPECTED_VERSION"

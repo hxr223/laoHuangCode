@@ -44,7 +44,14 @@ laoHuangCode/
 │       ├── input.ts           # 首次启动设置问题的一次性 raw-mode 提示
 │       ├── theme.ts           # 终端颜色 token 与 ANSI SGR 转换
 │       └── markdown.ts        # Markdown 到带样式 ANSI 行的渲染
-├── test/                      # node:test 离线测试套件
+├── scripts/                   # 测试与构建、检查、发布等工程脚本
+│   ├── *.test.ts              # Node test 离线测试
+│   ├── check-package-version.mjs
+│   ├── package-smoke.mjs
+│   ├── terminal-smoke.sh
+│   ├── verify-published-version.mjs
+│   ├── test-stats.mjs
+│   └── profile-cli.mjs
 ├── LICENSE
 ├── README.md
 ├── package.json

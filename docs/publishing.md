@@ -33,7 +33,8 @@ npm Trusted Publishing 需要 Node 22.14+ 和 npm 11.5.1+；工作流固定使�
    npm ci
    npm run build
    npm test
-   npm pack --dry-run   # 检查 tarball 内容
+   npm run check:version
+   npm run smoke:package
    ```
 
 3. 创建 pull request。CI（`.github/workflows/ci.yml`）会运行构建和测试，并确认

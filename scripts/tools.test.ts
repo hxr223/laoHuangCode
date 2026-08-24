@@ -12,7 +12,7 @@ import {
   type ToolResult,
 } from "../src/tools.ts";
 
-// test/tools.test.ts runs before the bash-runner workstream lands, so the
+// scripts/tools.test.ts runs before the bash-runner workstream lands, so the
 // bash cases below exercise a real (but minimal) runner built on
 // node:child_process. It mirrors the observable contract tools.ts relies on:
 // run in cwd, strip model API keys from the environment, enforce the timeout,
