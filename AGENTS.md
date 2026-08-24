@@ -7,7 +7,14 @@
 - No emojis in commits, issues, PR comments, or code.
 - When the user asks a question, answer it first before editing or running implementation commands.
 - When responding to user feedback or analysis, explicitly say whether you agree or disagree before saying what changed.
-- During feature discussions, do not recommend first-version, throwaway, or partial-product approaches; treat this project as a complete product in progress and recommend paths that preserve a coherent end-state.
+- During feature discussions, do not recommend first-version, throwaway, MVP, phase-one, temporary, partial-product, or "do the minimum first" approaches unless the user explicitly asks for phased delivery.
+- For any feature/platform/support discussion:
+  - First state the coherent end-state product contract.
+  - Then analyze the architecture required to satisfy that contract.
+  - If sequencing is useful, describe it only as implementation order, not as reduced product scope.
+  - Do not call an incomplete capability "support".
+  - If a proposal leaves known gaps, label it as not meeting the product contract.
+- Before responding, check: "Am I recommending a smaller product than the user asked for?" If yes, rewrite around the complete end-state.
 
 ## Project Shape
 
