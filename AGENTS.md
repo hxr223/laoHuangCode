@@ -12,7 +12,7 @@
 ## Project Shape
 
 - This is a TypeScript/Node.js CLI package named `laohuang`.
-- Source lives in `src/`; tests live in `test/`.
+- Source lives in `src/`; tests and repository engineering automation live in `scripts/`.
 - The npm package is built from `src/` into `dist/` with `tsc`.
 - Do not treat old Python build artifacts, `build/`, `src/laohuangcode.egg-info/`, `__pycache__/`, or `npm/vendor/` as primary source unless the user explicitly asks about them.
 - Do not edit generated or packaged artifacts such as `dist/`, `build/`, egg-info, or vendored release files unless the task is specifically about packaging or release output.
@@ -58,7 +58,7 @@ Multiple agent sessions may be working in this repository. Git operations must n
 When committing:
 
 - Only commit files changed in this session.
-- Stage explicit paths only, for example `git add src/foo.ts test/foo.test.ts`.
+- Stage explicit paths only, for example `git add src/foo.ts scripts/foo.test.ts`.
 - Never use `git add .` or `git add -A`.
 - Before committing, run `git status` and verify that only your files are staged.
 - Use concise messages such as `fix: handle cancelled tool output` or `feat: add model adapter boundary`.
@@ -111,7 +111,8 @@ Build first with `npm run build` before running `node dist/cli.js`.
   npm ci
   npm run build
   npm test
-  npm pack --dry-run
+  npm run check:version
+  npm run smoke:package
   ```
 
 - Do not publish manually unless the user explicitly asks.

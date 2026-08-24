@@ -49,7 +49,7 @@ npm launcher、wheel 打包与双生态发布管线。
 | `config.py` / `credentials.py` / `providers.py` / `client.py` | `config.ts` / `credentials.ts` / `providers.ts` / `client.ts` | 直接对应 |
 | `ui_state.py` / `cancellation.py` / `model_selection.py` / `semantic_classifier.py` | `ui-state.ts` / `cancellation.ts` / `model-selection.ts` / `semantic-classifier.ts` | 直接对应 |
 
-测试: `tests/*.py`(21 文件,4648 行)→ `test/*.test.ts`,一一对应;
+测试: `tests/*.py`(21 文件,4648 行)→ `scripts/*.test.ts`,一一对应;
 `test_version_sync.py`/`test_npm_release.py` 由 npm 侧的版本/打包检查替代。
 
 ## 5. 并发行为说明(重写依据,语义不可丢)
@@ -71,7 +71,7 @@ TS 侧表达:取消用 CancelToken(Promise + AbortSignal 风格),信箱用异步
 ## 6. 执行顺序
 
 1. 脚手架: `package.json`(ESM, bin)、`tsconfig.json`(strict)、目录结构。
-2. 测试翻译: 21 个测试文件 → `test/`,先全红。
+2. 测试翻译: 21 个测试文件 → `scripts/`,先全红。
 3. 基础模块: config/credentials/providers/client → tools → events → model_stream。
 4. 核心: agent → session → routing → commands → bash_runner。
 5. 终端: input → ui → theme/markdown → ui_state。

@@ -20,7 +20,13 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test \"scripts/**/*.test.ts\"",
+    "check:version": "node scripts/check-package-version.mjs",
+    "smoke:package": "node scripts/package-smoke.mjs",
+    "smoke:terminal": "bash scripts/terminal-smoke.sh",
+    "verify:published": "node scripts/verify-published-version.mjs",
+    "stats:test": "node scripts/test-stats.mjs",
+    "profile:cli": "node scripts/profile-cli.mjs",
     "prepack": "npm run build"
   },
   "files": [

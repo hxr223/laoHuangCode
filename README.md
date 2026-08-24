@@ -138,10 +138,13 @@ laohuang --web --web-port 9000
 npm ci
 npm run build
 npm test
+npm run smoke:package
 ```
 
 `npm run build` 通过 `tsc` 把 `src/` 编译到 `dist/`；`npm test` 使用 Node 自带的
-`node:test` 运行 `test/` 下的离线测试套件，不需要网络访问。发布流程见
+`node:test` 运行 `scripts/` 下的离线测试套件，不需要网络访问。`scripts/` 还包含
+版本检查、npm 打包/安装烟测、tmux 终端烟测、发布后 registry 验证、测试统计和
+CLI CPU profile 脚本。发布流程见
 [发布流程](docs/publishing.md) 和 [npm 分发说明](docs/npm-distribution.md)。
 
 ## 安全边界
