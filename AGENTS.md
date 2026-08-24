@@ -7,6 +7,7 @@
 - No emojis in commits, issues, PR comments, or code.
 - When the user asks a question, answer it first before editing or running implementation commands.
 - When responding to user feedback or analysis, explicitly say whether you agree or disagree before saying what changed.
+- During feature discussions, do not recommend first-version, throwaway, or partial-product approaches; treat this project as a complete product in progress and recommend paths that preserve a coherent end-state.
 
 ## Project Shape
 
