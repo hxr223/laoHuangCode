@@ -151,6 +151,8 @@ if (args[0] === "capture-pane") {
     assert.match(result.stdout, /laohuang smoke ok/);
     const log = readFileSync(logPath, "utf8");
     assert.match(log, /new-session/);
+    assert.match(log, /--version/);
+    assert.match(log, /sleep/);
     assert.match(log, /capture-pane/);
     assert.match(log, /kill-session/);
   });
