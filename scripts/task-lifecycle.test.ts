@@ -5,7 +5,7 @@ import { EventBus, EventKind } from "../packages/core/runtime-protocol/src/index
 import {
   TaskLifecycle,
   TaskState,
-} from "../src/core/task-lifecycle.ts";
+} from "../packages/core/session-runtime/src/index.ts";
 
 function makeLifecycle(): { lifecycle: TaskLifecycle; eventBus: EventBus } {
   const eventBus = new EventBus();

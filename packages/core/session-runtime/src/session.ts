@@ -247,7 +247,7 @@ export interface CloseOptions {
 }
 
 /**
- * Owns runtime coordination while the CodingAgent owns model/tool logic.
+ * Owns runtime coordination while an injected worker owns model/tool logic.
  *
  * The Python original coordinates worker threads with locks; here every
  * critical section is synchronous, so atomicity comes from the event loop.

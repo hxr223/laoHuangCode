@@ -1,13 +1,14 @@
 /** Small, isolated model call for ambiguous input routing. */
 
-// Route decision types are owned canonically by routing.ts; re-exported here
-// so existing consumers of this module keep working.
+// Route decision types are owned canonically by runtime-protocol; re-exported
+// here so existing consumers of this module keep working.
 import type {
   RouteDecision,
   RouteDestination,
   RouteStrategy,
   RouteTiming,
-} from "./routing.ts";
+  SemanticClassifierTask,
+} from "@laohuang/runtime-protocol";
 import type {
   ChatCompletionRequest,
   ChatCompletionsClient,
@@ -19,6 +20,7 @@ export type {
   RouteStrategy,
   RouteTiming,
 };
+export type { SemanticClassifierTask } from "@laohuang/runtime-protocol";
 export type {
   ChatCompletionRequest,
   ChatCompletionsClient,
@@ -27,13 +29,6 @@ export type {
 /** Minimal shape of events.EventEnvelope used by the classifier. */
 export interface SemanticClassifierEvent {
   readonly payload: Readonly<Record<string, unknown>>;
-}
-
-/** Minimal shape of routing.TaskRecord used by the classifier. */
-export interface SemanticClassifierTask {
-  readonly taskId: string;
-  /** TaskState value, e.g. "running_model". */
-  readonly state: string;
 }
 
 const SYSTEM_PROMPT = `Classify one new user message for a running coding task.

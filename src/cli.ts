@@ -26,7 +26,12 @@ import { EventProjector } from "@laohuang/runtime-protocol";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 import { findProjectRoot } from "@laohuang/project-instructions";
-import { routeHumanIntent } from "./core/human-intent-router.ts";
+import {
+  AgentSession,
+  routeHumanIntent,
+  SessionState,
+  type Submission,
+} from "@laohuang/session-runtime";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import {
   makeCancelIntent,
@@ -37,7 +42,6 @@ import {
   SmallModelSemanticClassifier,
   type ChatCompletionsClient,
 } from "./semantic-classifier.ts";
-import { AgentSession, SessionState, type Submission } from "./session.ts";
 import { PromptCancelledError, PromptEofError } from "./tui/input.ts";
 import {
   PlainEventSink,

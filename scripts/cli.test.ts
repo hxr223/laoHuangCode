@@ -24,7 +24,7 @@ import { ModelSelector } from "../src/model-selection.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
 import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import { AgentSession } from "../src/session.ts";
+import { AgentSession } from "@laohuang/session-runtime";
 import { PromptEofError } from "../src/tui/input.ts";
 import { MemoryTerminalDriver } from "../src/tui/screen.ts";
 import { PlainEventSink, TerminalUI } from "../src/tui/ui.ts";
