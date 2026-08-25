@@ -117,7 +117,7 @@ export interface CodingAgentOptions {
   repeatedToolCallLimit?: number;
   onToolEvent?: ToolEventCallback | null;
   onAgentEvent?: AgentEventCallback | null;
-  provider?: string | null;
+  provider: string | null;
   toolExecution?: ToolExecutionMode;
   /**
    * Project root used only for project-instruction loading (both this and

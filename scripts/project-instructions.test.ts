@@ -11,10 +11,8 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import {
-  CodingAgent,
-  type AgentContext,
-} from "@laohuang/agent-runtime";
+import { CodingAgent } from "@laohuang/agent-runtime";
+import type { AgentContext } from "../packages/core/agent-runtime/src/agent.ts";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   findProjectRoot,
@@ -307,6 +305,7 @@ test("first request order is system, user, then baseline reminder", async (t) =>
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -336,6 +335,7 @@ test("baseline is injected once across two run turns", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -362,6 +362,7 @@ test("no instruction files means no injected message", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -383,6 +384,7 @@ test("agent without instruction options injects nothing", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
   });
 
@@ -421,6 +423,7 @@ test("successful read discovers descendant instructions after tool results", asy
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -459,6 +462,7 @@ test("successful edit also discovers descendant instructions", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -497,6 +501,7 @@ test("one reminder covers the root-to-dir chain broad to specific", async (t) =>
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -533,6 +538,7 @@ test("bash never triggers discovery", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -563,6 +569,7 @@ test("failed and out-of-root file operations yield no discovery", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -597,6 +604,7 @@ test("cancelled tool operations yield no discovery", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -620,6 +628,7 @@ test("scopes loaded by the baseline are not re-injected", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -660,6 +669,7 @@ test("a scope discovered once is not re-injected on later touches", async (t) =>
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -707,6 +717,7 @@ test("touched absolute path never appears in serialized history", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
