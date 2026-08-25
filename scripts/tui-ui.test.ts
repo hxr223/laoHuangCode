@@ -132,6 +132,65 @@ test("transcript component reports the first mutable rendered row", () => {
   assert.ok(rendered.lines[rendered.activeStart]?.includes("streaming answer"));
 });
 
+test("transcript component returns newline-free logical rows", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const transcript = new Transcript({
+    blocks: [
+      {
+        kind: "user",
+        key: "u1",
+        text: "您好",
+        mutable: false,
+        name: "",
+        subject: "",
+        status: "",
+        exitCode: null,
+        durationMs: null,
+        streamError: "",
+        toolOutput: "",
+        toolOutputExpanded: false,
+        style: "",
+      },
+      {
+        kind: "thinking",
+        key: "r1",
+        text: "thinking line",
+        mutable: true,
+        name: "",
+        subject: "",
+        status: "",
+        exitCode: null,
+        durationMs: null,
+        streamError: "",
+        toolOutput: "",
+        toolOutputExpanded: false,
+        style: "",
+      },
+    ],
+    theme: ui.theme,
+  });
+
+  const rendered = transcript.renderWithMetadata(20);
+
+  assert.ok(rendered.lines.length > 0);
+  assert.ok(rendered.lines.every((line) => !/[\r\n]/u.test(line)));
+});
+
+test("built screen frame never embeds physical newlines in logical rows", () => {
+  const ui = new TerminalUI({
+    theme: "dark",
+    driver: new MemoryTerminalDriver({ columns: 40, rows: 8 }),
+    capabilities: { reasoning: true },
+  });
+  ui.acceptUserInput("您好");
+  ui.applyProjectedEvent(event("model.reasoning_delta", "r1", { text: "step one" }));
+
+  const frame = ui.buildFrame({ width: 40, editor: new EditorState() });
+
+  assert.ok(frame.lines.length > 0);
+  assert.ok(frame.lines.every((line) => !/[\r\n]/u.test(line)));
+});
+
 test("default terminal ui editor exits on a second idle ctrl c", async () => {
   class ScriptedInput implements LoopInputSource {
     #dataHandlers: Array<(data: Uint8Array) => void> = [];
@@ -323,6 +382,14 @@ test("event publication does not write before loop drains", () => {
   assert.equal(terminal.writes(), "");
   ui.drainLoop();
   assert.ok(terminal.writes().includes("queued"));
+});
+
+test("terminal ui keeps reasoning display visible by default", () => {
+  const ui = new TerminalUI({ theme: "dark", capabilities: { reasoning: false } });
+
+  ui.applyProjectedEvent(event("model.reasoning_delta", "r1", { text: "visible log" }));
+
+  assert.ok(ui.buildHistoryLines(80).join("\n").includes("visible log"));
 });
 
 test("terminal-local backpressure produces a dropped display marker", () => {
@@ -549,6 +616,15 @@ test("raw loop stays in the regular terminal screen", () => {
 
   assert.ok(!terminal.writes().includes("\x1b[?1049h"));
   assert.ok(!terminal.writes().includes("\x1b[2J"));
+});
+
+test("raw loop enables a blinking bar cursor", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+
+  ui.startLoop(() => {});
+
+  assert.ok(terminal.writes().includes("\x1b[5 q"));
 });
 
 test("raw loop bracketed paste lifecycle writes start and close", () => {

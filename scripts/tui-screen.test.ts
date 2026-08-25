@@ -221,6 +221,18 @@ test("over width line raises before writing", () => {
   assert.equal(terminal.writes(), "");
 });
 
+test("embedded physical newline raises before writing", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 2 });
+  const renderer = new PiMainScreenRenderer(terminal);
+
+  assert.throws(
+    () => renderer.render(frame(["thinking\nleaked"], 0, 0)),
+    /contains a physical newline/,
+  );
+
+  assert.equal(terminal.writes(), "");
+});
+
 test("visible width ignores ansi and terminal controls", () => {
   const styled = "\x1b[31m你好\x1b[0m";
   const linked = "\x1b]8;;https://example.test\x1b\\abc\x1b]8;;\x1b\\";
@@ -307,6 +319,7 @@ test("close restores driver and cursor", () => {
   renderer.close();
 
   assert.equal(terminal.restored, true);
+  assert.ok(terminal.writes().includes("\x1b[0 q"));
   assert.ok(terminal.writes().includes("\x1b[?25h"));
   renderer.close();
   assert.equal(terminal.restoreCalls, 1);

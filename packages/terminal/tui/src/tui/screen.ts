@@ -311,7 +311,7 @@ export class PiMainScreenRenderer {
     }
     this.#closed = true;
     try {
-      this.#terminal.write("\x1b[?25h");
+      this.#terminal.write("\x1b[0 q\x1b[?25h");
       this.#terminal.flush();
     } finally {
       this.#terminal.restore();
@@ -372,6 +372,9 @@ export class PiMainScreenRenderer {
 
   static #validateLines(lines: readonly string[], width: number): void {
     lines.forEach((line, index) => {
+      if (/[\r\n]/u.test(line)) {
+        throw new Error(`rendered line ${index} contains a physical newline`);
+      }
       const lineWidth = visibleWidth(line);
       if (lineWidth > width) {
         throw new Error(

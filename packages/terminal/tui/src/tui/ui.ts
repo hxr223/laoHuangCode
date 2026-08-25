@@ -449,6 +449,7 @@ export class InteractiveTerminalLoop {
       return;
     }
     this.#terminalModesStarted = true;
+    this.#driver.write("\x1b[5 q");
     this.#driver.write("\x1b[?2004h");
     this.#keyboardProtocolPushed = true;
     this.#driver.write("\x1b[>7u\x1b[?u\x1b[c");
@@ -1128,8 +1129,9 @@ export class TerminalUI {
     secret?: boolean;
   }): ScreenFrame {
     const { width, editor } = options;
-    const { lines: history, activeStart } = this.#buildHistoryFrameParts(width);
-    const completion = this.#completionLines(width, editor);
+    const contentWidth = width >= 4 ? width - 4 : width;
+    const { lines: history, activeStart } = this.#buildHistoryFrameParts(contentWidth);
+    const completion = this.#completionLines(contentWidth, editor);
     return this.#frameBuilder.build({
       ...options,
       historyLines: history,
