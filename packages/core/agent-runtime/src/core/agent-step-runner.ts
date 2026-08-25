@@ -6,9 +6,14 @@ import {
   ModelStreamCancelled,
   ModelStreamError,
   modelErrorKind,
+  type AssistantModelMessage,
+  type ModelMessage,
+  type ModelUsage,
+  type TextContentBlock,
+  type ToolCallContentBlock,
 } from "@laohuang/llm";
 import { touchedPathOf } from "@laohuang/tools";
-import type { ToolExecutionMode, ToolResult } from "@laohuang/tools";
+import type { ToolCall, ToolExecutionMode, ToolResult, ToolSpec } from "@laohuang/tools";
 import {
   HistoryCommitter,
   type HistoryCommitContext,
@@ -35,10 +40,11 @@ export interface AgentStepRunnerContext extends HistoryCommitContext {
 
 export interface AgentStepRunnerOptions {
   model: string;
-  provider: string | null;
+  provider: string;
+  baseUrl: string | null;
   modelRuntime: ModelRuntime;
   toolRuntime: ToolRuntime;
-  toolDefinitions: Array<Record<string, unknown>>;
+  toolDefinitions: readonly ToolSpec[];
   toolExecution: ToolExecutionMode;
   history: HistoryCommitter;
   guardPolicy: GuardPolicy;
@@ -125,19 +131,22 @@ export class AgentStepRunner {
       });
       const requestMessages = history.snapshot();
       if (forceFinal) {
-        const systemMessage: Record<string, unknown> = {
-          ...(requestMessages[0] ?? {}),
-        };
-        systemMessage["content"] =
-          `${String(systemMessage["content"] ?? "")}\n\n${FORCED_FINAL_PROMPT}`;
-        requestMessages[0] = systemMessage;
+        const first = requestMessages[0];
+        if (first?.role === "system") {
+          requestMessages[0] = {
+            ...first,
+            content: `${first.content}\n\n${FORCED_FINAL_PROMPT}`,
+          };
+        }
       }
 
       let result;
       try {
         const modelRequestOpened = context?.modelRequestOpened;
         result = await this.options.modelRuntime.complete({
+          provider: this.options.provider,
           model: this.options.model,
+          ...(this.options.baseUrl === null ? {} : { baseUrl: this.options.baseUrl }),
           messages: requestMessages,
           tools: this.options.toolDefinitions,
           toolChoice: forceFinal ? "none" : "auto",
@@ -145,7 +154,7 @@ export class AgentStepRunner {
           cancelToken,
           isRequestActive: this.options.isRequestActive,
           onDelta: (kind, payload) => {
-            this.emit(kind, { round: modelRound, ...payload });
+            this.emit(kind, { round: modelRound, request_id: requestId, ...payload });
           },
           onRequestOpened: modelRequestOpened
             ? () => modelRequestOpened.call(context)
@@ -196,11 +205,11 @@ export class AgentStepRunner {
         throw this.options.createError(message, error);
       }
 
-      const toolCalls = [...result.toolCalls];
+      const toolCalls = toolCallsOf(result.message);
       let requestTokens = usageTotalTokens(result.usage);
       const tokensEstimated = requestTokens === 0;
       if (tokensEstimated) {
-        requestTokens = estimateRequestTokens(requestMessages, result.messageDict());
+        requestTokens = estimateRequestTokens(requestMessages, result.message);
       }
       totalTokens += requestTokens;
       this.emit("model_response", {
@@ -208,7 +217,7 @@ export class AgentStepRunner {
         request_id: requestId,
         finish_reason: result.finishReason,
         tool_call_count: toolCalls.length,
-        tool_names: toolCalls.map((call) => call.function.name),
+        tool_names: toolCalls.map((call) => call.name),
         tool_call_ids: toolCalls.map((call) => call.id),
         usage: result.usage,
         request_tokens: requestTokens,
@@ -249,8 +258,7 @@ export class AgentStepRunner {
         continue;
       }
 
-      const assistantMessage = result.messageDict();
-      if (!history.commitAssistant(assistantMessage)) {
+      if (!history.commitAssistant(result.message)) {
         this.emit("model_response_aborted", {
           round: modelRound,
           request_id: requestId,
@@ -259,15 +267,16 @@ export class AgentStepRunner {
         throw this.options.createCancelled("cancelled before history commit");
       }
       this.emit("model_response_committed", { round: modelRound, request_id: requestId });
+      const text = textOf(result.message);
       if (toolCalls.length === 0) {
-        if (result.content === null) {
+        if (text === "") {
           throw this.options.createError("Model response had no content");
         }
         this.emit("assistant_response", {
           round: modelRound,
-          content: truncateForEvent(result.content),
+          content: truncateForEvent(text),
         });
-        return result.content;
+        return text;
       }
 
       toolRounds += 1;
@@ -318,7 +327,7 @@ export class AgentStepRunner {
     event: ToolRuntimeToolResultEvent,
     modelRound: number,
   ): void {
-    this.options.onToolEvent(event.toolCall.function.name, event.args, event.result);
+    this.options.onToolEvent(event.toolCall.name, event.args, event.result);
     const status = event.result["status"];
     this.emit("tool_result", {
       ...this.toolEventContext(event, modelRound),
@@ -337,7 +346,7 @@ export class AgentStepRunner {
       index: event.index,
       batch_size: event.batchSize,
       tool_call_id: event.toolCall.id,
-      name: event.toolCall.function.name,
+      name: event.toolCall.name,
     };
   }
 
@@ -377,36 +386,31 @@ export class AgentStepRunner {
   }
 }
 
-function usageTotalTokens(usage: unknown): number {
-  if (usage === null || usage === undefined || typeof usage !== "object") {
-    return 0;
-  }
-  const record = usage as Record<string, unknown>;
-  const total = record["total_tokens"];
-  if (isJsonInteger(total)) {
-    return Math.max(0, total);
-  }
-  const input = record["prompt_tokens"] ?? record["input_tokens"] ?? 0;
-  const output = record["completion_tokens"] ?? record["output_tokens"] ?? 0;
-  let sum = 0;
-  for (const value of [input, output]) {
-    if (isJsonInteger(value) && value > 0) {
-      sum += value;
-    }
-  }
-  return sum;
-}
-
-function isJsonInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value);
+function usageTotalTokens(usage: ModelUsage): number {
+  return usage.inputTokens + usage.outputTokens;
 }
 
 function estimateRequestTokens(
-  messages: Array<Record<string, unknown>>,
-  response: Record<string, unknown>,
+  messages: readonly ModelMessage[],
+  response: AssistantModelMessage,
 ): number {
   const serialized = JSON.stringify([...messages, response]);
   return Math.max(1, Math.floor((Buffer.byteLength(serialized, "utf8") + 3) / 4));
+}
+
+function toolCallsOf(message: AssistantModelMessage): ToolCall[] {
+  return message.content
+    .filter(
+      (block): block is ToolCallContentBlock => block.type === "tool-call",
+    )
+    .map((block) => block.call);
+}
+
+function textOf(message: AssistantModelMessage): string {
+  return message.content
+    .filter((block): block is TextContentBlock => block.type === "text")
+    .map((block) => block.text)
+    .join("");
 }
 
 function guardErrorMessage(payload: Record<string, unknown>): string {

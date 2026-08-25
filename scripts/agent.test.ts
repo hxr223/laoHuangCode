@@ -13,29 +13,35 @@ import type { AgentContext } from "../packages/core/agent-runtime/src/agent.ts";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import { EventBus, EventKind } from "../packages/core/runtime-protocol/src/index.ts";
 import {
-  type ToolDefinition,
-  type ToolResult,
   type ToolSpec,
+  type ToolResult,
 } from "../packages/core/tools/src/index.ts";
-import { OpenAICompatibleAdapter } from "@laohuang/llm-openai-compatible";
+import type {
+  ModelAdapter,
+  ModelInfo,
+  ModelProviderInfo,
+  ModelRequest,
+  ModelResult,
+} from "@laohuang/llm";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 // --- Fakes -------------------------------------------------------------------
 
 class FakeToolCall {
   readonly id: string;
-  readonly type = "function";
-  readonly function: { name: string; arguments: string };
+  readonly name: string;
+  readonly arguments: string;
 
   constructor(id: string, name: string, args: string) {
     this.id = id;
-    this.function = { name, arguments: args };
+    this.name = name;
+    this.arguments = args;
   }
 }
 
 class FakeMessage {
   readonly content: string | null;
-  readonly tool_calls: FakeToolCall[] | null;
+  readonly toolCalls: FakeToolCall[] | null;
   readonly usage: unknown;
 
   constructor(
@@ -46,28 +52,28 @@ class FakeMessage {
     } = {},
   ) {
     this.content = init.content ?? null;
-    this.tool_calls = init.tool_calls ?? null;
+    this.toolCalls = init.tool_calls ?? null;
     this.usage = init.usage ?? null;
   }
 }
 
 class FakeCompletions {
-  readonly requests: Array<Record<string, unknown>> = [];
+  readonly requests: ModelRequest[] = [];
   private readonly messages: Iterator<FakeMessage>;
 
   constructor(messages: FakeMessage[]) {
     this.messages = messages[Symbol.iterator]();
   }
 
-  create(request: Record<string, unknown>): Record<string, unknown> {
+  create(request: ModelRequest): ModelResult {
     this.requests.push(request);
     const message = this.messages.next().value as FakeMessage;
-    return { choices: [{ message }], usage: message.usage };
+    return resultFromFakeMessage(request, message);
   }
 }
 
 class FailingCompletions {
-  create(): never {
+  create(_request: ModelRequest): never {
     throw new Error("network unavailable");
   }
 }
@@ -82,7 +88,7 @@ class AuthenticationFailure extends Error {
 }
 
 class AuthenticationFailingCompletions {
-  create(): never {
+  create(_request: ModelRequest): never {
     throw new AuthenticationFailure("invalid API key");
   }
 }
@@ -92,19 +98,37 @@ function fakeClient(...messages: FakeMessage[]) {
   return { chat: { completions }, completions };
 }
 
+interface FakeClientLike {
+  readonly chat: {
+    readonly completions: {
+      create(request: ModelRequest): ModelResult;
+    };
+  };
+  readonly completions?: {
+    create(request: ModelRequest): ModelResult;
+  };
+}
+
 function fakeModelAdapter(
-  client: ReturnType<typeof fakeClient>,
+  client: FakeClientLike,
   provider = "openai",
-): OpenAICompatibleAdapter {
-  return new OpenAICompatibleAdapter({
-    provider,
-    capabilities: {
-      streaming: true,
-      reasoningReplay: provider === "deepseek",
-      thinkingSettings: provider === "deepseek",
+): ModelAdapter {
+  const completions = client.completions ?? client.chat.completions;
+  return {
+    name: provider,
+    runAttempt(request: ModelRequest): Promise<ModelResult> {
+      return Promise.resolve(completions.create(request));
     },
-    client,
-  });
+    listProviders(): readonly ModelProviderInfo[] {
+      return [
+        { id: "openai", name: "OpenAI" },
+        { id: "deepseek", name: "DeepSeek" },
+      ];
+    },
+    listModels(routeProvider: string): readonly ModelInfo[] {
+      return [{ provider: routeProvider, id: "test-model", name: "Test Model" }];
+    },
+  };
 }
 
 // --- Streaming fakes (mirrors tests/test_model_stream.py helpers) ------------
@@ -170,28 +194,28 @@ class FakeStream {
 }
 
 class FakeStreamCompletions {
-  readonly requests: Array<Record<string, unknown>> = [];
+  readonly requests: ModelRequest[] = [];
   private readonly responses: Iterator<unknown>;
 
   constructor(responses: unknown[]) {
     this.responses = responses[Symbol.iterator]();
   }
 
-  create(request: Record<string, unknown>): unknown {
+  create(request: ModelRequest): ModelResult {
     this.requests.push(request);
     const response = this.responses.next().value;
     if (response instanceof Error) {
       throw response;
     }
-    return response;
+    return resultFromFakeStream(request, response);
   }
 }
 
 class CancellingTools {
-  readonly definitions: ToolDefinition[] = [
-    { type: "function", function: { name: "read" } } as ToolDefinition,
+  readonly definitions: readonly ToolSpec[] = [
+    { name: "read", description: "Read", parameters: { type: "object" }, promptGuidelines: [] },
   ];
-  readonly orderedSpecs: readonly ToolSpec[] = [];
+  readonly orderedSpecs: readonly ToolSpec[] = this.definitions;
   private readonly token: CancelToken;
 
   constructor(token: CancelToken) {
@@ -228,42 +252,163 @@ function collectEvents(events: CollectedEvent[]) {
 }
 
 function requestMessages(
-  completions: { requests: Array<Record<string, unknown>> },
+  completions: { requests: ModelRequest[] },
   index: number,
-): Array<Record<string, unknown>> {
-  return completions.requests[index]?.["messages"] as Array<
-    Record<string, unknown>
-  >;
+): ModelRequest["messages"] {
+  return completions.requests[index]?.messages ?? [];
+}
+
+function resultFromFakeMessage(
+  request: ModelRequest,
+  message: FakeMessage,
+): ModelResult {
+  return {
+    requestId: request.requestId ?? "request",
+    finishReason: message.toolCalls === null ? "stop" : "tool-calls",
+    usage: usageOf(message.usage),
+    message: {
+      role: "assistant",
+      provider: request.provider,
+      model: request.model,
+      content: [
+        ...(message.content === null ? [] : [{ type: "text" as const, text: message.content }]),
+        ...((message.toolCalls ?? []).map((call) => ({
+          type: "tool-call" as const,
+          call: { id: call.id, name: call.name, arguments: call.arguments },
+        }))),
+      ],
+    },
+  };
+}
+
+function resultFromFakeStream(request: ModelRequest, response: unknown): ModelResult {
+  if (!(response instanceof FakeStream)) {
+    throw new Error("unexpected fake stream response");
+  }
+  let content = "";
+  let reasoning = "";
+  let finishReason: ModelResult["finishReason"] = "stop";
+  let usage: unknown = null;
+  const calls = new Map<number, { id: string; name: string; arguments: string }>();
+  for (const chunkValue of response) {
+    const chunkRecord = chunkValue as Record<string, unknown>;
+    usage = chunkRecord["usage"] ?? usage;
+    const choice = (chunkRecord["choices"] as unknown[] | undefined)?.[0] as
+      | Record<string, unknown>
+      | undefined;
+    if (choice === undefined) {
+      continue;
+    }
+    const deltaRecord = choice["delta"] as Record<string, unknown> | null;
+    const finish = choice["finish_reason"];
+    if (deltaRecord !== null && deltaRecord !== undefined) {
+      const textDelta = deltaRecord["content"];
+      if (typeof textDelta === "string") {
+        content += textDelta;
+        request.onEvent?.({ type: "text-delta", text: textDelta });
+      }
+      const reasoningDelta = deltaRecord["reasoning_content"];
+      if (typeof reasoningDelta === "string") {
+        reasoning += reasoningDelta;
+        request.onEvent?.({ type: "reasoning-delta", text: reasoningDelta });
+      }
+      const toolDeltas = deltaRecord["tool_calls"];
+      if (Array.isArray(toolDeltas)) {
+        for (const toolDelta of toolDeltas) {
+          const record = toolDelta as Record<string, unknown>;
+          const index = typeof record["index"] === "number" ? record["index"] : 0;
+          const fn = record["function"] as Record<string, unknown> | undefined;
+          const existing = calls.get(index) ?? { id: "", name: "", arguments: "" };
+          const id = typeof record["id"] === "string" ? record["id"] : existing.id;
+          const name = typeof fn?.["name"] === "string" ? fn["name"] : existing.name;
+          const args = typeof fn?.["arguments"] === "string"
+            ? existing.arguments + fn["arguments"]
+            : existing.arguments;
+          calls.set(index, { id, name, arguments: args });
+          request.onEvent?.({
+            type: "tool-call-delta",
+            index,
+            id,
+            ...(name === "" ? {} : { name }),
+            argumentsDelta: typeof fn?.["arguments"] === "string" ? fn["arguments"] : "",
+          });
+        }
+      }
+    }
+    if (finish === "tool_calls") finishReason = "tool-calls";
+    if (finish === "length") finishReason = "max-tokens";
+    if (finish === "stop") finishReason = "stop";
+  }
+  request.onEvent?.({ type: "response-validating" });
+  return {
+    requestId: request.requestId ?? "request",
+    finishReason,
+    usage: usageOf(usage),
+    message: {
+      role: "assistant",
+      provider: request.provider,
+      model: request.model,
+      content: [
+        ...(content === "" ? [] : [{ type: "text" as const, text: content }]),
+        ...(reasoning === "" ? [] : [{ type: "reasoning" as const, text: reasoning }]),
+        ...[...calls.entries()]
+          .sort(([left], [right]) => left - right)
+          .map(([, call]) => ({ type: "tool-call" as const, call })),
+      ],
+    },
+  };
+}
+
+function usageOf(value: unknown): ModelResult["usage"] {
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const prompt = tokenValue(record["prompt_tokens"] ?? record["input_tokens"]);
+    const completion = tokenValue(record["completion_tokens"] ?? record["output_tokens"]);
+    const total = tokenValue(record["total_tokens"]);
+    if (prompt !== 0 || completion !== 0) {
+      return { inputTokens: prompt, outputTokens: completion };
+    }
+    if (total !== 0) {
+      return { inputTokens: total, outputTokens: 0 };
+    }
+  }
+  return { inputTokens: 0, outputTokens: 0 };
+}
+
+function tokenValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : 0;
 }
 
 // --- Tests (translated from tests/test_agent.py) ------------------------------
 
 test("model can switch without losing conversation history", async (t) => {
   const directory = tempDir(t);
-  const originalClient = fakeClient(new FakeMessage({ content: "hello" }));
-  const replacementClient = fakeClient(
+  const client = fakeClient(
+    new FakeMessage({ content: "hello" }),
     new FakeMessage({ content: "switched" }),
   );
   const events: CollectedEvent[] = [];
   const agent = new CodingAgent({
-    modelAdapter: fakeModelAdapter(originalClient),
+    modelAdapter: fakeModelAdapter(client),
     model: "old-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
   await agent.run("first turn");
 
   agent.switchModel({
-    modelAdapter: fakeModelAdapter(replacementClient),
     model: "new-model",
     provider: "openai",
+    baseUrl: null,
   });
   const answer = await agent.run("second turn");
 
   assert.equal(answer, "switched");
   assert.equal(
-    replacementClient.completions.requests[0]?.["model"],
+    client.completions.requests[1]?.model,
     "new-model",
   );
   assert.ok(
@@ -278,7 +423,7 @@ test("user receives a direct model response", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -300,7 +445,7 @@ test("agent executes a tool and returns the follow-up response", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     onToolEvent: (name, args, result) => {
       events.push([name, args, result]);
@@ -311,8 +456,8 @@ test("agent executes a tool and returns the follow-up response", async (t) => {
 
   assert.equal(result, "The answer is 42.");
   const toolMessage = requestMessages(client.completions, 1).at(-1)!;
-  assert.equal(toolMessage["role"], "tool");
-  assert.equal(toolMessage["tool_call_id"], "call_1");
+  assert.equal(toolMessage["role"], "tool-result");
+  assert.equal(toolMessage.role === "tool-result" ? toolMessage.toolCallId : "", "call_1");
   assert.ok(String(toolMessage["content"]).includes('"content":"42"'));
   assert.equal(events[0]?.[0], "read");
   assert.deepEqual(events[0]?.[1], { path: "answer.txt" });
@@ -341,7 +486,7 @@ test("agent does not limit tool rounds or model requests", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -351,7 +496,7 @@ test("agent does not limit tool rounds or model requests", async (t) => {
   assert.equal(client.completions.requests.length, 22);
   assert.ok(
     client.completions.requests.every(
-      (request) => request["tool_choice"] === "auto",
+      (request) => request.toolChoice === "auto",
     ),
   );
 });
@@ -379,7 +524,7 @@ test("repeated tool call forces a final answer after three matches", async (t) =
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -388,7 +533,7 @@ test("repeated tool call forces a final answer after three matches", async (t) =
 
   assert.equal(result, "No more tool calls.");
   assert.equal(client.completions.requests.length, 4);
-  assert.equal(client.completions.requests.at(-1)?.["tool_choice"], "none");
+  assert.equal(client.completions.requests.at(-1)?.toolChoice, "none");
   const guard = events.find((event) => event.type === "agent_guard_triggered");
   assert.ok(guard !== undefined);
   assert.ok(String(guard.payload["reason"]).includes("repeated tool call"));
@@ -429,14 +574,14 @@ test("repeated tool counter resets after a different result", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
   assert.equal(await agent.run("Read files"), "Finished normally.");
   assert.ok(
     client.completions.requests.every(
-      (request) => request["tool_choice"] === "auto",
+      (request) => request.toolChoice === "auto",
     ),
   );
 });
@@ -451,7 +596,7 @@ test("token budget forces final without committing unmatched calls", async (t) =
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     maxTotalTokens: 100,
   });
@@ -459,7 +604,7 @@ test("token budget forces final without committing unmatched calls", async (t) =
   const result = await agent.run("Spend tokens");
 
   assert.equal(result, "Budget reached.");
-  assert.equal(client.completions.requests.at(-1)?.["tool_choice"], "none");
+  assert.equal(client.completions.requests.at(-1)?.toolChoice, "none");
   assert.ok(agent.messages.every((message) => !message["tool_calls"]));
 });
 
@@ -469,13 +614,13 @@ test("elapsed budget can force no-tool answer immediately", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     maxElapsedSeconds: 1e-12,
   });
 
   assert.equal(await agent.run("No time"), "Time limit.");
-  assert.equal(client.completions.requests[0]?.["tool_choice"], "none");
+  assert.equal(client.completions.requests[0]?.toolChoice, "none");
 });
 
 test("failed forced final reports guard counters and reason", async (t) => {
@@ -493,7 +638,7 @@ test("failed forced final reports guard counters and reason", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -506,7 +651,7 @@ test("failed forced final reports guard counters and reason", async (t) => {
     return true;
   });
 
-  assert.equal(agent.messages.at(-1)?.["role"], "tool");
+  assert.equal(agent.messages.at(-1)?.["role"], "tool-result");
 });
 
 test("multiple tool calls run in returned order", async (t) => {
@@ -527,7 +672,7 @@ test("multiple tool calls run in returned order", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -540,7 +685,7 @@ test("multiple tool calls run in returned order", async (t) => {
   );
   const toolMessages = requestMessages(client.completions, 1).slice(-2);
   assert.deepEqual(
-    toolMessages.map((message) => message["tool_call_id"]),
+    toolMessages.map((message) => message.role === "tool-result" ? message.toolCallId : null),
     ["call_1", "call_2"],
   );
 });
@@ -569,7 +714,7 @@ test("tool batch executes concurrently and returns source order", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 2 }),
   });
 
@@ -580,7 +725,7 @@ test("tool batch executes concurrently and returns source order", async (t) => {
     (message) => JSON.parse(String(message["content"])) as ToolResult,
   );
   assert.deepEqual(
-    toolMessages.map((message) => message["tool_call_id"]),
+    toolMessages.map((message) => message.role === "tool-result" ? message.toolCallId : null),
     ["call_1", "call_2"],
   );
   assert.deepEqual(
@@ -612,7 +757,7 @@ test("global sequential mode runs tool calls one by one", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 1 }),
     toolExecution: "sequential",
   });
@@ -647,7 +792,7 @@ test("one sequential tool forces the whole batch to run sequentially", async (t)
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory, {
       executionModes: { bash: "sequential" },
     }),
@@ -680,7 +825,7 @@ test("completion events are live while messages stay source ordered", async (t) 
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -693,7 +838,7 @@ test("completion events are live while messages stay source ordered", async (t) 
   const toolMessages = requestMessages(client.completions, 1).slice(-2);
   assert.deepEqual(completedIds, ["call_2", "call_1"]);
   assert.deepEqual(
-    toolMessages.map((message) => message["tool_call_id"]),
+    toolMessages.map((message) => message.role === "tool-result" ? message.toolCallId : null),
     ["call_1", "call_2"],
   );
 });
@@ -707,7 +852,7 @@ test("consecutive user turns share conversation history", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -719,7 +864,14 @@ test("consecutive user turns share conversation history", async (t) => {
     secondRequest.map((message) => message["role"]),
     ["system", "user", "assistant", "user"],
   );
-  assert.equal(secondRequest.at(-2)?.["content"], "First answer");
+  const previousAssistant = secondRequest.at(-2);
+  assert.equal(
+    previousAssistant?.role === "assistant" &&
+      previousAssistant.content[0]?.type === "text"
+      ? previousAssistant.content[0].text
+      : "",
+    "First answer",
+  );
 });
 
 test("api failures become actionable agent errors", async (t) => {
@@ -729,7 +881,7 @@ test("api failures become actionable agent errors", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -779,7 +931,7 @@ test("events group batch tool calls under one model round", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -820,7 +972,7 @@ test("events distinguish consecutive user turns", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -876,14 +1028,23 @@ test("agent preserves reasoning for tool round then strips on switch", async (t)
   assert.equal(await agent.run("read it"), "finished");
 
   const assistant = requestMessages(completions, 1).at(-2)!;
-  assert.equal(assistant["reasoning_content"], "private reasoning");
+  assert.equal(
+    assistant.role === "assistant" ? assistant.content[0]?.type : null,
+    "reasoning",
+  );
+  assert.equal(
+    assistant.role === "assistant" && assistant.content[0]?.type === "reasoning"
+      ? assistant.content[0].text
+      : "",
+    "private reasoning",
+  );
   agent.switchModel({
-    modelAdapter: fakeModelAdapter(client),
     model: "gpt-test",
     provider: "openai",
+    baseUrl: null,
   });
   assert.ok(
-    agent.messages.every((message) => !("reasoning_content" in message)),
+    agent.messages.every((message) => message.role !== "assistant" || message.replay === undefined),
   );
 });
 
@@ -892,17 +1053,14 @@ test("failed attempt is not committed to agent history", async (t) => {
   const client = {
     chat: {
       completions: new FakeStreamCompletions([
-        new FakeStream([
-          chunk({ delta: delta({ content: "visible partial" }) }),
-          chunk({ delta: delta(), finish_reason: "length" }),
-        ]),
+        new Error("provider failed"),
       ]),
     },
   };
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -915,9 +1073,7 @@ test("failed attempt is not committed to agent history", async (t) => {
     agent.messages.map((message) => message["role"]),
     ["system", "user"],
   );
-  assert.ok(
-    agent.messages.every((message) => message["content"] !== "visible partial"),
-  );
+  assert.ok(agent.messages.every((message) => message.role !== "assistant"));
 });
 
 test("cancel at history commit boundary discards assistant", async (t) => {
@@ -942,7 +1098,7 @@ test("cancel at history commit boundary discards assistant", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -980,7 +1136,7 @@ test("agent publishes canonical model events", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(directory),
   });
 
@@ -1026,7 +1182,7 @@ test("cancelled tool batch keeps history pairs", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
-    provider: null,
+    provider: "openai",
     tools: new CancellingTools(token),
   });
 
@@ -1041,13 +1197,20 @@ test("cancelled tool batch keeps history pairs", async (t) => {
 
   assert.deepEqual(
     agent.messages.map((message) => message["role"]),
-    ["system", "user", "assistant", "tool"],
+    ["system", "user", "assistant", "tool-result"],
   );
-  const toolCalls = agent.messages.at(-2)?.["tool_calls"] as Array<
-    Record<string, unknown>
-  >;
-  assert.equal(toolCalls[0]?.["id"], "call_1");
-  assert.equal(agent.messages.at(-1)?.["tool_call_id"], "call_1");
+  const assistant = agent.messages.at(-2);
+  assert.equal(
+    assistant?.role === "assistant" && assistant.content[0]?.type === "tool-call"
+      ? assistant.content[0].call.id
+      : "",
+    "call_1",
+  );
+  const toolResult = agent.messages.at(-1);
+  assert.equal(
+    toolResult?.role === "tool-result" ? toolResult.toolCallId : "",
+    "call_1",
+  );
   assert.ok(
     String(agent.messages.at(-1)?.["content"]).includes('"status":"cancelled"'),
   );
