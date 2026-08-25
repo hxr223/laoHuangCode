@@ -218,7 +218,7 @@ export class AgentStepRunner {
         finish_reason: result.finishReason,
         tool_call_count: toolCalls.length,
         tool_names: toolCalls.map((call) => call.name),
-        tool_call_ids: toolCalls.map((call) => call.id),
+        toolCallIds: toolCalls.map((call) => call.id),
         usage: result.usage,
         request_tokens: requestTokens,
         tokens_estimated: tokensEstimated,
@@ -345,7 +345,7 @@ export class AgentStepRunner {
       round: modelRound,
       index: event.index,
       batch_size: event.batchSize,
-      tool_call_id: event.toolCall.id,
+      toolCallId: event.toolCall.id,
       name: event.toolCall.name,
     };
   }

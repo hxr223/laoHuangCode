@@ -413,7 +413,7 @@ export class CodingAgent {
         ? EventSource.System
         : EventSource.Model;
     const correlationId = isToolEvent
-      ? ((payload["tool_call_id"] as string | undefined) ?? null)
+      ? ((payload["toolCallId"] as string | undefined) ?? null)
       : isGuardEvent
         ? null
         : ((payload["request_id"] as string | undefined) ?? null);

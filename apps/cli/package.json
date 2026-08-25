@@ -7,7 +7,7 @@
     "laohuang": "dist/bin.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc -b",
@@ -20,7 +20,9 @@
     "README.md",
     "LICENSE"
   ],
-  "dependencies": {},
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.83.0"
+  },
   "devDependencies": {
     "@laohuang/agent-runtime": "0.0.0",
     "@laohuang/llm": "0.0.0",

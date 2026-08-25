@@ -834,7 +834,7 @@ test("completion events are live while messages stay source ordered", async (t) 
 
   const completedIds = events
     .filter((event) => event.type === "tool_result")
-    .map((event) => event.payload["tool_call_id"]);
+    .map((event) => event.payload["toolCallId"]);
   const toolMessages = requestMessages(client.completions, 1).slice(-2);
   assert.deepEqual(completedIds, ["call_2", "call_1"]);
   assert.deepEqual(
