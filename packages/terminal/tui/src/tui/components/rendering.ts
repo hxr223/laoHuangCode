@@ -83,13 +83,13 @@ export function styledBackgroundLines(
   style: string,
 ): string[] {
   return wrapTextToWidth(text, width).map((line) =>
-    ansiStyledText(style, `${padLine(line, width)}\n`),
+    ansiStyledText(style, padLine(line, width)),
   );
 }
 
 export function styledPlainLines(text: string, width: number, style: string): string[] {
   return wrapTextToWidth(text, width).map((line) =>
-    ansiStyledText(style, `${line}\n`),
+    ansiStyledText(style, line),
   );
 }
 
