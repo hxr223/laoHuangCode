@@ -9,6 +9,7 @@ import test from "node:test";
 import {
   ConfigManager,
   CredentialStore,
+  defaultConfigPath,
 } from "../packages/storage/local-config/src/index.ts";
 
 function withTempDir(run: (directory: string) => void): void {
@@ -100,6 +101,50 @@ test("runtime overrides take priority over saved profile", () => {
 
     assert.equal(fromCli.model, "cli-model");
     assert.equal(fromCli.baseUrl, "https://cli.example/v1");
+  });
+});
+
+test("environment overrides profile, model, base url, and config path", () => {
+  withTempDir((directory) => {
+    const configPath = join(directory, "chosen.json");
+    const xdgRoot = join(directory, "xdg");
+    const manager = new ConfigManager(configPath);
+    const credentials = new CredentialStore(join(directory, "credentials.json"));
+    manager.configure({
+      name: "default",
+      provider: "deepseek",
+      model: "file-model",
+      baseUrl: "https://file.example/v1",
+    });
+    manager.configure({
+      name: "alternate",
+      provider: "openai",
+      model: "stored-openai",
+      baseUrl: null,
+    });
+    credentials.set("openai", "secret");
+
+    const config = manager.resolve({
+      credentials,
+      environ: {
+        LAOHUANG_PROFILE: "alternate",
+        LAOHUANG_MODEL: "env-model",
+        LAOHUANG_BASE_URL: "https://env.example/v1",
+      },
+    });
+
+    assert.equal(config.profile, "alternate");
+    assert.equal(config.provider, "openai");
+    assert.equal(config.model, "env-model");
+    assert.equal(config.baseUrl, "https://env.example/v1");
+    assert.equal(
+      defaultConfigPath({ LAOHUANG_CONFIG: configPath }),
+      configPath,
+    );
+    assert.equal(
+      defaultConfigPath({ XDG_CONFIG_HOME: xdgRoot }),
+      join(xdgRoot, "laohuang", "config.json"),
+    );
   });
 });
 
