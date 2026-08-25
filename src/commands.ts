@@ -1,9 +1,9 @@
 /** Slash commands available inside an interactive agent session. */
 
-import { EventKind, EventSource } from "./events.ts";
-import { makeCancelAction } from "./core/session-action-protocol.ts";
-import type { SessionAction } from "./core/session-action.ts";
-import type { CommandResult, QueueStatus } from "./core/runtime-protocol.ts";
+import { EventKind, EventSource } from "@laohuang/runtime-protocol";
+import { makeCancelAction } from "@laohuang/runtime-protocol";
+import type { SessionAction } from "@laohuang/runtime-protocol";
+import type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 import type {
   InputFn,
   ModelSelection,
@@ -13,7 +13,7 @@ import type {
 } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
 
-export type { CommandResult, QueueStatus } from "./core/runtime-protocol.ts";
+export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 
 export interface CompletionItem {
   readonly value: string;

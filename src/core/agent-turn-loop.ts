@@ -1,6 +1,6 @@
-import { CancellationError, type CancelToken } from "../cancellation.ts";
+import { CancellationError, type CancelToken } from "@laohuang/runtime-protocol";
 import { TaskLifecycle, TaskState } from "./task-lifecycle.ts";
-import type { QueueBridge, QueueInputBatch } from "./queue-bridge.ts";
+import type { QueueBridge, QueueInputBatch } from "@laohuang/runtime-protocol";
 
 export interface AgentTurnContext {
   readonly cancelToken: CancelToken;

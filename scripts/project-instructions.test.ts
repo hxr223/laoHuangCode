@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { CodingAgent, type AgentContext } from "../src/agent.ts";
-import { CancelToken } from "../src/cancellation.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   findProjectRoot,
   loadBaselineInstructions,

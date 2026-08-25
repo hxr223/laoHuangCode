@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { makePromptAction } from "../src/core/session-action-protocol.ts";
-import type {
-  AgentRunner,
-  CommandResult,
-  QueueStatus,
-} from "../src/core/runtime-protocol.ts";
+import {
+  makePromptAction,
+  type AgentRunner,
+  type CommandResult,
+  type QueueStatus,
+} from "../packages/core/runtime-protocol/src/index.ts";
 
 type ExpectedCommandResult =
   | { readonly status: "handled" }

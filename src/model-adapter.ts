@@ -20,7 +20,7 @@
  * `reasoning_content`), which `switchModel()` discards via `portableMessage`.
  */
 
-import { CancelToken } from "./cancellation.ts";
+import { CancelToken } from "@laohuang/runtime-protocol";
 import {
   ChatCompletionStreamer,
   ModelStreamCancelled,

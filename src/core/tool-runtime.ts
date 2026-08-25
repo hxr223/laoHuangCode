@@ -1,5 +1,5 @@
 import { ToolExecutionContext } from "../bash-runner.ts";
-import type { CancelToken } from "../cancellation.ts";
+import type { CancelToken } from "@laohuang/runtime-protocol";
 import type { AssembledToolCall } from "../model-stream.ts";
 import type {
   ToolExecutionContextLike,

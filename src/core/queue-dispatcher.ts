@@ -7,7 +7,7 @@ import {
   QueueOverflowError,
   type RoutedEvent,
 } from "../routing.ts";
-import type { SessionAction } from "./session-action.ts";
+import type { SessionAction } from "@laohuang/runtime-protocol";
 
 export const QueueDispatchStatus = {
   StartNow: "start_now",

@@ -6,7 +6,7 @@ import {
   EventKind,
   EventSource,
   type AnyEventEnvelope,
-} from "../src/events.ts";
+} from "../packages/core/runtime-protocol/src/index.ts";
 import {
   EventRouter,
   PendingQueue,

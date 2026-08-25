@@ -1,6 +1,6 @@
 /** Audience-specific policy for converting runtime events into display events. */
 
-import type { RuntimeEvent } from "../core/runtime-events.ts";
+import type { RuntimeEvent } from "@laohuang/runtime-protocol";
 
 export type DisplayAudience = "terminal";
 

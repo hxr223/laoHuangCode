@@ -21,17 +21,17 @@ import {
   type Config,
 } from "./config.ts";
 import { CredentialStore } from "./credentials.ts";
-import { EventProjector } from "./events.ts";
+import { EventProjector } from "@laohuang/runtime-protocol";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
 import { findProjectRoot } from "./project-instructions.ts";
 import { routeHumanIntent } from "./core/human-intent-router.ts";
-import type { SessionAction } from "./core/session-action.ts";
+import type { SessionAction } from "@laohuang/runtime-protocol";
 import {
   makeCancelIntent,
   makeFollowUpIntent,
   makePromptIntent,
-} from "./core/user-intent.ts";
+} from "@laohuang/runtime-protocol";
 import {
   SmallModelSemanticClassifier,
   type ChatCompletionsClient,

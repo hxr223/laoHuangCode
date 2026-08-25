@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CancelToken } from "../src/cancellation.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   AdapterRegistry,
   DeepSeekAdapter,
