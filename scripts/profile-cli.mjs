@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const appRoot = join(PROJECT_ROOT, "apps", "cli");
+const appBinPath = join(appRoot, "dist", "bin.js");
 
 function parseArgs(argv) {
   const separator = argv.indexOf("--");
@@ -41,7 +43,7 @@ function main() {
   const outputDir = resolve(args.output);
   mkdirSync(outputDir, { recursive: true });
   const nodeBin = process.env.LAOHUANG_NODE_BIN || process.execPath;
-  const cliPath = join(PROJECT_ROOT, "dist", "cli.js");
+  const cliPath = appBinPath;
   const cliArgs = args.cliArgs.length > 0 ? args.cliArgs : ["--version"];
   const result = spawnSync(nodeBin, ["--cpu-prof", `--cpu-prof-dir=${outputDir}`, cliPath, ...cliArgs], {
     cwd: PROJECT_ROOT,

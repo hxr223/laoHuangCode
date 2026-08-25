@@ -1,26 +1,25 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CancelToken } from "../src/cancellation.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
-  AdapterRegistry,
-  DeepSeekAdapter,
   ModelError,
-  OpenAIAdapter,
+  ModelStreamCancelled,
+  ModelStreamError,
   classifyModelError,
-  defaultAdapterRegistry,
   modelErrorKind,
   portableMessage,
-  type ChatClientLike,
   type ModelAdapter,
   type ModelRequest,
   type ThinkingSettings,
-} from "../src/model-adapter.ts";
-import {
-  ModelStreamCancelled,
-  ModelStreamError,
   type StreamResult,
-} from "../src/model-stream.ts";
+} from "@laohuang/llm";
+import {
+  AdapterRegistry,
+  OpenAICompatibleAdapter,
+  defaultAdapterRegistry,
+  type ChatClientLike,
+} from "@laohuang/llm-openai-compatible";
 
 // --- Fakes (mirror scripts/model-stream.test.ts helpers) ---------------------
 
@@ -163,9 +162,44 @@ function contractStream(): FakeStream {
   ]);
 }
 
-const ADAPTERS: Array<[string, () => ModelAdapter]> = [
-  ["openai", () => new OpenAIAdapter()],
-  ["deepseek", () => new DeepSeekAdapter()],
+const OPENAI_CAPABILITIES = {
+  streaming: true,
+  reasoningReplay: false,
+  thinkingSettings: false,
+};
+const DEEPSEEK_CAPABILITIES = {
+  streaming: true,
+  reasoningReplay: true,
+  thinkingSettings: true,
+};
+
+function makeOpenAIAdapter(): OpenAICompatibleAdapter {
+  return makeOpenAIAdapterWith(new FakeCompletions([]));
+}
+
+function makeOpenAIAdapterWith(completions: FakeCompletions): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    provider: "openai",
+    capabilities: OPENAI_CAPABILITIES,
+    client: fakeClient(completions),
+  });
+}
+
+function makeDeepSeekAdapter(): OpenAICompatibleAdapter {
+  return makeDeepSeekAdapterWith(new FakeCompletions([]));
+}
+
+function makeDeepSeekAdapterWith(completions: FakeCompletions): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    provider: "deepseek",
+    capabilities: DEEPSEEK_CAPABILITIES,
+    client: fakeClient(completions),
+  });
+}
+
+const ADAPTERS: Array<[string, (completions: FakeCompletions) => ModelAdapter]> = [
+  ["openai", makeOpenAIAdapterWith],
+  ["deepseek", makeDeepSeekAdapterWith],
 ];
 
 // --- Contract: same neutral request through both adapters ----------------------
@@ -174,8 +208,7 @@ for (const [name, makeAdapter] of ADAPTERS) {
   test(`${name}: streams normalized text/reasoning/tool-call/usage/finish`, async () => {
     const completions = new FakeCompletions([contractStream()]);
     const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
-    const result = await makeAdapter().complete(
-      fakeClient(completions),
+    const result = await makeAdapter(completions).runAttempt(
       neutralRequest({}, (kind, payload) => events.push({ kind, payload })),
     );
 
@@ -231,8 +264,7 @@ for (const [name, makeAdapter] of ADAPTERS) {
     token.cancel("user stopped");
     const completions = new FakeCompletions([contractStream()]);
     await assert.rejects(
-      makeAdapter().complete(
-        fakeClient(completions),
+      makeAdapter(completions).runAttempt(
         neutralRequest({ cancelToken: token }),
       ),
       (error: unknown) => {
@@ -251,10 +283,7 @@ test("both adapters produce identical wire requests and results", async () => {
   }> = [];
   for (const [, makeAdapter] of ADAPTERS) {
     const completions = new FakeCompletions([contractStream()]);
-    const result = await makeAdapter().complete(
-      fakeClient(completions),
-      neutralRequest(),
-    );
+    const result = await makeAdapter(completions).runAttempt(neutralRequest());
     results.push({ request: completions.requests[0], result });
   }
   const [openai, deepseek] = results;
@@ -320,7 +349,7 @@ for (const [name, makeAdapter] of ADAPTERS) {
       await t.test(kind, async () => {
         const completions = new FakeCompletions([endpointError]);
         await assert.rejects(
-          makeAdapter().complete(fakeClient(completions), neutralRequest()),
+          makeAdapter(completions).runAttempt(neutralRequest()),
           (error: unknown) => {
             assert.ok(error instanceof ModelError);
             assert.equal((error as ModelError).kind, kind);
@@ -354,8 +383,7 @@ test("deepseek: assistant message dict replays reasoning_content", async () => {
       }),
     ]),
   ]);
-  const result = await new DeepSeekAdapter().complete(
-    fakeClient(completions),
+  const result = await makeDeepSeekAdapterWith(completions).runAttempt(
     neutralRequest(),
   );
 
@@ -378,8 +406,7 @@ test("switchModel portability: downgrade strips reasoning_content", async () => 
       }),
     ]),
   ]);
-  const result = await new DeepSeekAdapter().complete(
-    fakeClient(completions),
+  const result = await makeDeepSeekAdapterWith(completions).runAttempt(
     neutralRequest(),
   );
   const history = [result.messageDict(), { role: "user", content: "next" }];
@@ -401,8 +428,7 @@ test("deepseek: thinking settings validate and translate to the wire", async () 
       chunk({ delta: delta({ content: "ok" }), finish_reason: "stop" }),
     ]),
   ]);
-  await new DeepSeekAdapter().complete(
-    fakeClient(completions),
+  await makeDeepSeekAdapterWith(completions).runAttempt(
     neutralRequest({ thinking: { enabled: true } }),
   );
   assert.deepEqual(completions.requests[0]?.["thinking"], {
@@ -410,8 +436,7 @@ test("deepseek: thinking settings validate and translate to the wire", async () 
   });
 
   await assert.rejects(
-    new DeepSeekAdapter().complete(
-      fakeClient(new FakeCompletions([])),
+    makeDeepSeekAdapterWith(new FakeCompletions([])).runAttempt(
       neutralRequest({
         thinking: { enabled: "yes" } as unknown as ThinkingSettings,
       }),
@@ -421,11 +446,10 @@ test("deepseek: thinking settings validate and translate to the wire", async () 
 });
 
 test("openai: thinking settings are rejected as unsupported", async () => {
-  const adapter = new OpenAIAdapter();
+  const adapter = makeOpenAIAdapter();
   assert.equal(adapter.capabilities.thinkingSettings, false);
   await assert.rejects(
-    adapter.complete(
-      fakeClient(new FakeCompletions([])),
+    adapter.runAttempt(
       neutralRequest({ thinking: { enabled: true } }),
     ),
     ModelStreamError,
@@ -436,25 +460,27 @@ test("openai: thinking settings are rejected as unsupported", async () => {
 
 test("registry resolves known providers and falls back to openai", () => {
   const registry = new AdapterRegistry();
-  const openai = new OpenAIAdapter();
-  const deepseek = new DeepSeekAdapter();
-  registry.register(openai);
-  registry.register(deepseek);
+  registry.register({ provider: "openai", capabilities: OPENAI_CAPABILITIES });
+  registry.register({ provider: "deepseek", capabilities: DEEPSEEK_CAPABILITIES });
+  const client = fakeClient(new FakeCompletions([]));
 
-  assert.equal(registry.resolve("openai"), openai);
-  assert.equal(registry.resolve("deepseek"), deepseek);
-  assert.equal(registry.resolve(null), openai);
-  assert.equal(registry.resolve(undefined), openai);
-  assert.equal(registry.resolve("unknown-provider"), openai);
+  assert.equal(registry.resolve("openai", client).name, "openai");
+  assert.equal(registry.resolve("deepseek", client).name, "deepseek");
+  assert.equal(registry.resolve(null, client).name, "openai");
+  assert.equal(registry.resolve(undefined, client).name, "openai");
+  assert.equal(registry.resolve("unknown-provider", client).name, "openai");
 });
 
 test("default registry has both built-in adapters", () => {
-  assert.ok(defaultAdapterRegistry.resolve("openai") instanceof OpenAIAdapter);
+  const client = fakeClient(new FakeCompletions([]));
   assert.ok(
-    defaultAdapterRegistry.resolve("deepseek") instanceof DeepSeekAdapter,
+    defaultAdapterRegistry.resolve("openai", client) instanceof OpenAICompatibleAdapter,
+  );
+  assert.ok(
+    defaultAdapterRegistry.resolve("deepseek", client) instanceof OpenAICompatibleAdapter,
   );
   assert.equal(
-    defaultAdapterRegistry.resolve("deepseek").capabilities.reasoningReplay,
+    defaultAdapterRegistry.resolve("deepseek", client).capabilities.reasoningReplay,
     true,
   );
 });

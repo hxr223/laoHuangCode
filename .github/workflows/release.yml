@@ -48,11 +48,11 @@ jobs:
       - run: npm test
       - name: Read the release version
         id: package
-        run: echo "version=$(node --print 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(node --print 'require("./apps/cli/package.json").version')" >> "$GITHUB_OUTPUT"
       - name: Require an unpublished npm version
         run: npm run check:version
       - name: Publish npm package with trusted publishing
-        run: npm publish --access public
+        run: npm publish --workspace laohuang --access public
       - name: Verify the published version
         env:
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}

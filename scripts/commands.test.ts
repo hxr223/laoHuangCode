@@ -11,17 +11,37 @@ import {
   SessionCommands,
   type AgentLike,
   type SessionLike,
-} from "../src/commands.ts";
-import { createClient } from "../src/client.ts";
-import { CredentialStore } from "../src/credentials.ts";
+} from "../apps/cli/src/commands.ts";
+import { createClient } from "@laohuang/llm-openai-compatible";
+import { CredentialStore } from "@laohuang/local-config";
 import {
   ModelSelector,
   type ProviderRegistry,
-} from "../src/model-selection.ts";
-import { getProvider, providerNames } from "../src/providers.ts";
+} from "../apps/cli/src/model-selection.ts";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 
 /** Registry wired exactly as production code would wire providers.ts. */
 const registry: ProviderRegistry = { get: getProvider, names: providerNames };
+
+interface TestModelAdapter extends ModelAdapter {
+  readonly client: unknown;
+}
+
+function makeModelAdapter(provider: string, client: unknown): TestModelAdapter {
+  return {
+    name: provider,
+    capabilities: {
+      streaming: true,
+      reasoningReplay: provider === "deepseek",
+      thinkingSettings: provider === "deepseek",
+    },
+    client,
+    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+      throw new Error("not used");
+    },
+  };
+}
 
 function fail(reason: string): (prompt: string) => Promise<string> {
   return async () => {
@@ -31,19 +51,27 @@ function fail(reason: string): (prompt: string) => Promise<string> {
 
 /** Minimal in-memory CodingAgent stand-in (agent.ts is owned elsewhere). */
 class FakeAgent implements AgentLike {
-  client: unknown;
+  modelAdapter: ModelAdapter;
   model: string;
   provider: string;
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
 
-  constructor(options: { client?: unknown; model: string; provider?: string }) {
-    this.client = options.client ?? {};
+  constructor(options: {
+    modelAdapter?: ModelAdapter;
+    model: string;
+    provider?: string;
+  }) {
+    this.modelAdapter = options.modelAdapter ?? makeModelAdapter("deepseek", {});
     this.model = options.model;
     this.provider = options.provider ?? "deepseek";
   }
 
-  switchModel(options: { client: unknown; model: string; provider: string }): void {
-    this.client = options.client;
+  switchModel(options: {
+    modelAdapter: ModelAdapter;
+    model: string;
+    provider: string;
+  }): void {
+    this.modelAdapter = options.modelAdapter;
     this.model = options.model;
     this.provider = options.provider;
   }
@@ -78,6 +106,7 @@ function makeCommands(
     credentials,
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: fail("no selection expected"),
     secretInput: fail("no secret expected"),
     output: (message) => {
@@ -233,6 +262,7 @@ test("/model switches provider and model without chatting", async () => {
     credentials,
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: fail("no choice should be needed"),
     secretInput: fail("key is already saved"),
     output: () => {},
@@ -261,7 +291,10 @@ test("/model switches provider and model without chatting", async () => {
 
   assert.equal(handled.status, "handled");
   assert.equal(agent.model, "deepseek-v4-pro");
-  assert.equal(agent.client, replacementClient);
+  assert.equal(
+    (agent.modelAdapter as TestModelAdapter).client,
+    replacementClient,
+  );
   assert.ok(outputs.some((line) => line.includes("deepseek-v4-pro")));
   rmSync(root, { recursive: true, force: true });
 });
@@ -278,7 +311,10 @@ test("/login and /logout manage saved credentials", async () => {
   await fixture.commands.execute("/apikey");
   await fixture.commands.execute("/logout deepseek");
 
-  assert.equal(fixture.agent.client, replacementClient);
+  assert.equal(
+    (fixture.agent.modelAdapter as TestModelAdapter).client,
+    replacementClient,
+  );
   assert.equal(fixture.credentials.get("deepseek"), null);
   assert.ok(outputs.some((line) => line === "deepseek: configured"));
   assert.ok(!outputs.some((line) => line.includes("new-key")));

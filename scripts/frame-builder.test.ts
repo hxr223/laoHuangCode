@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { EditorState } from "../src/tui/editor.ts";
-import { FrameBuilder } from "../src/tui/frame-builder.ts";
-import { TranscriptStore } from "../src/tui/transcript-store.ts";
-import { createUIState } from "../src/tui/state.ts";
+import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
+import { FrameBuilder } from "../packages/terminal/tui/src/tui/frame-builder.ts";
+import { TranscriptStore } from "../packages/terminal/tui/src/tui/transcript-store.ts";
+import { createUIState } from "../packages/terminal/tui/src/tui/state.ts";
 
 test("frame builder exposes title, welcome, and status data", () => {
   const state = createUIState();

@@ -3,16 +3,32 @@ import assert from "node:assert/strict";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { createClient } from "../src/client.ts";
+import { createClient } from "@laohuang/llm-openai-compatible";
 import {
   ModelSelector,
   type CredentialStoreLike,
   type ProviderRegistry,
-} from "../src/model-selection.ts";
-import { getProvider, providerNames } from "../src/providers.ts";
+} from "../apps/cli/src/model-selection.ts";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 
 /** Registry wired exactly as production code would wire providers.ts. */
 const registry: ProviderRegistry = { get: getProvider, names: providerNames };
+
+function makeModelAdapter(provider: string, client: unknown): ModelAdapter {
+  return {
+    name: provider,
+    capabilities: {
+      streaming: true,
+      reasoningReplay: provider === "deepseek",
+      thinkingSettings: provider === "deepseek",
+    },
+    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+      void client;
+      throw new Error("not used");
+    },
+  };
+}
 
 /** In-memory stand-in for the CredentialStore owned by credentials.ts. */
 class MemoryCredentialStore implements CredentialStoreLike {
@@ -41,6 +57,7 @@ test("deepseek key and model are selected in the terminal", async () => {
     credentials,
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: async (prompt) => {
       prompts.push(prompt);
       return "2";
@@ -77,6 +94,7 @@ test("openai models are loaded before the user selects one", async () => {
     credentials,
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: async () => "2",
     secretInput: async () => "openai-secret",
     output: (message) => {
@@ -102,6 +120,7 @@ test("user can choose a provider before choosing the model", async () => {
     credentials,
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: async () => {
       const answer = answers.shift();
       assert.ok(answer !== undefined, "unexpected extra prompt");
@@ -128,6 +147,7 @@ test("session model selection requires a prior login", async () => {
     credentials: new MemoryCredentialStore(),
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: fail("no model input expected"),
     secretInput: fail("no key input expected"),
     output: (message) => {
@@ -162,6 +182,7 @@ test("prompt functions are awaited like the terminal UI's async prompts", async 
     credentials,
     registry,
     createClient,
+    createModelAdapter: makeModelAdapter,
     input: () => deferredInput("1"),
     secretInput: () => deferredInput("ui-secret"),
     output: () => {},

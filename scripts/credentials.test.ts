@@ -6,7 +6,7 @@ import test from "node:test";
 
 // Runtime import of the TypeScript source: Node type stripping requires the
 // real ".ts" extension (".js" specifiers do not resolve to ".ts" files).
-import { CredentialStore } from "../src/credentials.ts";
+import { CredentialStore } from "../packages/storage/local-config/src/index.ts";
 
 function withTempDir(run: (directory: string) => void): void {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-credentials-test-"));

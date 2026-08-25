@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DisplayPolicy } from "../src/tui/display-policy.ts";
-import { makeToggleToolOutputDisplayAction } from "../src/tui/display-actions.ts";
-import { isSessionAction } from "../src/core/session-action-protocol.ts";
+import { DisplayPolicy } from "../packages/terminal/tui/src/tui/display-policy.ts";
+import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
+import { isSessionAction } from "../packages/core/runtime-protocol/src/index.ts";
 
 function event(
   kind: string,

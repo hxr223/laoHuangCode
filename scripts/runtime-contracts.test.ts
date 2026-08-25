@@ -1,7 +1,34 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { makePromptAction } from "../src/core/session-action-protocol.ts";
+import {
+  makePromptAction,
+  type AgentRunner,
+  type CommandResult,
+  type QueueStatus,
+} from "../packages/core/runtime-protocol/src/index.ts";
+
+type ExpectedCommandResult =
+  | { readonly status: "handled" }
+  | { readonly status: "not_found"; readonly command: string }
+  | { readonly status: "blocked"; readonly command: string }
+  | { readonly status: "exit_requested" }
+  | { readonly status: "error"; readonly error: unknown };
+
+const commandResultContract: CommandResult extends ExpectedCommandResult
+  ? true
+  : never = true;
+const queueStatusContract: QueueStatus = {
+  pending: 1,
+  pendingTokens: 2,
+  held: 3,
+  heldTokens: 4,
+  deadLetters: 5,
+};
+const runnerContract: AgentRunner | null = null;
+void commandResultContract;
+void queueStatusContract;
+void runnerContract;
 
 test("session action factory preserves text and source", () => {
   const action = makePromptAction("hello", "composer");

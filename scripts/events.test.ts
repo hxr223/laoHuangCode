@@ -11,7 +11,7 @@ import {
   EventValidationError,
 // NOTE: imported with the real ".ts" extension because tests run through
 // Node 22 native type stripping, which does not remap ".js" specifiers.
-} from "../src/events.ts";
+} from "../packages/core/runtime-protocol/src/index.ts";
 
 function deferred<T = void>(): {
   promise: Promise<T>;

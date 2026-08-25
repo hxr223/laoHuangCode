@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { ToolExecutionContext } from "../src/bash-runner.ts";
-import { CancelToken } from "../src/cancellation.ts";
-import type { AssembledToolCall } from "../src/model-stream.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
+import type { AssembledToolCall } from "@laohuang/llm";
 import {
-  ToolRegistry,
+  ToolExecutionContext,
+  ToolRuntime,
   type ToolExecutionContextLike,
   type ToolExecutionMode,
   type ToolRegistryLike,
   type ToolResult,
-} from "../src/tools.ts";
-import { ToolRuntime } from "../src/core/tool-runtime.ts";
+} from "../packages/core/tools/src/index.ts";
+import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 function call(
   id: string,
@@ -131,7 +131,7 @@ test("passes cancellation through to running bash tools", async (t) => {
   const directory = await fs.mkdtemp(path.join(tmpdir(), "laohuang-runtime-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const token = new CancelToken();
-  const runtime = new ToolRuntime(new ToolRegistry(directory), {
+  const runtime = new ToolRuntime(createTestToolRegistry(directory), {
     createExecutionContext: (toolCallId, cancelToken) =>
       new ToolExecutionContext({ toolCallId, cancelToken }),
   });

@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { EventBus, EventKind } from "../src/events.ts";
+import { EventBus, EventKind } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   TaskLifecycle,
   TaskState,
-} from "../src/core/task-lifecycle.ts";
+} from "../packages/core/session-runtime/src/index.ts";
 
 function makeLifecycle(): { lifecycle: TaskLifecycle; eventBus: EventBus } {
   const eventBus = new EventBus();

@@ -90,16 +90,16 @@ const command = args.join(" ");
 if (command === "run build") {
   process.exit(0);
 }
-if (command === "pack --json") {
-  writeFileSync("laohuang-0.4.2.tgz", "fake tarball", "utf8");
-  console.log(JSON.stringify([{ filename: "laohuang-0.4.2.tgz" }]));
+if (command === "pack --workspace laohuang --json") {
+  writeFileSync("laohuang-0.5.1.tgz", "fake tarball", "utf8");
+  console.log(JSON.stringify([{ filename: "laohuang-0.5.1.tgz" }]));
   process.exit(0);
 }
 if (args[0] === "install") {
   const binDir = join(process.cwd(), "node_modules", ".bin");
   mkdirSync(binDir, { recursive: true });
   const cliPath = join(binDir, "laohuang");
-  writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('0.4.2')\\n", "utf8");
+  writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('0.5.1')\\n", "utf8");
   chmodSync(cliPath, 0o755);
   process.exit(0);
 }
@@ -114,7 +114,7 @@ process.exit(2);
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /package smoke passed/);
-    assert.equal(existsSync(join(PROJECT_ROOT, "laohuang-0.4.2.tgz")), false);
+    assert.equal(existsSync(join(PROJECT_ROOT, "laohuang-0.5.1.tgz")), false);
   });
 });
 
@@ -164,8 +164,8 @@ test("verify-published-version retries npm registry lookups until the expected v
       join(binDir, "npm"),
       `
 const args = process.argv.slice(2);
-if (args.join(" ") === "view laohuang@0.4.2 version") {
-  console.log("0.4.2");
+if (args.join(" ") === "view laohuang@0.5.1 version") {
+  console.log("0.5.1");
   process.exit(0);
 }
 console.error("unexpected npm command", args.join(" "));
@@ -175,12 +175,20 @@ process.exit(2);
 
     const result = runScript(
       "scripts/verify-published-version.mjs",
-      ["0.4.2", "--attempts", "1", "--interval-ms", "0"],
+      [
+        "0.5.1",
+        "--package-name",
+        "laohuang",
+        "--attempts",
+        "1",
+        "--interval-ms",
+        "0",
+      ],
       { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` },
     );
 
     assert.equal(result.status, 0, result.stderr);
-    assert.match(result.stdout, /verified laohuang@0\.4\.2/);
+    assert.match(result.stdout, /verified laohuang@0\.5\.1/);
   });
 });
 

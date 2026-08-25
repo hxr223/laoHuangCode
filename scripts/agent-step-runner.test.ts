@@ -1,19 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { AgentCancelled } from "../src/agent.ts";
-import type { CancelToken } from "../src/cancellation.ts";
-import type { ModelAdapter } from "../src/model-adapter.ts";
-import { StreamResult } from "../src/model-stream.ts";
+import { AgentCancelled } from "../packages/core/agent-runtime/src/index.ts";
+import type { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
+import type { ModelAdapter } from "@laohuang/llm";
+import { StreamResult } from "@laohuang/llm";
 import {
   AgentStepRunner,
   type AgentStepRunnerContext,
-} from "../src/core/agent-step-runner.ts";
-import { HistoryCommitter } from "../src/core/history-committer.ts";
-import { GuardPolicy } from "../src/core/guard-policy.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { ToolRuntime } from "../src/core/tool-runtime.ts";
-import type { ToolResult } from "../src/tools.ts";
+} from "../packages/core/agent-runtime/src/core/agent-step-runner.ts";
+import { HistoryCommitter } from "../packages/core/agent-runtime/src/core/history-committer.ts";
+import { GuardPolicy } from "../packages/core/agent-runtime/src/core/guard-policy.ts";
+import { ModelRuntime } from "@laohuang/llm";
+import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
 
 class TestCancelToken {
   cancelled = false;
@@ -38,8 +37,7 @@ class StubAdapter implements ModelAdapter {
     this.responses = responses[Symbol.iterator]();
   }
 
-  complete(
-    _client: { chat: { completions: never } },
+  runAttempt(
     request: {
       messages: Array<Record<string, unknown>>;
     },
@@ -94,7 +92,6 @@ function createRunner(options: {
     createCancelled: (message) => new AgentCancelled(message),
   });
   return new AgentStepRunner({
-    client: { chat: { completions: undefined as never } },
     model: "test-model",
     provider: null,
     modelRuntime: new ModelRuntime(options.adapter),
