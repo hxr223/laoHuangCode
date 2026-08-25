@@ -46,11 +46,11 @@ import {
   AgentStepRunner,
   FORCED_FINAL_PROMPT,
   type AgentStepRunnerContext,
-} from "./runtime/agent-step-runner.ts";
-import { GuardPolicy } from "./runtime/guard-policy.ts";
-import { HistoryCommitter } from "./runtime/history-committer.ts";
-import { ModelRuntime } from "./runtime/model-runtime.ts";
-import { ToolRuntime } from "./runtime/tool-runtime.ts";
+} from "./core/agent-step-runner.ts";
+import { GuardPolicy } from "./core/guard-policy.ts";
+import { HistoryCommitter } from "./core/history-committer.ts";
+import { ModelRuntime } from "./core/model-runtime.ts";
+import { ToolRuntime } from "./core/tool-runtime.ts";
 
 export { FORCED_FINAL_PROMPT };
 

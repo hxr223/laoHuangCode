@@ -10,7 +10,7 @@ import {
   isTerminalTaskState,
   type TaskRecord,
   type TaskRegistry,
-} from "./runtime/task-lifecycle.ts";
+} from "./core/task-lifecycle.ts";
 
 // ---------------------------------------------------------------------------
 // Route decisions

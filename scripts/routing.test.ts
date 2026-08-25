@@ -12,7 +12,7 @@ import {
   PendingQueue,
   QueueOverflowError,
 } from "../src/routing.ts";
-import { TaskRegistry, TaskState } from "../src/runtime/task-lifecycle.ts";
+import { TaskRegistry, TaskState } from "../src/core/task-lifecycle.ts";
 
 function userEvent(
   content: string,

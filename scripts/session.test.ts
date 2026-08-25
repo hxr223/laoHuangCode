@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { EventKind, EventSource } from "../src/events.ts";
 import type { SessionLike } from "../src/commands.ts";
 import { type SemanticClassifierVerdict } from "../src/routing.ts";
-import { TaskState } from "../src/runtime/task-lifecycle.ts";
+import { TaskState } from "../src/core/task-lifecycle.ts";
 import {
   AgentSession,
   type TaskContext,

@@ -112,7 +112,7 @@ test("projector recursively redacts secrets", () => {
     },
   });
 
-  const projected = new EventProjector().project(event, "web");
+  const projected = new EventProjector().project(event, "terminal");
   const payload = projected["payload"] as Record<string, unknown>;
 
   assert.equal(payload["api_key"], "[REDACTED]");

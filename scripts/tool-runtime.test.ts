@@ -14,7 +14,7 @@ import {
   type ToolRegistryLike,
   type ToolResult,
 } from "../src/tools.ts";
-import { ToolRuntime } from "../src/runtime/tool-runtime.ts";
+import { ToolRuntime } from "../src/core/tool-runtime.ts";
 
 function call(
   id: string,

@@ -11,7 +11,7 @@ import { CredentialStore } from "../src/credentials.ts";
 import { ModelSelector, type ProviderRegistry } from "../src/model-selection.ts";
 import { createClient } from "../src/client.ts";
 import { getProvider, providerNames } from "../src/providers.ts";
-import { TerminalUI } from "../src/terminal/ui.ts";
+import { TerminalUI } from "../src/tui/ui.ts";
 
 const providers: ProviderRegistry = { get: getProvider, names: providerNames };
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { UIEventReducer } from "../src/ui-state.ts";
+import { UIEventReducer } from "../src/tui/state.ts";
 
 test("model deltas are provisional until committed", () => {
   const reducer = new UIEventReducer();

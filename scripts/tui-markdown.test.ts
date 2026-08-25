@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderMarkdownLines, visibleWidth } from "../src/terminal/markdown.ts";
-import { PI_DARK, TerminalTheme } from "../src/terminal/theme.ts";
+import { renderMarkdownLines, visibleWidth } from "../src/tui/markdown.ts";
+import { PI_DARK, TerminalTheme } from "../src/tui/theme.ts";
 
 test("plain assistant text uses terminal default foreground", () => {
   const rendered = renderMarkdownLines("plain response", 80, PI_DARK).join("\n");

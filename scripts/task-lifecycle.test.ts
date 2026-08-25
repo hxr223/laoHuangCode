@@ -5,7 +5,7 @@ import { EventBus, EventKind } from "../src/events.ts";
 import {
   TaskLifecycle,
   TaskState,
-} from "../src/runtime/task-lifecycle.ts";
+} from "../src/core/task-lifecycle.ts";
 
 function makeLifecycle(): { lifecycle: TaskLifecycle; eventBus: EventBus } {
   const eventBus = new EventBus();

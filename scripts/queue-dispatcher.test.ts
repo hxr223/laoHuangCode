@@ -13,13 +13,13 @@ import {
   PendingQueue,
   type RoutedEvent,
 } from "../src/routing.ts";
-import { QueueDispatcher } from "../src/runtime/queue-dispatcher.ts";
+import { QueueDispatcher } from "../src/core/queue-dispatcher.ts";
 import {
   TaskRegistry,
   TaskState,
   type TaskState as TaskStateValue,
-} from "../src/runtime/task-lifecycle.ts";
-import type { SessionAction } from "../src/runtime/session-action.ts";
+} from "../src/core/task-lifecycle.ts";
+import type { SessionAction } from "../src/core/session-action.ts";
 
 function action(
   type: "prompt" | "steer" | "follow_up" | "cancel",

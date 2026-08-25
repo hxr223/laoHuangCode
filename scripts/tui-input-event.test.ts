@@ -8,8 +8,8 @@ import {
   StdinBuffer,
   inputAction,
   type BufferedPasteInput,
-} from "../src/terminal/editor.ts";
-import { toTuiInputEvent } from "../src/terminal/input.ts";
+} from "../src/tui/editor.ts";
+import { toTuiInputEvent } from "../src/tui/input.ts";
 
 test("normalizes keyboard actions into neutral key events", () => {
   const decoder = new RawInputDecoder();

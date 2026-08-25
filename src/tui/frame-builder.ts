@@ -1,9 +1,9 @@
 /** Terminal frame data assembly, separate from terminal paint mechanics. */
 
-import type { EditorLike } from "../terminal/ui.ts";
-import type { ScreenFrame } from "../terminal/screen.ts";
-import { truncateToWidth, visibleWidth } from "../terminal/screen.ts";
-import type { UIState } from "../ui-state.ts";
+import type { EditorLike } from "./ui.ts";
+import type { ScreenFrame } from "./screen.ts";
+import { truncateToWidth, visibleWidth } from "./screen.ts";
+import type { UIState } from "./state.ts";
 import type { TranscriptStore } from "./transcript-store.ts";
 
 export interface FrameBuilderOptions {
@@ -101,7 +101,7 @@ export class FrameBuilder {
     const editorStart = 1 + history.length + 1;
     const cursor = {
       row: editorStart + editorResult.cursorRow,
-      col: (width >= 4 ? 2 : 0) + editorResult.cursorCol,
+      col: (width >= 4 ? 2 : 0) + editorResult.cursorColumn,
     };
     const activeStart = options.activeStart === null || options.activeStart === undefined
       ? editorStart

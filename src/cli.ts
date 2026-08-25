@@ -25,44 +25,27 @@ import { EventProjector } from "./events.ts";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
 import { findProjectRoot } from "./project-instructions.ts";
-import { routeHumanIntent } from "./runtime/human-intent-router.ts";
-import type { SessionAction } from "./runtime/session-action.ts";
+import { routeHumanIntent } from "./core/human-intent-router.ts";
+import type { SessionAction } from "./core/session-action.ts";
 import {
   makeCancelIntent,
   makeFollowUpIntent,
   makePromptIntent,
-} from "./runtime/user-intent.ts";
+} from "./core/user-intent.ts";
 import {
   SmallModelSemanticClassifier,
   type ChatCompletionsClient,
 } from "./semantic-classifier.ts";
 import { AgentSession, SessionState, type Submission } from "./session.ts";
-import {
-  BufferedInputKind,
-  EditorState,
-  InputActionKind,
-  RawInputDecoder,
-  StdinBuffer,
-  TerminalInputFilter,
-  inputAction,
-  type InputAction,
-} from "./terminal/editor.ts";
-import { PromptCancelledError, PromptEofError } from "./terminal/input.ts";
+import { PromptCancelledError, PromptEofError } from "./tui/input.ts";
 import {
   PlainEventSink,
   StdTerminalDriver,
   TerminalUI,
-  type CompletionItemLike,
-  type EditorEffect,
-  type EditorLike,
-  type EditorRenderResult,
-  type InputDecoderHooks,
-  type InputDecoderLike,
   type LoopInputSource,
   type SubmitOptions,
-} from "./terminal/ui.ts";
+} from "./tui/ui.ts";
 import { ToolRegistry } from "./tools.ts";
-import { EventLog, WebDashboard, consumePullBuffer } from "./web.ts";
 
 export const VERSION = readPackageVersion();
 
@@ -221,8 +204,8 @@ class CliUsageError extends Error {}
 
 const USAGE =
   "usage: laohuang [--version] [--profile PROFILE] [--model MODEL] " +
-  "[--base-url BASE_URL] [--theme {auto,dark,light}] [--web] " +
-  "[--web-port PORT] [config ...] [doctor]";
+  "[--base-url BASE_URL] [--theme {auto,dark,light}] " +
+  "[config ...] [doctor]";
 
 const HELP = `${USAGE}
 
@@ -235,8 +218,6 @@ options:
   --model MODEL      model override for this session
   --base-url URL     API base URL override for this session
   --theme THEME      interactive terminal theme: auto, dark, light (default: auto)
-  --web              start the local agent trace dashboard
-  --web-port PORT    dashboard port (default: 8765; use 0 for any free port)
 
 subcommands:
   config [set|list|use] [target] [--profile P] [--provider P] [--model M] [--base-url U]
@@ -248,8 +229,6 @@ interface ParsedArguments {
   model: string | null;
   baseUrl: string | null;
   theme: string;
-  web: boolean;
-  webPort: number;
   configAction: "set" | "list" | "use";
   configTarget: string | null;
   configProfile: string;
@@ -280,8 +259,6 @@ function parseArgs(argv: readonly string[]): ParseResult {
     model: null,
     baseUrl: null,
     theme: "auto",
-    web: false,
-    webPort: 8765,
     configAction: "set",
     configTarget: null,
     configProfile: "default",
@@ -333,22 +310,6 @@ function parseArgs(argv: readonly string[]): ParseResult {
           );
         }
         args.theme = theme;
-        break;
-      }
-      case "--web":
-        if (inline !== undefined) {
-          throw new CliUsageError(`argument --web: ignored explicit argument`);
-        }
-        args.web = true;
-        break;
-      case "--web-port": {
-        const raw = takeValue(name, inline);
-        if (!/^[+-]?\d+$/.test(raw.trim())) {
-          throw new CliUsageError(
-            `argument --web-port: invalid int value: '${raw}'`,
-          );
-        }
-        args.webPort = Number.parseInt(raw, 10);
         break;
       }
       default:
@@ -1025,142 +986,6 @@ export async function runPlainSessionRepl(
 // Production wiring helpers
 // ---------------------------------------------------------------------------
 
-/**
- * The full input pipeline from terminal/editor.ts (buffer → negotiation
- * filter → raw decoder), mirroring PiInputSession. Replaces the Basic*
- * defaults of terminal/ui.ts inside the interactive loop.
- */
-class ProductionInputDecoder implements InputDecoderLike {
-  #stdinBuffer = new StdinBuffer();
-  #filter: TerminalInputFilter;
-  #decoder = new RawInputDecoder();
-
-  constructor(hooks: InputDecoderHooks) {
-    this.#filter = new TerminalInputFilter({
-      enableModifyOtherKeys: () => {
-        hooks.enableModifyOtherKeys();
-      },
-      disableModifyOtherKeys: () => {
-        hooks.disableModifyOtherKeys();
-      },
-    });
-  }
-
-  get kittyProtocolActive(): boolean {
-    return this.#filter.kittyProtocolActive;
-  }
-
-  set kittyProtocolActive(value: boolean) {
-    this.#filter.kittyProtocolActive = value;
-  }
-
-  feed(data: Uint8Array): InputAction[] {
-    const actions: InputAction[] = [];
-    for (const event of this.#stdinBuffer.feed(data)) {
-      if (event.kind === BufferedInputKind.Paste) {
-        actions.push(
-          inputAction(InputActionKind.Insert, event.data.toString("utf8")),
-        );
-        continue;
-      }
-      for (const sequence of this.#filter.feed(event.data)) {
-        actions.push(...this.#decoder.feed(sequence));
-      }
-    }
-    return actions;
-  }
-
-  flush(): InputAction[] {
-    const actions: InputAction[] = [];
-    for (const event of this.#stdinBuffer.flush()) {
-      for (const sequence of this.#filter.feed(event.data)) {
-        actions.push(...this.#decoder.feed(sequence));
-      }
-    }
-    for (const sequence of this.#filter.flush()) {
-      actions.push(...this.#decoder.feed(sequence));
-    }
-    actions.push(...this.#decoder.flush());
-    return actions;
-  }
-
-  clear(): void {
-    this.#stdinBuffer.clear();
-    this.#filter.clear();
-    // RawInputDecoder has no clear(); a fresh instance drops partial escapes.
-    this.#decoder = new RawInputDecoder();
-  }
-}
-
-/**
- * Wraps the production editor from terminal/editor.ts with the render result
- * shape terminal/ui.ts's EditorLike expects (cursorColumn → cursorCol).
- * Composition rather than inheritance: EditorState.renderLines has a
- * different, incompatible return type.
- */
-class ProductionEditor implements EditorLike {
-  readonly #state = new EditorState();
-
-  get text(): string {
-    return this.#state.text;
-  }
-
-  set text(value: string) {
-    this.#state.text = value;
-  }
-
-  get cursor(): number {
-    return this.#state.cursor;
-  }
-
-  set cursor(value: number) {
-    this.#state.cursor = value;
-  }
-
-  get historyIndex(): number | null {
-    return this.#state.historyIndex;
-  }
-
-  set historyIndex(value: number | null) {
-    this.#state.historyIndex = value;
-  }
-
-  get completions(): readonly CompletionItemLike[] {
-    return this.#state.completions;
-  }
-
-  get selectedCompletion(): number | null {
-    return this.#state.selectedCompletion;
-  }
-
-  set selectedCompletion(value: number | null) {
-    this.#state.selectedCompletion = value;
-  }
-
-  apply(
-    action: InputAction,
-    options: { runtimeActive: boolean },
-  ): EditorEffect {
-    return this.#state.apply(action, options);
-  }
-
-  setCompletions(values: readonly CompletionItemLike[]): void {
-    this.#state.setCompletions(values);
-  }
-
-  renderLines(
-    width: number,
-    options: { prompt?: string; mask?: boolean } = {},
-  ): EditorRenderResult {
-    const rendered = this.#state.renderLines(width, options);
-    return {
-      lines: rendered.lines,
-      cursorRow: rendered.cursorRow,
-      cursorCol: rendered.cursorColumn,
-    };
-  }
-}
-
 /** Drive the interactive loop of a real TerminalUI with process stdin. */
 async function runTerminalUi(
   ui: TerminalUI,
@@ -1426,30 +1251,8 @@ export async function main(
     runtimeClient ??
     createClient(config, { clientFactory: options.clientFactory });
 
-  let eventLog: EventLog | null = null;
-  let dashboard: WebDashboard | null = null;
-  if (args.web) {
-    eventLog = new EventLog();
-    eventLog.record("session_start", {
-      project_root: projectRoot,
-      provider: config.provider,
-      model: config.model,
-      profile: config.profile,
-    });
-    dashboard = new WebDashboard(eventLog, { port: args.webPort });
-    try {
-      await dashboard.start();
-    } catch (error) {
-      writeStderr(`Web dashboard error: ${errorMessage(error)}`);
-      return 2;
-    }
-    if (!interactive) {
-      outputFn(`Web dashboard: ${dashboard.url}`);
-    }
-  }
-
-  // The interactive UI is constructed only once configuration (and the
-  // dashboard URL) are known; its provider/model are read-only in TS.
+  // The interactive UI is constructed only once configuration is known; its
+  // provider/model are read-only in TS.
   let terminalUi: TerminalUI | null = null;
   let terminalDriver: StdTerminalDriver | null = null;
   if (interactive) {
@@ -1458,11 +1261,8 @@ export async function main(
       projectRoot,
       provider: config.provider,
       model: config.model,
-      dashboardUrl: dashboard?.url,
       theme: args.theme,
       driver: terminalDriver,
-      editorFactory: () => new ProductionEditor(),
-      decoderFactory: (hooks) => new ProductionInputDecoder(hooks),
     });
     terminalUi.state.provider = config.provider;
     terminalUi.state.model = config.model;
@@ -1554,13 +1354,6 @@ export async function main(
       sessionSink.publishEvent(projector.project(event, "terminal"));
     }),
   );
-  if (eventLog !== null) {
-    // The dashboard feeds from the canonical pull buffer; the promise
-    // resolves when the bus closes. Unexpected failures are dropped the same
-    // way the Python daemon thread lost them.
-    void consumePullBuffer(runtime.eventBus, eventLog).catch(() => {});
-  }
-
   if (terminalUi !== null) {
     terminalUi.setCommandRegistry(commands.registry);
     terminalUi.setCancelCallback(() => {
@@ -1614,9 +1407,6 @@ export async function main(
   } finally {
     for (const unsubscribe of unsubscribers) {
       unsubscribe();
-    }
-    if (dashboard !== null) {
-      await dashboard.stop();
     }
   }
   return cleanShutdown ? 0 : 1;

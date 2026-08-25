@@ -11,14 +11,19 @@
  *   interactive UI is always the single-renderer raw loop, and non-TTY
  *   sessions use PlainEventSink.
  * - The editor and raw-input decoder behind the loop live behind the
- *   EditorLike/InputDecoderLike interfaces so terminal/input.ts (another
- *   workstream) can be injected once landed. BasicEditorState and
- *   BasicInputDecoder are the built-in defaults implementing that contract.
+ *   EditorLike/InputDecoderLike interfaces for tests and alternate hosts, but
+ *   the built-in path uses the canonical TUI editor/input pipeline.
  */
 
 import { appendFileSync } from "node:fs";
 
 export { toTuiInputEvent } from "./editor.ts";
+export type {
+  CompletionItem as CompletionItemLike,
+  EditorEffect,
+  InputAction,
+  InputActionKind,
+} from "./editor.ts";
 export type { TuiInputEvent } from "../keybindings/key-id.ts";
 
 import {
@@ -39,20 +44,29 @@ import {
   UIEventReducer,
   type UIEventLike,
   type UIState,
-} from "../ui-state.ts";
+} from "./state.ts";
 import {
   DisplayPolicy,
   displayGapMessage,
   type DisplayEvent,
   type DisplayEventLike,
-} from "../ui/display-policy.ts";
-import type { DisplayAction } from "../ui/display-actions.ts";
+} from "./display-policy.ts";
+import type { DisplayAction } from "./display-actions.ts";
 import {
   TranscriptStore,
   createTranscriptBlock,
   type TranscriptBlock,
-} from "../ui/transcript-store.ts";
-import { FrameBuilder } from "../ui/frame-builder.ts";
+} from "./transcript-store.ts";
+import {
+  EditorState,
+  InputActionKind,
+  inputAction,
+  toTuiInputEvent,
+  type CompletionItem as CompletionItemLike,
+  type EditorEffect,
+  type InputAction,
+} from "./editor.ts";
+import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
@@ -64,9 +78,12 @@ import {
   type ScreenFrame,
   type TerminalDriver,
 } from "./screen.ts";
-import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "../tui/components.ts";
-import { FocusManager } from "../tui/focus-manager.ts";
-import { OverlayManager } from "../tui/overlay-manager.ts";
+import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "./components.ts";
+import { CompletionList } from "./components/completion-list.ts";
+import { Transcript } from "./components/transcript.ts";
+import { FocusManager } from "./focus-manager.ts";
+import { OverlayManager } from "./overlay-manager.ts";
+import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
 
 // ---------------------------------------------------------------------------
 // Shared input contracts (implemented by terminal/input.ts once landed)
@@ -74,55 +91,10 @@ import { OverlayManager } from "../tui/overlay-manager.ts";
 
 const WELCOME_TEXT = "hello, welcome to laoHuang";
 
-const KITTY_LOCK_MODIFIER_MASK = 64 | 128;
-
-function matchesKittyModifiers(modifier: number, expected: number): boolean {
-  return (modifier & ~KITTY_LOCK_MODIFIER_MASK) === expected;
-}
-
-function isKittyPressEvent(eventType: string | undefined): boolean {
-  return eventType === undefined || eventType === "1";
-}
-
-export type InputActionKind =
-  | "insert"
-  | "submit"
-  | "newline"
-  | "complete"
-  | "history_up"
-  | "history_down"
-  | "cursor_left"
-  | "cursor_right"
-  | "backspace"
-  | "key"
-  | "dismiss"
-  | "cancel"
-  | "eof";
-
-export interface InputAction {
-  kind: InputActionKind;
-  text?: string;
-  key?: KeyInput;
-}
-
-export interface EditorEffect {
-  submit?: string | null;
-  cancelRequested?: boolean;
-  exitRequested?: boolean;
-  notice?: string | null;
-}
-
-/** A completion independent of any particular input widget. */
-export interface CompletionItemLike {
-  value: string;
-  description: string;
-  start: number;
-}
-
 export interface EditorRenderResult {
   lines: string[];
   cursorRow: number;
-  cursorCol: number;
+  cursorColumn: number;
 }
 
 /** The editor surface the interactive loop renders and drives. */
@@ -162,705 +134,7 @@ export interface CommandRegistryLike {
   complete(text: string, options: { state: string }): CompletionItemLike[];
 }
 
-// ---------------------------------------------------------------------------
-// BasicEditorState — default line editor behind the raw loop
-// ---------------------------------------------------------------------------
-
-function cpSlice(text: string, start: number, end?: number): string {
-  return [...text].slice(start, end).join("");
-}
-
-function cpLength(text: string): number {
-  return [...text].length;
-}
-
-function cellWidth(char: string): number {
-  return Math.max(1, charCellWidth(char));
-}
-
-function textDisplayWidth(text: string): number {
-  let width = 0;
-  for (const char of text) {
-    width += cellWidth(char);
-  }
-  return width;
-}
-
-function wrapEditorLine(text: string, width: number): string[] {
-  const rows: string[] = [];
-  let row = "";
-  let rowWidth = 0;
-  for (const char of text) {
-    const charWidth = cellWidth(char);
-    if (row && rowWidth + charWidth > width) {
-      rows.push(row);
-      row = "";
-      rowWidth = 0;
-    }
-    row += char;
-    rowWidth += charWidth;
-  }
-  if (row || rows.length === 0) {
-    rows.push(row);
-  }
-  return rows;
-}
-
-function editorCursorPosition(text: string, width: number): [number, number] {
-  let row = 0;
-  let column = 0;
-  for (const char of text) {
-    const charWidth = cellWidth(char);
-    if (column > 0 && column + charWidth > width) {
-      row += 1;
-      column = 0;
-    }
-    column += charWidth;
-    if (column === width) {
-      row += 1;
-      column = 0;
-    }
-  }
-  return [row, column];
-}
-
-/**
- * Text, history, and command-completion state for the active editor.
- *
- * Default implementation of EditorLike; the richer editor from
- * terminal/input.ts can replace it through the same interface.
- */
-export class BasicEditorState implements EditorLike {
-  text = "";
-  /** Cursor position in code points. */
-  cursor = 0;
-  history: string[] = [];
-  historyIndex: number | null = null;
-  #historyDraft = "";
-  completions: CompletionItemLike[] = [];
-  selectedCompletion: number | null = null;
-
-  get completionVisible(): boolean {
-    return this.completions.length > 0;
-  }
-
-  setCompletions(values: readonly CompletionItemLike[]): void {
-    this.completions = this.text.startsWith("/") ? [...values] : [];
-    this.selectedCompletion = this.completions.length > 0 ? 0 : null;
-  }
-
-  apply(action: InputAction, options: { runtimeActive: boolean }): EditorEffect {
-    if (action.kind === "submit") {
-      if (this.completionVisible) {
-        this.#acceptCompletion();
-        if (!this.text.startsWith("/")) {
-          return {};
-        }
-      }
-      return this.#submit();
-    }
-    if (action.kind === "newline") {
-      this.#insert("\n");
-      return {};
-    }
-    if (action.kind === "cancel") {
-      return this.#cancelOrClear(options.runtimeActive);
-    }
-    if (action.kind === "eof") {
-      return this.#exitOrNotice(options.runtimeActive);
-    }
-    if (action.kind === "dismiss") {
-      this.#clearCompletions();
-      return {};
-    }
-    return this.#applyEditAction(action);
-  }
-
-  renderLines(
-    width: number,
-    options: { prompt?: string; mask?: boolean } = {},
-  ): EditorRenderResult {
-    const prompt = options.prompt ?? "❯ ";
-    const mask = options.mask ?? false;
-    const targetWidth = Math.max(3, width);
-    const promptWidth = Math.max(1, textDisplayWidth(prompt));
-    const contentWidth = Math.max(1, targetWidth - promptWidth);
-    const displayText = mask ? "*".repeat(cpLength(this.text)) : this.text;
-    const sourceLines = displayText.split("\n");
-    const rows: string[] = [];
-    for (const source of sourceLines) {
-      rows.push(...wrapEditorLine(source, contentWidth));
-    }
-    const lastSource = sourceLines[sourceLines.length - 1] as string;
-    if (
-      displayText &&
-      !displayText.endsWith("\n") &&
-      textDisplayWidth(lastSource) % contentWidth === 0
-    ) {
-      rows.push("");
-    }
-    const rendered = rows.map(
-      (row, index) => (index === 0 ? prompt : " ".repeat(promptWidth)) + row,
-    );
-    const before = cpSlice(displayText, 0, this.cursor);
-    const beforeLines = before.split("\n");
-    let priorRows = 0;
-    for (const line of beforeLines.slice(0, -1)) {
-      priorRows += wrapEditorLine(line, contentWidth).length;
-    }
-    const current = beforeLines[beforeLines.length - 1] as string;
-    const [currentRow, currentColumn] = editorCursorPosition(current, contentWidth);
-    const cursorRow = priorRows + currentRow;
-    const cursorColumn = promptWidth + currentColumn;
-    return {
-      lines: rendered,
-      cursorRow: Math.min(cursorRow, rendered.length - 1),
-      cursorCol: Math.min(cursorColumn, targetWidth - 1),
-    };
-  }
-
-  #submit(): EditorEffect {
-    const submitted = this.text;
-    this.#clearCompletions();
-    this.text = "";
-    this.cursor = 0;
-    this.historyIndex = null;
-    this.#historyDraft = "";
-    if (!submitted) {
-      return {};
-    }
-    this.history = [...this.history, submitted];
-    return { submit: submitted };
-  }
-
-  #cancelOrClear(runtimeActive: boolean): EditorEffect {
-    if (runtimeActive) {
-      return { cancelRequested: true };
-    }
-    this.text = "";
-    this.cursor = 0;
-    this.historyIndex = null;
-    this.#clearCompletions();
-    return {};
-  }
-
-  #exitOrNotice(runtimeActive: boolean): EditorEffect {
-    if (runtimeActive) {
-      return { notice: "A task is still running. Press Ctrl+C to cancel it." };
-    }
-    if (this.text) {
-      return { notice: "Clear the editor before exiting." };
-    }
-    return { exitRequested: true };
-  }
-
-  #applyEditAction(action: InputAction): EditorEffect {
-    if (action.kind === "history_up" && this.completionVisible) {
-      this.#moveCompletion(-1);
-    } else if (action.kind === "history_down" && this.completionVisible) {
-      this.#moveCompletion(1);
-    } else if (action.kind === "insert") {
-      this.#insert(action.text ?? "");
-    } else if (action.kind === "backspace" && this.cursor > 0) {
-      this.#clearCompletions();
-      this.text = cpSlice(this.text, 0, this.cursor - 1) + cpSlice(this.text, this.cursor);
-      this.cursor -= 1;
-    } else if (action.kind === "cursor_left") {
-      this.#clearCompletions();
-      this.cursor = Math.max(0, this.cursor - 1);
-    } else if (action.kind === "cursor_right") {
-      this.#clearCompletions();
-      this.cursor = Math.min(cpLength(this.text), this.cursor + 1);
-    } else if (action.kind === "history_up") {
-      this.#historyUp();
-    } else if (action.kind === "history_down") {
-      this.#historyDown();
-    } else if (action.kind === "complete") {
-      this.#acceptCompletion();
-    }
-    this.#closeCompletionIfContextLost();
-    return {};
-  }
-
-  #insert(text: string): void {
-    this.#clearCompletions();
-    this.text = cpSlice(this.text, 0, this.cursor) + text + cpSlice(this.text, this.cursor);
-    this.cursor += cpLength(text);
-    this.historyIndex = null;
-  }
-
-  #acceptCompletion(): void {
-    if (this.selectedCompletion === null) {
-      return;
-    }
-    const item = this.completions[this.selectedCompletion] as CompletionItemLike;
-    const start = Math.max(0, this.cursor + item.start);
-    this.text = cpSlice(this.text, 0, start) + item.value + cpSlice(this.text, this.cursor);
-    this.cursor = start + cpLength(item.value);
-    this.#clearCompletions();
-  }
-
-  #moveCompletion(offset: number): void {
-    if (this.selectedCompletion === null) {
-      return;
-    }
-    const count = this.completions.length;
-    this.selectedCompletion = (((this.selectedCompletion + offset) % count) + count) % count;
-  }
-
-  #historyUp(): void {
-    if (this.history.length === 0) {
-      return;
-    }
-    if (this.historyIndex === null) {
-      this.#historyDraft = this.text;
-      this.historyIndex = this.history.length - 1;
-    } else {
-      this.historyIndex = Math.max(0, this.historyIndex - 1);
-    }
-    this.text = this.history[this.historyIndex] as string;
-    this.cursor = cpLength(this.text);
-  }
-
-  #historyDown(): void {
-    if (this.historyIndex === null) {
-      return;
-    }
-    if (this.historyIndex === this.history.length - 1) {
-      this.text = this.#historyDraft;
-      this.historyIndex = null;
-    } else {
-      this.historyIndex += 1;
-      this.text = this.history[this.historyIndex] as string;
-    }
-    this.cursor = cpLength(this.text);
-  }
-
-  #closeCompletionIfContextLost(): void {
-    if (!this.text.startsWith("/")) {
-      this.#clearCompletions();
-    }
-  }
-
-  #clearCompletions(): void {
-    this.completions = [];
-    this.selectedCompletion = null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// BasicInputDecoder — default bytes-to-actions pipeline
-// ---------------------------------------------------------------------------
-
-const ESC = 0x1b;
-const PASTE_START = [0x1b, 0x5b, 0x32, 0x30, 0x30, 0x7e]; // \x1b[200~
-const PASTE_END = [0x1b, 0x5b, 0x32, 0x30, 0x31, 0x7e]; // \x1b[201~
-
-const CSI_ARROW_ACTIONS: Record<string, InputActionKind> = {
-  "\x1b[A": "history_up",
-  "\x1b[B": "history_down",
-  "\x1b[C": "cursor_right",
-  "\x1b[D": "cursor_left",
-  "\x1bOA": "history_up",
-  "\x1bOB": "history_down",
-  "\x1bOC": "cursor_right",
-  "\x1bOD": "cursor_left",
-};
-
-const CONTROL_ACTIONS: Record<number, InputActionKind> = {
-  4: "eof",
-  9: "complete",
-  8: "backspace",
-  127: "backspace",
-};
-
-const CONTROL_KEYS: Readonly<Record<number, KeyInput>> = {
-  3: makeKeyInput("ctrl_c", { ctrl: true }),
-  12: makeKeyInput("ctrl_l", { ctrl: true }),
-  15: makeKeyInput("character", { text: "o", ctrl: true }),
-  20: makeKeyInput("character", { text: "t", ctrl: true }),
-};
-
-const SPECIAL_ESCAPE_ACTIONS: Record<string, InputActionKind> = {
-  "\x1b[13;2u": "newline",
-  "\x1b[57414;2u": "newline",
-  "\x1b[13u": "submit",
-  "\x1b[13;1u": "submit",
-  "\x1b[57414u": "submit",
-  "\x1b[57414;1u": "submit",
-  "\x1b[9u": "complete",
-  "\x1b[9;1u": "complete",
-  "\x1b[127u": "backspace",
-  "\x1b[127;1u": "backspace",
-  "\x1b[27u": "dismiss",
-  "\x1b[27;1u": "dismiss",
-};
-
-const utf8Decoder = new TextDecoder("utf-8", { fatal: false });
-
-function findSubsequence(haystack: number[], needle: number[]): number {
-  outer: for (let index = 0; index + needle.length <= haystack.length; index += 1) {
-    for (let offset = 0; offset < needle.length; offset += 1) {
-      if (haystack[index + offset] !== needle[offset]) {
-        continue outer;
-      }
-    }
-    return index;
-  }
-  return -1;
-}
-
-/** Split a byte run into complete UTF-8 content and an incomplete tail. */
-function splitIncompleteUtf8(bytes: number[]): [number[], number[]] {
-  let index = bytes.length - 1;
-  let continuation = 0;
-  while (index >= 0 && continuation < 4 && ((bytes[index] as number) & 0xc0) === 0x80) {
-    index -= 1;
-    continuation += 1;
-  }
-  if (index < 0) {
-    return [bytes, []];
-  }
-  const lead = bytes[index] as number;
-  const needed =
-    lead < 0x80 ? 1 : lead >= 0xc0 && lead <= 0xdf ? 2 : lead >= 0xe0 && lead <= 0xef ? 3 : lead >= 0xf0 && lead <= 0xf7 ? 4 : 1;
-  if (bytes.length - index < needed) {
-    return [bytes.slice(0, index), bytes.slice(index)];
-  }
-  return [bytes, []];
-}
-
-function decodeUtf8(bytes: number[]): string {
-  return utf8Decoder.decode(new Uint8Array(bytes));
-}
-
-export interface BasicInputDecoderOptions {
-  isAppleTerminal?: () => boolean;
-  shiftPressed?: () => boolean;
-}
-
-/**
- * Incremental raw-input decoder with bracketed-paste and keyboard-mode
- * negotiation handling. Default InputDecoderLike; the input workstream's
- * pipeline can replace it through the same interface.
- */
-export class BasicInputDecoder implements InputDecoderLike {
-  #hooks: InputDecoderHooks;
-  #isAppleTerminal: () => boolean;
-  #shiftPressed: () => boolean;
-  #buffer: number[] = [];
-  #pasteMode = false;
-  #pasteBuffer: number[] = [];
-  kittyProtocolActive = false;
-
-  constructor(hooks: InputDecoderHooks, options: BasicInputDecoderOptions = {}) {
-    this.#hooks = hooks;
-    this.#isAppleTerminal = options.isAppleTerminal ?? (() => false);
-    this.#shiftPressed = options.shiftPressed ?? (() => false);
-  }
-
-  feed(data: Uint8Array): InputAction[] {
-    if (data.length === 0) {
-      return [];
-    }
-    let bytes = [...data];
-    if (bytes.length === 1 && (bytes[0] as number) > 127) {
-      bytes = [ESC, (bytes[0] as number) - 128];
-    }
-    this.#buffer.push(...bytes);
-    return this.#process();
-  }
-
-  flush(): InputAction[] {
-    if (this.#pasteMode || this.#buffer.length === 0) {
-      return [];
-    }
-    const buffered = this.#buffer;
-    this.#buffer = [];
-    if (buffered.length === 1 && buffered[0] === ESC) {
-      return [{ kind: "dismiss" }];
-    }
-    if (buffered[0] === ESC && buffered[1] === 0x5b) {
-      // A split CSI sequence stays buffered; a genuine one is dropped.
-      return [];
-    }
-    const [actions] = this.#decodeSequences(buffered);
-    return actions;
-  }
-
-  clear(): void {
-    this.#buffer = [];
-    this.#pasteBuffer = [];
-    this.#pasteMode = false;
-  }
-
-  #process(): InputAction[] {
-    const actions: InputAction[] = [];
-    for (;;) {
-      if (this.#pasteMode) {
-        this.#pasteBuffer.push(...this.#buffer);
-        this.#buffer = [];
-        const end = findSubsequence(this.#pasteBuffer, PASTE_END);
-        if (end === -1) {
-          return actions;
-        }
-        const pasted = this.#pasteBuffer.slice(0, end);
-        const remaining = this.#pasteBuffer.slice(end + PASTE_END.length);
-        this.#pasteBuffer = [];
-        this.#pasteMode = false;
-        actions.push({ kind: "insert", text: decodeUtf8(pasted) });
-        this.#buffer = [...remaining, ...this.#buffer];
-        continue;
-      }
-      const start = findSubsequence(this.#buffer, PASTE_START);
-      if (start !== -1) {
-        const before = this.#buffer.slice(0, start);
-        const after = this.#buffer.slice(start + PASTE_START.length);
-        const [sequenceActions] = this.#decodeSequences(before);
-        actions.push(...sequenceActions);
-        this.#buffer = [];
-        this.#pasteMode = true;
-        this.#pasteBuffer = after;
-        continue;
-      }
-      const [sequenceActions, remainder] = this.#decodeSequences(this.#buffer);
-      actions.push(...sequenceActions);
-      this.#buffer = remainder;
-      return actions;
-    }
-  }
-
-  #decodeSequences(bytes: number[]): [InputAction[], number[]] {
-    const actions: InputAction[] = [];
-    let index = 0;
-    while (index < bytes.length) {
-      const byte = bytes[index] as number;
-      if (byte === ESC) {
-        const parsed = this.#parseEscape(bytes, index);
-        if (parsed === null) {
-          break;
-        }
-        index = parsed.next;
-        if (parsed.action !== undefined) {
-          actions.push(parsed.action);
-        }
-        continue;
-      }
-      if (byte === 10 || byte === 13) {
-        index += 1;
-        if (byte === 13 && this.#isAppleTerminal() && this.#shiftPressed()) {
-          actions.push({ kind: "newline" });
-        } else {
-          actions.push({ kind: "submit" });
-        }
-        continue;
-      }
-      const key = CONTROL_KEYS[byte];
-      if (key !== undefined) {
-        index += 1;
-        actions.push({ kind: "key", key });
-        continue;
-      }
-      const control = CONTROL_ACTIONS[byte];
-      if (control !== undefined) {
-        index += 1;
-        actions.push({ kind: control });
-        continue;
-      }
-      if (byte < 32) {
-        index += 1;
-        continue;
-      }
-      let end = index;
-      while (end < bytes.length && (bytes[end] as number) >= 32 && bytes[end] !== 127) {
-        end += 1;
-      }
-      const [complete, tail] = splitIncompleteUtf8(bytes.slice(index, end));
-      if (complete.length > 0) {
-        actions.push({ kind: "insert", text: decodeUtf8(complete) });
-      }
-      index = end - tail.length;
-      if (tail.length > 0) {
-        break;
-      }
-    }
-    return [actions, bytes.slice(index)];
-  }
-
-  #parseEscape(
-    bytes: number[],
-    start: number,
-  ): { next: number; action?: InputAction } | null {
-    if (start + 1 >= bytes.length) {
-      return null;
-    }
-    const second = bytes[start + 1] as number;
-    if (second === 10 || second === 13) {
-      return {
-        next: start + 2,
-        action: { kind: "key", key: makeKeyInput("enter", { alt: true }) },
-      };
-    }
-    if (second === 0x5b) {
-      let final = -1;
-      for (let index = start + 2; index < bytes.length; index += 1) {
-        const code = bytes[index] as number;
-        if (code >= 0x40 && code <= 0x7e) {
-          final = index;
-          break;
-        }
-      }
-      if (final === -1) {
-        return null;
-      }
-      const sequence = String.fromCharCode(...bytes.slice(start, final + 1));
-      const action = this.#classifyCsi(sequence);
-      return action === undefined
-        ? { next: final + 1 }
-        : { next: final + 1, action };
-    }
-    if (second === 0x4f) {
-      if (start + 2 >= bytes.length) {
-        return null;
-      }
-      const sequence = String.fromCharCode(...bytes.slice(start, start + 3));
-      const kind = CSI_ARROW_ACTIONS[sequence];
-      return kind === undefined
-        ? { next: start + 3 }
-        : { next: start + 3, action: { kind } };
-    }
-    // An unsupported Alt sequence has no editor meaning; retain its character.
-    return { next: start + 1 };
-  }
-
-  #classifyCsi(sequence: string): InputAction | undefined {
-    const kittyFlags = /^\x1b\[\?(\d+)u$/.exec(sequence);
-    if (kittyFlags !== null) {
-      if (Number.parseInt(kittyFlags[1] as string, 10)) {
-        this.#hooks.disableModifyOtherKeys();
-        this.kittyProtocolActive = true;
-      } else {
-        this.#hooks.enableModifyOtherKeys();
-      }
-      return undefined;
-    }
-    if (/^\x1b\[\?[\d;]*c$/.test(sequence)) {
-      if (!this.kittyProtocolActive) {
-        this.#hooks.enableModifyOtherKeys();
-      }
-      return undefined;
-    }
-    if (sequence.startsWith("\x1b[?")) {
-      // Other negotiation responses (or their abandoned tails) are swallowed.
-      return undefined;
-    }
-    if (sequence === "\x1b[Z") {
-      return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
-    }
-    const modifiedControl = this.#modifiedControlKey(sequence);
-    if (modifiedControl !== undefined) {
-      return modifiedControl;
-    }
-    const special = SPECIAL_ESCAPE_ACTIONS[sequence];
-    if (special !== undefined) {
-      return { kind: special };
-    }
-    const arrow = CSI_ARROW_ACTIONS[sequence];
-    if (arrow !== undefined) {
-      return { kind: arrow };
-    }
-    if (this.#isKittyRelease(sequence)) {
-      return undefined;
-    }
-    const kittyPrintable =
-      /^\x1b\[(\d+)(?::(\d*))?(?::(\d+))?(?:;(\d+))?(?::(\d+))?u$/.exec(sequence);
-    if (kittyPrintable !== null) {
-      const codepoint = Number.parseInt(kittyPrintable[1] as string, 10);
-      const shifted = kittyPrintable[2]
-        ? Number.parseInt(kittyPrintable[2], 10)
-        : null;
-      const modifier = Number.parseInt(kittyPrintable[4] ?? "1", 10) - 1;
-      const lockMask = 64 + 128;
-      if (modifier & ~(1 | lockMask)) {
-        return undefined;
-      }
-      if (modifier & (2 | 4)) {
-        return undefined;
-      }
-      const effective = modifier & 1 && shifted !== null ? shifted : codepoint;
-      if (effective < 32) {
-        return undefined;
-      }
-      try {
-        return { kind: "insert", text: String.fromCodePoint(effective) };
-      } catch {
-        return undefined;
-      }
-    }
-    const modifyOtherKeys = /^\x1b\[27;(\d+);(\d+)~$/.exec(sequence);
-    if (modifyOtherKeys !== null) {
-      const modifier = Number.parseInt(modifyOtherKeys[1] as string, 10) - 1;
-      if (modifier & ~1) {
-        return undefined;
-      }
-      const codepoint = Number.parseInt(modifyOtherKeys[2] as string, 10);
-      if (codepoint < 32) {
-        return undefined;
-      }
-      try {
-        return { kind: "insert", text: String.fromCodePoint(codepoint) };
-      } catch {
-        return undefined;
-      }
-    }
-    return undefined;
-  }
-
-  #modifiedControlKey(sequence: string): InputAction | undefined {
-    const kitty = /^\x1b\[(13|57414|9);(\d+)(?::(\d+))?u$/.exec(sequence);
-    if (kitty !== null) {
-      const code = kitty[1] as string;
-      const modifier = Number.parseInt(kitty[2] as string, 10) - 1;
-      if (!isKittyPressEvent(kitty[3])) {
-        return undefined;
-      }
-      if (
-        (code === "13" || code === "57414")
-        && matchesKittyModifiers(modifier, 2)
-      ) {
-        return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
-      }
-      if (code === "9" && matchesKittyModifiers(modifier, 1)) {
-        return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
-      }
-      return undefined;
-    }
-    const modifyOtherKeys = /^\x1b\[27;(\d+);(\d+)~$/.exec(sequence);
-    if (modifyOtherKeys === null) {
-      return undefined;
-    }
-    const modifier = Number.parseInt(modifyOtherKeys[1] as string, 10) - 1;
-    const codepoint = Number.parseInt(modifyOtherKeys[2] as string, 10);
-    if (codepoint === 13 && modifier === 2) {
-      return { kind: "key", key: makeKeyInput("enter", { alt: true }) };
-    }
-    if (codepoint === 9 && modifier === 1) {
-      return { kind: "key", key: makeKeyInput("tab", { shift: true }) };
-    }
-    return undefined;
-  }
-
-  #isKittyRelease(sequence: string): boolean {
-    if (sequence.includes("\x1b[200~")) {
-      return false;
-    }
-    return [":3u", ":3~", ":3A", ":3B", ":3C", ":3D", ":3H", ":3F"].some((marker) =>
-      sequence.includes(marker),
-    );
-  }
-}
-
-export { createTranscriptBlock, type TranscriptBlock } from "../ui/transcript-store.ts";
+export { createTranscriptBlock, type TranscriptBlock } from "./transcript-store.ts";
 
 /** Local command feedback sharing the loop's event queue. */
 class LocalMessage {
@@ -990,39 +264,15 @@ export interface LoopInputSource {
 /** A terminal driver that may support raw-mode entry (POSIX TTY). */
 export type RawTerminalDriver = TerminalDriver & { enterRawMode?: () => void };
 
-function inputEventFromAction(action: InputAction): TuiInputEvent {
-  if (action.kind === "insert") {
-    return { type: "text", text: action.text ?? "" };
-  }
-  if (action.kind === "key") {
-    if (action.key === undefined) {
-      throw new Error("key input action is missing its key");
-    }
-    return { type: "key", key: action.key };
-  }
-  const key = action.kind === "submit" ? makeKeyInput("enter")
-    : action.kind === "newline" ? makeKeyInput("enter", { alt: true })
-    : action.kind === "complete" ? makeKeyInput("tab")
-    : action.kind === "history_up" ? makeKeyInput("up")
-    : action.kind === "history_down" ? makeKeyInput("down")
-    : action.kind === "cursor_left" ? makeKeyInput("left")
-    : action.kind === "cursor_right" ? makeKeyInput("right")
-    : action.kind === "backspace" ? makeKeyInput("backspace")
-    : action.kind === "dismiss" ? makeKeyInput("escape")
-    : action.kind === "cancel" ? makeKeyInput("ctrl_c", { ctrl: true })
-    : makeKeyInput("ctrl_d", { ctrl: true });
-  return { type: "key", key };
-}
-
 function editorActionForKey(key: KeyInput): InputAction | null {
-  if (key.id === "enter") return { kind: "submit" };
-  if (key.id === "tab") return { kind: "complete" };
-  if (key.id === "up") return { kind: "history_up" };
-  if (key.id === "down") return { kind: "history_down" };
-  if (key.id === "left") return { kind: "cursor_left" };
-  if (key.id === "right") return { kind: "cursor_right" };
-  if (key.id === "backspace") return { kind: "backspace" };
-  if (key.id === "ctrl_d") return { kind: "eof" };
+  if (key.id === "enter") return inputAction(InputActionKind.Submit);
+  if (key.id === "tab") return inputAction(InputActionKind.Complete);
+  if (key.id === "up") return inputAction(InputActionKind.HistoryUp);
+  if (key.id === "down") return inputAction(InputActionKind.HistoryDown);
+  if (key.id === "left") return inputAction(InputActionKind.CursorLeft);
+  if (key.id === "right") return inputAction(InputActionKind.CursorRight);
+  if (key.id === "backspace") return inputAction(InputActionKind.Backspace);
+  if (key.id === "ctrl_d") return inputAction(InputActionKind.Eof);
   return null;
 }
 
@@ -1342,17 +592,17 @@ export class InteractiveTerminalLoop {
 
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
-      if (action.kind === "newline") {
+      if (action.kind === InputActionKind.Newline) {
         this.#applyEditorAction(action);
         continue;
       }
-      this.#applyInputEvent(inputEventFromAction(action));
+      this.#applyInputEvent(toTuiInputEvent(action));
     }
   }
 
   #applyInputEvent(event: TuiInputEvent): void {
     if (event.type === "text" || event.type === "paste") {
-      this.#applyEditorAction({ kind: "insert", text: event.text });
+      this.#applyEditorAction(inputAction(InputActionKind.Insert, event.text));
       return;
     }
     const action = this.#ui.keybindings.resolve(event.key, ["terminal", "editor"]);
@@ -1374,13 +624,13 @@ export class InteractiveTerminalLoop {
       return;
     }
     if (action === "editor_newline") {
-      this.#applyEditorAction({ kind: "newline" });
+      this.#applyEditorAction(inputAction(InputActionKind.Newline));
     } else if (action === "submit_follow_up") {
       this.#applyFollowUpSubmit();
     } else if (action === "dismiss") {
-      this.#applyEditorAction({ kind: "dismiss" });
+      this.#applyEditorAction(inputAction(InputActionKind.Dismiss));
     } else if (action === "cancel") {
-      this.#applyEditorAction({ kind: "cancel" });
+      this.#applyEditorAction(inputAction(InputActionKind.Cancel));
     } else if (action === "toggle_tool_output") {
       this.#ui.toggleToolOutputFromKeybinding();
       this.#needsRender = true;
@@ -1391,16 +641,16 @@ export class InteractiveTerminalLoop {
   }
 
   #applyFollowUpSubmit(): void {
-    if (this.#applyQuestionAction({ kind: "submit" })) {
+    if (this.#applyQuestionAction(inputAction(InputActionKind.Submit))) {
       this.#needsRender = true;
       return;
     }
-    if (this.#applyCompletionAction({ kind: "submit" })) {
+    if (this.#applyCompletionAction(inputAction(InputActionKind.Submit))) {
       this.#needsRender = true;
       return;
     }
     const effect = this.#editor.apply(
-      { kind: "submit" },
+      inputAction(InputActionKind.Submit),
       { runtimeActive: this.#ui.isRunning() },
     );
     if (effect.submit !== null && effect.submit !== undefined) {
@@ -1443,11 +693,11 @@ export class InteractiveTerminalLoop {
       return false;
     }
     if (
-      action.kind !== "dismiss" &&
-      action.kind !== "history_up" &&
-      action.kind !== "history_down" &&
-      action.kind !== "complete" &&
-      action.kind !== "submit"
+      action.kind !== InputActionKind.Dismiss &&
+      action.kind !== InputActionKind.HistoryUp &&
+      action.kind !== InputActionKind.HistoryDown &&
+      action.kind !== InputActionKind.Complete &&
+      action.kind !== InputActionKind.Submit
     ) {
       return false;
     }
@@ -1460,7 +710,7 @@ export class InteractiveTerminalLoop {
 
   #applyEof(): void {
     const effect = this.#editor.apply(
-      { kind: "eof" },
+      inputAction(InputActionKind.Eof),
       { runtimeActive: this.#ui.isRunning() },
     );
     this.#applyEffect(effect);
@@ -1488,7 +738,7 @@ export class InteractiveTerminalLoop {
     if (question === null) {
       return false;
     }
-    if (action.kind === "submit") {
+    if (action.kind === InputActionKind.Submit) {
       const answer = this.#editor.text;
       if (this.#question === question) {
         this.#question = null;
@@ -1497,7 +747,10 @@ export class InteractiveTerminalLoop {
       question.resolve(answer);
       return true;
     }
-    if (action.kind === "cancel" || action.kind === "eof") {
+    if (
+      action.kind === InputActionKind.Cancel ||
+      action.kind === InputActionKind.Eof
+    ) {
       if (this.#question === question) {
         this.#question = null;
       }
@@ -1566,7 +819,6 @@ export interface TerminalUIOptions {
   projectRoot?: string;
   provider?: string;
   model?: string;
-  dashboardUrl?: string;
   commandRegistry?: CommandRegistryLike | null;
   cancelCallback?: (() => void) | null;
   theme?: string | null;
@@ -1615,7 +867,6 @@ export class TerminalUI {
   readonly projectRoot: string | null;
   readonly provider: string | null;
   readonly model: string | null;
-  readonly dashboardUrl: string | null;
   readonly capabilities: RuntimeCapabilities;
   readonly keybindings: KeybindingsManager;
 
@@ -1636,7 +887,6 @@ export class TerminalUI {
     this.projectRoot = options.projectRoot ?? null;
     this.provider = options.provider ?? null;
     this.model = options.model ?? null;
-    this.dashboardUrl = options.dashboardUrl ?? null;
     this.capabilities = { ...DEFAULT_RUNTIME_CAPABILITIES, ...options.capabilities };
     this.keybindings = new KeybindingsManager(
       DEFAULT_KEYBINDINGS,
@@ -1662,9 +912,9 @@ export class TerminalUI {
       model: this.model,
     });
     if (options.driver) {
-      const editorFactory = options.editorFactory ?? (() => new BasicEditorState());
+      const editorFactory = options.editorFactory ?? (() => new EditorState());
       const decoderFactory =
-        options.decoderFactory ?? ((hooks) => new BasicInputDecoder(hooks));
+        options.decoderFactory ?? ((hooks) => new TerminalInputDecoder(hooks));
       this.#loop = new InteractiveTerminalLoop(
         this,
         options.driver,
@@ -1891,23 +1141,11 @@ export class TerminalUI {
   }
 
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
-    const usableWidth = Math.max(12, width);
-    const blocks = this.#transcript.blocks();
-    const lines: string[] = [];
-    let activeStart: number | null = null;
-    for (const block of blocks) {
-      if (block.mutable && activeStart === null) {
-        activeStart = lines.length;
-      }
-      if (block.kind === "assistant") {
-        lines.push(...renderMarkdownLines(block.text, usableWidth, this.theme));
-      } else {
-        for (const [style, text] of this.#renderTranscriptItem(block, usableWidth)) {
-          lines.push(ansiStyledText(style, text.replace(/\n+$/u, "")));
-        }
-      }
-    }
-    return { lines, activeStart };
+    const rendered = new Transcript({
+      blocks: this.#transcript.blocks(),
+      theme: this.theme,
+    }).renderWithMetadata(width);
+    return { lines: [...rendered.lines], activeStart: rendered.activeStart };
   }
 
   buildFrame(options: {
@@ -1928,94 +1166,12 @@ export class TerminalUI {
   }
 
   #completionLines(width: number, editor: EditorLike): string[] {
-    const rows: string[] = [];
-    editor.completions.slice(0, 6).forEach((item, index) => {
-      const marker = index === editor.selectedCompletion ? "›" : " ";
-      const text = `${marker} ${item.value}  ${item.description}`.replace(/\s+$/u, "");
-      rows.push(truncateToWidth(text, width));
-    });
-    return rows;
-  }
-
-  #renderTranscriptItem(
-    item: TranscriptBlock,
-    width: number,
-  ): Array<[string, string]> {
-    if (item.kind === "user") {
-      return this.#backgroundLines(item.text, width, "user_bg", "text");
-    }
-    if (item.kind === "thinking") {
-      return this.#plainLines(
-        `thinking  ${item.text}`,
-        width,
-        `italic ${this.theme.color("thinking")}`,
-      );
-    }
-    if (item.kind === "tool") {
-      const status = item.status || "running";
-      const isRunning = status === "running";
-      const background = isRunning
-        ? "tool_pending_bg"
-        : status === "completed"
-          ? "tool_success_bg"
-          : "tool_error_bg";
-      const accent = isRunning
-        ? "accent"
-        : status === "completed"
-          ? "success"
-          : "warning";
-      let title = `● ${item.name || "tool"}`;
-      if (item.subject) {
-        title += `  ${clip(item.subject, 180)}`;
-      }
-      if (item.key) {
-        title += `  [${item.key.slice(-8)}]`;
-      }
-      let detail = isRunning ? "Running…" : status;
-      if (item.exitCode !== null) {
-        detail += ` · exit ${item.exitCode}`;
-      }
-      if (item.durationMs !== null) {
-        detail += ` · ${item.durationMs}ms`;
-      }
-      if (item.streamError) {
-        detail += `\n${clip(item.streamError, 1_200)}`;
-      }
-      if (item.toolOutputExpanded && item.toolOutput) {
-        detail += `\n${clip(item.toolOutput, 1_200)}`;
-      }
-      const rendered = this.#backgroundLines(`${title}\n${detail}`, width, background, "text");
-      const first = rendered[0];
-      if (first !== undefined) {
-        rendered[0] = [
-          first[0].replace(this.theme.color("text"), this.theme.color(accent)),
-          first[1],
-        ];
-      }
-      return rendered;
-    }
-    return this.#plainLines(item.text, width, item.style || this.theme.color("text"));
-  }
-
-  #backgroundLines(
-    text: string,
-    width: number,
-    background: string,
-    foreground: string,
-  ): Array<[string, string]> {
-    const style = `bg:${this.theme.color(background)} ${this.theme.color(foreground)}`;
-    return wrapTextToWidth(text, width).map((line) => [
-      style,
-      TerminalUI.#padLine(line, width) + "\n",
-    ]);
-  }
-
-  #plainLines(text: string, width: number, style: string): Array<[string, string]> {
-    return wrapTextToWidth(text, width).map((line) => [style, `${line}\n`]);
-  }
-
-  static #padLine(line: string, width: number): string {
-    return line + " ".repeat(Math.max(0, width - visibleWidth(line)));
+    return [
+      ...new CompletionList({
+        items: editor.completions,
+        selectedIndex: editor.selectedCompletion,
+      }).render(width),
+    ];
   }
 
   // -- events ---------------------------------------------------------------
@@ -2116,9 +1272,6 @@ export class TerminalUI {
     }
     if (this.provider && this.model) {
       details.push(`${this.provider}/${this.model}`);
-    }
-    if (this.dashboardUrl) {
-      details.push(`trace: ${this.dashboardUrl}`);
     }
     if (this.#loop !== null) {
       this.appendTranscript(

@@ -135,7 +135,7 @@ if (args[0] === "capture-pane") {
 `,
     );
 
-    const result = spawnSync("bash", [join(PROJECT_ROOT, "scripts/terminal-smoke.sh")], {
+    const result = spawnSync("bash", [join(PROJECT_ROOT, "scripts/tui-smoke.sh")], {
       cwd: PROJECT_ROOT,
       env: {
         ...process.env,
