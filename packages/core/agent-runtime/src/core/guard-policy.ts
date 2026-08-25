@@ -1,5 +1,4 @@
-import type { AssembledToolCall } from "@laohuang/llm";
-import type { ToolResult } from "@laohuang/tools";
+import type { ToolCall, ToolResult } from "@laohuang/tools";
 
 export interface GuardPolicyOptions {
   maxTotalTokens: number;
@@ -36,7 +35,7 @@ export class GuardPolicy {
   }
 
   recordRepeatedToolCalls(
-    toolCalls: readonly AssembledToolCall[],
+    toolCalls: readonly ToolCall[],
     toolResults: readonly ToolResult[],
   ): RepeatedToolCall | null {
     let repeated: RepeatedToolCall | null = null;
@@ -48,12 +47,12 @@ export class GuardPolicy {
       }
       let parsedArguments: unknown;
       try {
-        parsedArguments = JSON.parse(toolCall.function.arguments);
+        parsedArguments = JSON.parse(toolCall.arguments);
       } catch {
-        parsedArguments = toolCall.function.arguments;
+        parsedArguments = toolCall.arguments;
       }
       const fingerprint = stableStringify({
-        name: toolCall.function.name,
+        name: toolCall.name,
         arguments: parsedArguments,
         result: stableToolResult(toolResults[index]),
       });
@@ -61,7 +60,7 @@ export class GuardPolicy {
       this.repeatedCalls.set(fingerprint, count);
       seen.add(fingerprint);
       if (repeated === null || count > repeated.count) {
-        repeated = { name: toolCall.function.name, count };
+        repeated = { name: toolCall.name, count };
       }
     }
     for (const fingerprint of [...this.repeatedCalls.keys()]) {
