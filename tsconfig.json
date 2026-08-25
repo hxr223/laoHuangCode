@@ -1,19 +1,18 @@
 {
-  "compilerOptions": {
-    "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
-    "lib": ["ES2022"],
-    "outDir": "dist",
-    "rootDir": "src",
-    "strict": true,
-    "noUncheckedIndexedAccess": true,
-    "noImplicitOverride": true,
-    "declaration": true,
-    "sourceMap": true,
-    "skipLibCheck": true,
-    "rewriteRelativeImportExtensions": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src"]
+  "files": [],
+  "references": [
+    { "path": "./packages/core/runtime-protocol" },
+    { "path": "./packages/core/tools" },
+    { "path": "./packages/core/agent-runtime" },
+    { "path": "./packages/core/session-runtime" },
+    { "path": "./packages/terminal/tui" },
+    { "path": "./packages/fs/tool-fs" },
+    { "path": "./packages/shell/bash-local" },
+    { "path": "./packages/shell/tool-bash" },
+    { "path": "./packages/context/project-instructions" },
+    { "path": "./packages/llm/llm" },
+    { "path": "./packages/llm/llm-openai-compatible" },
+    { "path": "./packages/storage/local-config" },
+    { "path": "./apps/cli" }
+  ]
 }

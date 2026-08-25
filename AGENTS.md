@@ -7,12 +7,23 @@
 - No emojis in commits, issues, PR comments, or code.
 - When the user asks a question, answer it first before editing or running implementation commands.
 - When responding to user feedback or analysis, explicitly say whether you agree or disagree before saying what changed.
+- During feature discussions, do not recommend first-version, throwaway, MVP, phase-one, temporary, partial-product, or "do the minimum first" approaches unless the user explicitly asks for phased delivery.
+- For any feature/platform/support discussion:
+  - First state the coherent end-state product contract.
+  - Then analyze the architecture required to satisfy that contract.
+  - If sequencing is useful, describe it only as implementation order, not as reduced product scope.
+  - Do not call an incomplete capability "support".
+  - If a proposal leaves known gaps, label it as not meeting the product contract.
+- Before responding, check: "Am I recommending a smaller product than the user asked for?" If yes, rewrite around the complete end-state.
 
 ## Project Shape
 
 - This is a TypeScript/Node.js CLI package named `laohuang`.
-- Source lives in `src/`; tests live in `test/`.
-- The npm package is built from `src/` into `dist/` with `tsc`.
+- The repository root is a private npm workspace orchestrator. Workspaces are exactly `apps/*` and `packages/*/*`.
+- `apps/cli` is the only application and the only published npm package. Its package name and command are `laohuang`.
+- Internal packages live under `packages/<domain>/<package>/src`, are private, use version `0.0.0`, and expose only their package root.
+- There is no production root `src/` directory. Tests and repository engineering automation live in `scripts/`.
+- The published CLI is bundled from `apps/cli` into `apps/cli/dist/bin.js`.
 - Do not treat old Python build artifacts, `build/`, `src/laohuangcode.egg-info/`, `__pycache__/`, or `npm/vendor/` as primary source unless the user explicitly asks about them.
 - Do not edit generated or packaged artifacts such as `dist/`, `build/`, egg-info, or vendored release files unless the task is specifically about packaging or release output.
 
@@ -57,7 +68,7 @@ Multiple agent sessions may be working in this repository. Git operations must n
 When committing:
 
 - Only commit files changed in this session.
-- Stage explicit paths only, for example `git add src/foo.ts test/foo.test.ts`.
+- Stage explicit paths only, for example `git add apps/cli/src/main.ts packages/core/agent-runtime/src/index.ts scripts/foo.test.ts`.
 - Never use `git add .` or `git add -A`.
 - Before committing, run `git status` and verify that only your files are staged.
 - Use concise messages such as `fix: handle cancelled tool output` or `feat: add model adapter boundary`.
@@ -84,14 +95,14 @@ For terminal behavior, prefer a controlled tmux session from the repo root:
 
 ```bash
 tmux new-session -d -s laohuang-test -x 80 -y 24
-tmux send-keys -t laohuang-test "node dist/cli.js" Enter
+tmux send-keys -t laohuang-test "node apps/cli/dist/bin.js" Enter
 sleep 3 && tmux capture-pane -t laohuang-test -p
 tmux send-keys -t laohuang-test "your prompt here" Enter
 tmux send-keys -t laohuang-test Escape
 tmux kill-session -t laohuang-test
 ```
 
-Build first with `npm run build` before running `node dist/cli.js`.
+Build first with `npm run build` before running `node apps/cli/dist/bin.js`.
 
 ## Security Boundaries
 
@@ -110,7 +121,9 @@ Build first with `npm run build` before running `node dist/cli.js`.
   npm ci
   npm run build
   npm test
-  npm pack --dry-run
+  npm run check:version
+  npm run smoke:package
+  npm run smoke:tui
   ```
 
 - Do not publish manually unless the user explicitly asks.

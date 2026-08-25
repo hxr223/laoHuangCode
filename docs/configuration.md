@@ -41,8 +41,8 @@ SDK 读取账户可用模型；如果读取失败，可以手动输入模型名�
 /logout openai
 ```
 
-key 在终端使用隐藏输入（不回显），不会出现在 Shell 历史、普通终端输出、Web
-事件或 Agent 消息中。`/login` 更新当前供应商时会立即重建客户端；`/logout` 删除
+key 在终端使用隐藏输入（不回显），不会出现在 Shell 历史、普通终端输出或 Agent
+消息中。`/login` 更新当前供应商时会立即重建客户端；`/logout` 删除
 当前供应商的已保存 key 时不会抹除内存中的现有客户端，退出或切换模型后才完全
 失效。模型请求返回 401 时，错误信息会提示运行对应的 `/login <provider>`。
 
@@ -50,6 +50,9 @@ key 在终端使用隐藏输入（不回显），不会出现在 Shell 历史、
 保留为兼容别名，新用法应优先使用 `/login`、`/logout`。
 
 ## 本地文件
+
+配置实现位于私有 workspace `@laohuang/local-config`，CLI 只通过该包读取和写入
+profile 与凭据文件。
 
 默认配置目录是 `~/.config/laohuang`：
 
