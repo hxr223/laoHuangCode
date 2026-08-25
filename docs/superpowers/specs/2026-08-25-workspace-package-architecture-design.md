@@ -16,7 +16,7 @@ application workspace or to an independently buildable private package. The
 root contains no production `src/` directory after migration.
 
 The package architecture must support adding a model Adapter, tool Adapter,
-storage implementation, terminal host, SDK surface, or executable app by
+storage implementation, terminal host, provider runtime surface, or executable app by
 adding a sibling package and changing application composition. Adding one of
 those capabilities must not require moving the existing Agent loop, Session
 runtime, TUI, or current Adapters.
@@ -81,7 +81,7 @@ laoHuangCode/
 │   │   └── tool-fs/
 │   ├── llm/
 │   │   ├── llm/
-│   │   └── llm-openai-compatible/
+│   │   └── llm-pi-ai/
 │   ├── shell/
 │   │   ├── bash-local/
 │   │   └── tool-bash/
@@ -111,8 +111,8 @@ public interface.
 | `packages/core/agent-runtime` | `@laohuang/agent-runtime` | `CodingAgent`, model/tool double loop, guard policy, history commit, system-prompt assembly, and Agent-level orchestration. |
 | `packages/core/session-runtime` | `@laohuang/session-runtime` | `AgentSession`, routing, scheduler and queues, task lifecycle, queue dispatch, human-intent routing, and Agent turn coordination. |
 | `packages/core/tools` | `@laohuang/tools` | `ToolSpec`, `ToolDefinition`, `ToolResult`, execution context, registry, execution-mode rules, and tool-call dispatch. No built-in filesystem or shell implementation. |
-| `packages/llm/llm` | `@laohuang/llm` | Provider-neutral model request, event, error, usage, tool-call, stream-attempt, and model Adapter interfaces consumed by Agent runtime. |
-| `packages/llm/llm-openai-compatible` | `@laohuang/llm-openai-compatible` | Official `openai` SDK client construction, OpenAI-compatible Chat Completions request/stream translation, current OpenAI and DeepSeek presets, and error classification. |
+| `packages/llm/llm` | `@laohuang/llm` | Provider-neutral model messages, requests, events, errors, usage, tool calls, tool results, replay envelope, and Model Runtime interfaces consumed by Agent runtime. |
+| `packages/llm/llm-pi-ai` | `@laohuang/llm-pi-ai` | Bidirectional conversion between LaoHuang model contracts and pi-ai, provider/model lookup, replay metadata, streaming, cancellation, and normalized model failures. |
 | `packages/fs/tool-fs` | `@laohuang/tool-fs` | `read`, `write`, and `edit` specifications and implementations, project-root confinement, modification locking, and filesystem validation. |
 | `packages/shell/bash-local` | `@laohuang/bash-local` | Local Bash subprocess lifecycle, stdout/stderr decoding, truncation, process-group cancellation, and output-delta delivery. |
 | `packages/shell/tool-bash` | `@laohuang/tool-bash` | Bash tool specification and Adapter from `ToolDefinition` to `bash-local`. |
@@ -135,8 +135,8 @@ product SemVer and public publishing metadata.
 | `src/core/session-action-protocol.ts` | `packages/core/runtime-protocol/src/session-action-protocol.ts` |
 | `src/core/user-intent.ts` | `packages/core/runtime-protocol/src/user-intent.ts` |
 | `src/core/queue-bridge.ts` | `packages/core/runtime-protocol/src/queue-bridge.ts` |
-| Provider-neutral types extracted from `src/model-adapter.ts` and `src/model-stream.ts` | `packages/llm/llm/src/` |
-| `src/client.ts`, `src/model-adapter.ts`, `src/model-stream.ts`, `src/core/model-runtime.ts`, `src/providers.ts` | `packages/llm/llm-openai-compatible/src/` |
+| Provider-neutral model contracts and runtime extracted from the old model stack | `packages/llm/llm/src/` |
+| pi-ai request/response, stream, replay, and provider lookup conversion | `packages/llm/llm-pi-ai/src/` |
 | Registry and protocol portions of `src/tools.ts`, plus `src/core/tool-runtime.ts` | `packages/core/tools/src/` |
 | Filesystem portions of `src/tools.ts` | `packages/fs/tool-fs/src/` |
 | `src/bash-runner.ts` | `packages/shell/bash-local/src/bash-runner.ts` |
@@ -215,7 +215,7 @@ export interface QueueStatus {
 ```
 
 `AgentSession` consumes `AgentRunner` and `SemanticClassifier`; it never
-imports `CodingAgent`, the CLI command implementation, or the OpenAI SDK.
+imports `CodingAgent`, the CLI command implementation, or a provider runtime.
 
 ### Model protocol and Adapter
 
@@ -223,22 +223,28 @@ imports `CodingAgent`, the CLI command implementation, or the OpenAI SDK.
 
 ```ts
 export interface ModelAdapter {
-  runAttempt(request: ModelRequest): Promise<ModelAttempt>;
+  runAttempt(request: ModelRequest): Promise<ModelResult>;
+  listProviders(): readonly ModelProviderInfo[];
+  listModels(provider: string): readonly ModelInfo[];
 }
 
 export interface ModelRequest {
+  readonly provider: string;
   readonly model: string;
+  readonly baseUrl?: string;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ToolSpec[];
-  readonly cancelToken: CancelToken;
-  readonly toolChoice?: "auto" | "none";
-  readonly onEvent: (event: ModelEvent) => void;
+  readonly toolChoice: "auto" | "none";
+  readonly cancelToken?: CancelToken;
+  readonly onEvent?: (event: ModelEvent) => void;
 }
 ```
 
-`@laohuang/llm-openai-compatible` is the current concrete Adapter. OpenAI and
-DeepSeek remain configuration presets over the same Adapter until a provider
-requires a genuinely different protocol implementation.
+`@laohuang/llm-pi-ai` is the current concrete Adapter and is the only package
+that imports pi-ai. OpenAI and DeepSeek are the current product-supported
+routes. Additional entries in the installed pi-ai catalog are not support
+claims until configuration, authentication, request/response conversion, and
+real-provider contract verification are added.
 
 ### Tool protocol and Adapters
 
@@ -310,7 +316,7 @@ flowchart TD
     Session[core/session-runtime]
     Tools[core/tools]
     LLM[llm/llm]
-    OpenAI[llm/llm-openai-compatible]
+    PiAI[llm/llm-pi-ai]
     FileTools[fs/tool-fs]
     BashLocal[shell/bash-local]
     BashTool[shell/tool-bash]
@@ -320,7 +326,7 @@ flowchart TD
 
     CLI --> Agent
     CLI --> Session
-    CLI --> OpenAI
+    CLI --> PiAI
     CLI --> FileTools
     CLI --> BashTool
     CLI --> Config
@@ -347,7 +353,7 @@ Rules:
 
 1. No package may depend on `apps/cli`.
 2. `session-runtime` may depend on `AgentRunner`, never on `CodingAgent`.
-3. `agent-runtime` may depend on `ModelAdapter`, never on the OpenAI SDK.
+3. `agent-runtime` may depend on `ModelAdapter`, never on a provider runtime.
 4. `tools` may depend on tool contracts, never on `fs`, `bash-local`, or
    `tool-bash`.
 5. Cross-package imports use the package name and exported interface. Relative
@@ -410,7 +416,7 @@ The root package becomes private and owns workspace orchestration:
 }
 ```
 
-`tsconfig.base.json` retains strict TypeScript, NodeNext modules, Node.js 18
+`tsconfig.base.json` retains strict TypeScript, NodeNext modules, Node.js >=22.19.0
 runtime output, declarations, source maps, and relative-extension rewriting.
 Each leaf package has `composite: true`, `rootDir: "src"`, and
 `outDir: "dist"`. Root `tsconfig.json` contains only project references in
@@ -420,11 +426,11 @@ dependency order.
 
 1. `tsc -b` type-checks and emits every private package and the CLI app.
 2. `apps/cli/build.mjs` uses `esbuild` to bundle `apps/cli/src/bin.ts` and all
-   `@laohuang/*` workspaces into `apps/cli/dist/bin.js` for Node.js 18 ESM.
+   `@laohuang/*` workspaces into `apps/cli/dist/bin.js` for Node.js >=22.19.0 ESM.
 
-The official `openai` SDK remains external to the bundle and remains the only
-runtime dependency in `apps/cli/package.json`. `esbuild` is the only new
-development dependency introduced by this migration.
+`@earendil-works/pi-ai@^0.83.0` remains external to the bundle and is the model
+runtime dependency in `apps/cli/package.json`. Internal `@laohuang/*` packages
+remain bundled. `esbuild` is the only development bundling dependency.
 
 The public package manifest is `apps/cli/package.json`:
 
@@ -435,7 +441,7 @@ The public package manifest is `apps/cli/package.json`:
   "type": "module",
   "bin": { "laohuang": "dist/bin.js" },
   "files": ["dist/bin.js", "README.md", "LICENSE"],
-  "dependencies": { "openai": "^6.49.0" }
+  "dependencies": { "@earendil-works/pi-ai": "^0.83.0" }
 }
 ```
 
@@ -544,7 +550,7 @@ The migration is complete only when all of the following are true:
 - package dependencies match the specified direction and contain no cycle;
 - cross-package imports use public package exports;
 - Session has no dependency on CLI commands or concrete `CodingAgent`;
-- Agent has no dependency on the official OpenAI SDK;
+- Agent has no dependency on a provider runtime package;
 - tool registry has no dependency on filesystem or Bash implementations;
 - TUI has no dependency on CLI command implementations;
 - CLI behavior, TUI behavior, plain mode, configuration, tools, routing,

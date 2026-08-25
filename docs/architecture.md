@@ -2,8 +2,8 @@
 
 `laoHuangCode` 是一个纯 TypeScript/Node.js 的 coding agent。npm 包 `laohuang`
 是唯一发布制品：私有根 workspace 负责编排 TypeScript project references，
-`apps/cli` 把 CLI bundle 写入 `apps/cli/dist/bin.js`，运行时只依赖官方 `openai`
-npm SDK 和 Node.js 18+ 标准库，不需要 Python。
+`apps/cli` 把 CLI bundle 写入 `apps/cli/dist/bin.js`，运行时只依赖
+`@earendil-works/pi-ai@^0.83.0` 和 Node.js >=22.19.0 标准库，不需要 Python。
 
 ## 项目目录
 
@@ -23,7 +23,7 @@ laoHuangCode/
 │   └── cli/
 │       ├── src/               # CLI composition root、commands、REPL、model selection
 │       ├── dist/bin.js        # 发布包 bin 入口，构建产物
-│       ├── package.json       # npm 包 `laohuang` 的版本、bin、files 与 openai 依赖
+│       ├── package.json       # npm 包 `laohuang` 的版本、bin、files 与 pi-ai 依赖
 │       ├── README.md          # 随包发布的 README
 │       └── LICENSE            # 随包发布的 license
 ├── packages/
@@ -33,8 +33,8 @@ laoHuangCode/
 │   ├── core/session-runtime/             # 后台任务、路由、队列、安全点与取消协调
 │   ├── core/tools/                       # ToolRegistry 与工具协议
 │   ├── fs/tool-fs/                       # read/write/edit 工具适配器
-│   ├── llm/llm/                          # provider-neutral ModelAdapter 合同
-│   ├── llm/llm-openai-compatible/        # OpenAI/DeepSeek Chat Completions 适配器
+│   ├── llm/llm/                          # provider-neutral 模型领域合同
+│   ├── llm/llm-pi-ai/                    # pi-ai 转换、stream、replay 与错误归一化
 │   ├── shell/bash-local/                 # Bash 双流读取、限长结果与进程组取消
 │   ├── shell/tool-bash/                  # Bash tool adapter
 │   ├── storage/local-config/             # Profile 与凭据文件
@@ -69,7 +69,7 @@ flowchart LR
     CLI --> Config["@laohuang/local-config"]
     CLI --> FS["@laohuang/tool-fs"]
     CLI --> BashTool["@laohuang/tool-bash"]
-    CLI --> OpenAICompat["@laohuang/llm-openai-compatible"]
+    CLI --> PiAI["@laohuang/llm-pi-ai"]
     CLI --> Instructions["@laohuang/project-instructions"]
 
     Session --> Protocol["@laohuang/runtime-protocol"]
@@ -77,8 +77,8 @@ flowchart LR
     Agent --> LLM["@laohuang/llm"]
     Agent --> Tools["@laohuang/tools"]
     Agent --> Instructions
-    OpenAICompat --> LLM
-    OpenAICompat --> SDK["OpenAI SDK / Chat Completions"]
+    PiAI --> LLM
+    PiAI --> Runtime["pi-ai runtime"]
     FS --> Tools
     BashTool --> Tools
     BashTool --> BashLocal["@laohuang/bash-local"]
@@ -92,6 +92,12 @@ flowchart LR
 也是 private、版本固定为 `0.0.0`，只通过 `@laohuang/*` 包名公开根出口；生产代码不
 跨 package root 使用相对导入，也不 deep-import 其他 workspace 的 `src/` 或 `dist/`。
 `scripts/workspace-architecture.test.ts` 会持续检查这些约束和 workspace 依赖环。
+
+`@laohuang/llm` 拥有 provider-neutral 模型消息、事件、工具调用、工具结果、usage 和
+错误分类合同；只有 `@laohuang/llm-pi-ai` 允许导入 pi-ai 并执行 request/response、
+stream、replay 和错误转换。Agent Runtime 拥有模型—工具循环和 history 提交，Tool
+Runtime 拥有工具执行。当前产品支持的模型 route 只有 DeepSeek 和 OpenAI；pi-ai
+catalog 中出现的其他供应商或模型不代表 `laohuang` 已完成配置、认证或契约验证。
 
 ## 并发模型：事件循环代替线程
 
@@ -118,19 +124,19 @@ sequenceDiagram
     participant UI as TerminalUI
     participant Session as AgentSession
     participant Agent as CodingAgent
-    participant API as Chat Completions
+    participant API as Model Runtime
     participant Tools as ToolRegistry
 
     User->>UI: 输入编码任务
     UI->>Session: input.user_message
     Session->>Session: Router + Scheduler
     Session->>Agent: 后台 run(input, TaskContext)
-    Agent->>API: stream · messages + tools
-    API-->>Agent: content/reasoning/tool_call deltas
+    Agent->>API: complete · ModelMessage + ToolSpec
+    API-->>Agent: text/reasoning/tool-call deltas
     Agent-->>UI: model.* EventEnvelope
 
-    loop 模型返回 tool_calls（不设置轮数硬上限）
-        Agent->>Agent: 流结束后拼装并校验全部 tool calls
+    loop 模型返回 ToolCall（不设置轮数硬上限）
+        Agent->>Agent: 流结束后校验全部 ToolCall
         par 调用默认并发执行（Promise.all）
             Agent->>Tools: execute(call 1)
             Tools-->>UI: tool.output_delta
@@ -140,10 +146,10 @@ sequenceDiagram
             Tools-->>UI: tool.output_delta
             Tools-->>Agent: bounded result N
         end
-        Agent->>Agent: 按源顺序组装 tool messages
+        Agent->>Agent: 按源顺序组装 tool-result
         Agent->>Session: safe_point()
         Session-->>Agent: 一次 drain 当前 Task 的全部 pending
-        Agent->>API: messages + tool results
+        Agent->>API: ModelMessage + ToolResult
     end
 
     Agent->>Agent: 完整响应校验后原子写入 history
@@ -151,12 +157,12 @@ sequenceDiagram
     UI-->>User: 保留已实时显示的完整回复
 ```
 
-Agent 会向模型追加每个调用对应的 `tool` 角色结果，保持每个 `tool_call_id` 都有
-配对响应，再让模型解释结果或选择其他方案。
+Agent 会向模型追加每个调用对应的 provider-neutral tool-result，保持每个 ToolCall
+都有配对响应，再让模型解释结果或选择其他方案。
 
 运行时不限制工具轮数或模型请求次数，只限制累计 Token 和单任务耗时。相同工具、参数与
 稳定结果连续出现 3 次时会提前触发循环保护；`duration_ms` 等易变观测字段不参与结果
-指纹。触发任一保护后不再执行工具，只允许额外一次 `tool_choice=none` 的模型请求根据
+指纹。触发任一保护后不再执行工具，只允许额外一次禁用工具的模型请求根据
 已有信息收尾。若供应商仍返回工具调用或收尾请求失败，错误会包含触发原因、工具轮数、
 模型请求数、累计 Token 与耗时。`model.response_summary` 和 `agent.guard_*` 事件会把
 每轮 usage 及保护决策同步到事件总线。
@@ -165,7 +171,7 @@ Agent 会向模型追加每个调用对应的 `tool` 角色结果，保持每个
 
 所有用户输入先创建 `EventEnvelope`，再由四层 Router 依次执行：结构化元数据匹配、
 确定性语义规则、独立无历史的小模型分类，以及确定性安全裁决。分类器复用当前
-Provider/API key，只发送活动任务的最小元数据与本条新消息；3 秒超时、非法 JSON 或
+当前 provider route 和 API key，只发送活动任务的最小元数据与本条新消息；3 秒超时、非法 JSON 或
 低置信度都会回退为安全的 follow-up。接口保留独立 router model 的扩展点。内部模型
 和工具回调同样先经过 Router，但通常在第一层即可短路，不会调用语义分类器。
 
@@ -179,20 +185,20 @@ PendingQueue/HeldQueue 同时限制消息条数与供应商无关的估算 token
 输入占满内存。容量拒绝和安全策略拒绝进入有界 DeadLetterQueue，`/queue` 可查看三类
 队列与 token 估算；`/queue clear` 会一起清理。
 
-Pending 批次采用 claim/ack 两阶段语义：写入临时 history 只表示已 claim，直到 SDK
-真正创建下一次模型请求才 ack。若在两者之间取消，Session 会回滚尚未发送的 user
+Pending 批次采用 claim/ack 两阶段语义：写入临时 history 只表示已 claim，直到共享
+Adapter 真正创建下一次模型请求才 ack。若在两者之间取消，Session 会回滚尚未发送的 user
 message，并把原始事件完整转入 HeldQueue，因此不会出现“history 有未回答消息但队列
 已经丢失”的中间态。
 
 Task 取消由共享 `CancelToken` 协调模型 stream、尚未启动的工具和活动 Bash 进程组。
-已经提交的 assistant tool calls 始终补齐真实或 cancelled tool result；已完成的
+已经提交的 assistant ToolCall 始终补齐真实或 cancelled tool-result；已完成的
 write/edit/Bash 副作用不会自动回滚。
 
 ## 工具并发与顺序
 
 Agent 默认采用批次语义：参数解析按模型给出的顺序完成，工具随后用 `Promise.all`
 并发执行。`tool_result` 事件按实际完成顺序立即发出，
-但加入会话历史并回传模型的 `tool` 消息始终保持原始 `tool_calls` 顺序，因此日志可
+但加入会话历史并回传模型的 tool-result 始终保持原始 ToolCall 顺序，因此日志可
 实时反映快慢，模型上下文仍然确定。
 
 `CodingAgent({ toolExecution: "sequential" })` 可以把所有批次切换为串行。
@@ -226,11 +232,11 @@ inline 流式更新，轮次结束后冻结、绝不重写。`tui/screen.ts` 是
 TerminalUI 订阅 runtime event stream。模型、工具、路由、队列和取消事件都使用不可变
 `EventEnvelope`，包含 `event_id/session_id/task_id`、`correlation_id` 和 Session
 内严格递增的 `sequence`。消费者先经过 `EventProjector` 生成递归脱敏视图，API key、
-token、password 等字段不会进入展示面；DeepSeek 原始 reasoning delta 也不会进入
+token、password 等字段不会进入展示面；供应商私有 replay 状态和原始 provider payload 也不会进入
 Terminal View。
 
 事件规范会校验 source、必需 payload、字段类型、task/correlation 元数据与 payload
-大小。模型文本同样按 4KB/约 40ms 合并后发布，避免把每个 SDK token 直接变成 UI
+大小。模型文本同样按 4KB/约 40ms 合并后发布，避免把每个 provider token 直接变成 UI
 事件。EventBus 为每个订阅者创建独立的有界 mailbox；慢消费者只对自己的 mailbox
 施加背压，高频相邻 delta 在接近容量时合并，并为控制/生命周期事件保留容量。若一个
 投影连保留容量也完全耗尽，只丢弃该慢投影的后续视图，不能阻塞 Agent、取消或其他
