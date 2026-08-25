@@ -1171,6 +1171,12 @@ export async function main(
       writeStderr(`Configuration error: ${errorMessage(error)}`);
       return 2;
     }
+    try {
+      getProvider(settings.provider);
+    } catch (error) {
+      writeStderr(`Configuration error: ${errorMessage(error)}`);
+      return 2;
+    }
     const keyConfigured = credentials.get(settings.provider) !== null;
     outputFn(`Provider: ${settings.provider}`);
     outputFn(`Model: ${settings.model}`);
