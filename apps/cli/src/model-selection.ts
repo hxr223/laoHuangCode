@@ -1,13 +1,8 @@
 /** Interactive provider, credential, and model selection. */
 
-// Type-only imports (erased at runtime): the concrete modules are injected
-// below for testability. Production wiring passes `getProvider`/`providerNames`
-// from providers.ts and `createClient` from client.ts.
-import type {
-  ClientConnectionSettings,
-  Provider,
-} from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter } from "@laohuang/llm";
+import type { ProviderCatalog } from "./model-catalog.ts";
+
+export type { ProviderCatalog } from "./model-catalog.ts";
 
 /**
  * Minimal structural view of the runtime configuration produced here.
@@ -29,14 +24,6 @@ export interface CredentialStoreLike {
   set(provider: string, apiKey: string): void;
 }
 
-/** Structural view of the provider registry owned by providers.ts. */
-export interface ProviderRegistry {
-  /** Look up a preset by name; throws on unknown providers. */
-  get(name: string): Provider;
-  /** Sorted provider names. */
-  names(): string[];
-}
-
 /**
  * Question functions are asynchronous: inside an interactive session they are
  * wired to `TerminalUI.prompt`/`TerminalUI.promptSecret`, which resolve only
@@ -44,34 +31,17 @@ export interface ProviderRegistry {
  */
 export type InputFn = (prompt: string) => Promise<string>;
 export type OutputFn = (message: string) => void;
-export type ClientFactory = (settings: ClientConnectionSettings) => unknown;
-
-/** Structural match for `createClient` from client.ts. */
-export type CreateClientFn = (
-  config: { apiKey?: string | undefined; baseUrl?: string | undefined },
-  options?: { clientFactory?: ClientFactory | undefined },
-) => unknown;
-
-export type ModelAdapterFactory = (
-  provider: string,
-  client: unknown,
-) => ModelAdapter;
 
 export interface ModelSelection {
   readonly config: SelectionConfig;
-  readonly client: unknown;
-  readonly modelAdapter: ModelAdapter;
 }
 
 export interface ModelSelectorOptions {
   readonly credentials: CredentialStoreLike;
-  readonly registry: ProviderRegistry;
-  readonly createClient: CreateClientFn;
-  readonly createModelAdapter: ModelAdapterFactory;
+  readonly catalog: ProviderCatalog;
   readonly input: InputFn;
   readonly secretInput: InputFn;
   readonly output?: OutputFn | undefined;
-  readonly clientFactory?: ClientFactory | undefined;
 }
 
 export interface SelectOptions {
@@ -88,23 +58,17 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 /** Build a runtime model selection without exposing API keys. */
 export class ModelSelector {
   readonly #credentials: CredentialStoreLike;
-  readonly #registry: ProviderRegistry;
-  readonly #createClient: CreateClientFn;
-  readonly #createModelAdapter: ModelAdapterFactory;
+  readonly #catalog: ProviderCatalog;
   readonly #input: InputFn;
   readonly #secretInput: InputFn;
   readonly #output: OutputFn;
-  readonly #clientFactory: ClientFactory | undefined;
 
   constructor(options: ModelSelectorOptions) {
     this.#credentials = options.credentials;
-    this.#registry = options.registry;
-    this.#createClient = options.createClient;
-    this.#createModelAdapter = options.createModelAdapter;
+    this.#catalog = options.catalog;
     this.#input = options.input;
     this.#secretInput = options.secretInput;
     this.#output = options.output ?? ((message) => console.log(message));
-    this.#clientFactory = options.clientFactory;
   }
 
   async select(options: SelectOptions = {}): Promise<ModelSelection | null> {
@@ -117,7 +81,7 @@ export class ModelSelector {
         return null;
       }
     }
-    const provider = this.#registry.get(providerName);
+    const provider = this.#catalog.get(providerName);
 
     let apiKey = this.#credentials.get(providerName);
     const newApiKey = apiKey === null;
@@ -137,33 +101,9 @@ export class ModelSelector {
     }
 
     let modelName = options.modelName;
-    const client = this.#createClient(
-      {
-        apiKey,
-        baseUrl: provider.baseUrl ?? undefined,
-      },
-      { clientFactory: this.#clientFactory },
-    );
 
     if (modelName === undefined) {
-      let models: readonly string[] = provider.suggestedModels;
-      if (models.length === 0) {
-        try {
-          const listed: unknown = await (
-            client as { models: { list(): unknown } }
-          ).models.list();
-          models = [...(listed as Iterable<{ id?: unknown }>)]
-            .map((model) => model?.id)
-            .filter((id): id is string => typeof id === "string")
-            .sort();
-        } catch (error) {
-          const errorName = error instanceof Error ? error.name : "Error";
-          this.#output(
-            `Could not load models (${errorName}); enter a model name manually.`,
-          );
-          models = [];
-        }
-      }
+      const models = this.#catalog.listModelIds(providerName);
       modelName =
         models.length > 0
           ? (await this.#chooseModel(models)) ?? undefined
@@ -183,15 +123,11 @@ export class ModelSelector {
     if (newApiKey) {
       this.#credentials.set(providerName, apiKey);
     }
-    return {
-      config,
-      client,
-      modelAdapter: this.#createModelAdapter(providerName, client),
-    };
+    return { config };
   }
 
   async #chooseProvider(): Promise<string | null> {
-    const names = this.#registry.names();
+    const names = this.#catalog.names();
     this.#output("Model providers:");
     names.forEach((name, index) => {
       this.#output(`  ${index + 1}. ${PROVIDER_DISPLAY_NAMES[name] ?? name}`);

@@ -1,6 +1,6 @@
 /** Argument parsing for the laohuang CLI. */
 
-import { providerNames } from "@laohuang/llm-openai-compatible";
+import { providerNames } from "./model-catalog.ts";
 
 export class CliUsageError extends Error {}
 
