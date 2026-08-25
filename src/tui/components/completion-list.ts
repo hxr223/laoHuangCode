@@ -1,6 +1,6 @@
 import type { FocusableComponent } from "../component.ts";
 import { truncateToWidth } from "../screen.ts";
-import type { CompletionItemLike } from "../ui.ts";
+import type { CompletionItemLike } from "../contracts.ts";
 
 export interface CompletionListOptions {
   readonly items: readonly CompletionItemLike[];

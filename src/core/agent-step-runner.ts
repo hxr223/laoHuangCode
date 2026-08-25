@@ -11,8 +11,8 @@ import type { ToolExecutionMode, ToolResult } from "../tools.ts";
 import {
   HistoryCommitter,
   type HistoryCommitContext,
-  type PendingInputBatchLike,
 } from "./history-committer.ts";
+import type { PendingInputBatchLike } from "./runtime-protocol.ts";
 import { GuardPolicy } from "./guard-policy.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {

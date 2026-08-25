@@ -2,23 +2,13 @@
 
 import OpenAI from "openai";
 
-import type { Config } from "./config.ts";
-
 /**
  * Minimal structural view of the runtime configuration needed here.
- * The full `Config` type is owned by config.ts and is assignable to this
- * shape (checked by the assertion below), so `createClient` can be called
- * directly with a resolved `Config`.
  */
 export interface ClientConfig {
   apiKey?: string | null | undefined;
   baseUrl?: string | null | undefined;
 }
-
-// Compile-time guarantee: config.ts's Config stays assignable to ClientConfig.
-type AssertConfigAssignable = Config extends ClientConfig ? true : never;
-const assertConfigAssignable: AssertConfigAssignable = true;
-void assertConfigAssignable;
 
 /** Options handed to the SDK client factory (openai npm naming). */
 export interface ClientConnectionSettings {

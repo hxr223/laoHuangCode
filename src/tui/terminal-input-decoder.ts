@@ -8,7 +8,7 @@ import {
   type InputAction,
   type TerminalInputFilterOptions,
 } from "./editor.ts";
-import type { InputDecoderHooks, InputDecoderLike } from "./ui.ts";
+import type { InputDecoderHooks, InputDecoderLike } from "./contracts.ts";
 
 export interface TerminalInputDecoderOptions
   extends Pick<TerminalInputFilterOptions, "isAppleTerminal" | "shiftPressed"> {}
