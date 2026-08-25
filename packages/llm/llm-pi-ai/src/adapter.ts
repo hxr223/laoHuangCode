@@ -75,6 +75,7 @@ export class PiAiAdapter implements ModelAdapter {
       ...(apiKey === null ? {} : { apiKey }),
       ...(request.cancelToken === undefined ? {} : { signal: request.cancelToken.signal }),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+      ...(model.reasoning ? { reasoning: "high" } : {}),
       maxRetries: 0,
     };
     try {
