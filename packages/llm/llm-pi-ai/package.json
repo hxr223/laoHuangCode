@@ -1,0 +1,17 @@
+{
+  "name": "@laohuang/llm-pi-ai",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "dependencies": {
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@laohuang/llm": "0.0.0"
+  }
+}
