@@ -5,10 +5,10 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
-import type { AssembledToolCall } from "@laohuang/llm";
 import {
   ToolExecutionContext,
   ToolRuntime,
+  type ToolCall,
   type ToolExecutionContextLike,
   type ToolExecutionMode,
   type ToolRegistryLike,
@@ -20,12 +20,8 @@ function call(
   id: string,
   name: string,
   argumentsText: string,
-): AssembledToolCall {
-  return {
-    id,
-    type: "function",
-    function: { name, arguments: argumentsText },
-  };
+): ToolCall {
+  return { id, name, arguments: argumentsText };
 }
 
 class StubTools implements ToolRegistryLike {

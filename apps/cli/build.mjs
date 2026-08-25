@@ -8,9 +8,9 @@ await build({
   outfile: fileURLToPath(new URL("./dist/bin.js", import.meta.url)),
   bundle: true,
   platform: "node",
-  target: "node18",
+  target: "node22.19",
   format: "esm",
   sourcemap: true,
   banner: { js: "#!/usr/bin/env node" },
-  external: ["openai"],
+  external: ["@earendil-works/pi-ai", "@earendil-works/pi-ai/*"],
 });

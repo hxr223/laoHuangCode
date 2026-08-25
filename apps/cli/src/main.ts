@@ -5,14 +5,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CodingAgent } from "@laohuang/agent-runtime";
-import {
-  createClient,
-  defaultAdapterRegistry,
-  getProvider,
-  providerNames,
-  type ChatClientLike,
-  type ClientConnectionSettings,
-} from "@laohuang/llm-openai-compatible";
+import { ModelRuntime } from "@laohuang/llm";
+import { createPiAiAdapter } from "@laohuang/llm-pi-ai";
 import {
   ConfigManager,
   CredentialStore,
@@ -35,11 +29,13 @@ import {
   type CommandResult,
   type QueueStatus,
 } from "./commands.ts";
-import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import {
-  SmallModelSemanticClassifier,
-  type ChatCompletionsClient,
-} from "./semantic-classifier.ts";
+  AdapterProviderCatalog,
+  getProvider,
+  providerNames,
+} from "./model-catalog.ts";
+import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
+import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
 import {
   CliUsageError,
   HELP,
@@ -93,7 +89,6 @@ export interface MainOptions {
   inputFn?: InputFn | undefined;
   secretInputFn?: InputFn | undefined;
   outputFn?: OutputFn | undefined;
-  clientFactory?: ((settings: ClientConnectionSettings) => unknown) | undefined;
   stdin?: { isTTY?: boolean | undefined } | undefined;
   stdout?: { isTTY?: boolean | undefined } | undefined;
 }
@@ -142,6 +137,12 @@ export async function main(
   const credentials = new CredentialStore(
     options.credentialsPath ?? join(dirname(configPath), "credentials.json"),
   );
+  const modelAdapter = createPiAiAdapter({
+    enabledProviders: providerNames(),
+    resolveApiKey: (provider) => credentials.get(provider),
+  });
+  const modelRuntime = new ModelRuntime(modelAdapter);
+  const modelCatalog = new AdapterProviderCatalog(modelAdapter);
   // The selector's input/output targets are rewired once the session exists,
   // mirroring the Python original which mutated selector.input_fn/output_fn.
   // Like the Python original, the selector's own secret prompts (first-run
@@ -152,16 +153,12 @@ export async function main(
   let selectorOutput: OutputFn = outputFn;
   const selector = new ModelSelector({
     credentials,
-    registry: { get: getProvider, names: providerNames },
-    createClient,
-    createModelAdapter: (provider, selectedClient) =>
-      defaultAdapterRegistry.resolve(provider, selectedClient as ChatClientLike),
+    catalog: modelCatalog,
     input: (prompt) => selectorInput(prompt),
     secretInput: (prompt) => selectorSecretInput(prompt),
     output: (message) => {
       selectorOutput(message);
     },
-    clientFactory: options.clientFactory,
   });
 
   if (args.command === "config") {
@@ -250,7 +247,6 @@ export async function main(
   }
 
   let config: Config;
-  let runtimeClient: unknown = null;
   try {
     if (existsSync(configPath)) {
       config = manager.resolve({
@@ -272,7 +268,6 @@ export async function main(
         profile: null,
         apiKey: selection.config.apiKey,
       };
-      runtimeClient = selection.client;
       manager.configure({
         name: "default",
         provider: config.provider,
@@ -312,7 +307,6 @@ export async function main(
         profile: null,
         apiKey: selection.config.apiKey,
       };
-      runtimeClient = selection.client;
     } else {
       writeStderr(`Configuration error: ${message}`);
       return 2;
@@ -325,10 +319,6 @@ export async function main(
     writeStderr(`Configuration error: ${errorMessage(error)}`);
     return 2;
   }
-
-  const client =
-    runtimeClient ??
-    createClient(config, { clientFactory: options.clientFactory });
 
   // The interactive UI is constructed only once configuration is known; its
   // provider/model are read-only in TS.
@@ -348,22 +338,24 @@ export async function main(
   }
 
   const agent = new CodingAgent({
-    modelAdapter: defaultAdapterRegistry.resolve(
-      config.provider,
-      client as ChatClientLike,
-    ),
+    modelAdapter,
     model: config.model,
     tools: new ToolRegistry([
       ...createFileToolDefinitions({ projectRoot }),
       createBashToolDefinition({ projectRoot }),
     ]),
     provider: config.provider,
+    baseUrl: config.baseUrl,
     projectRoot: instructionRoot,
     startupCwd: process.cwd(),
   });
   const semanticClassifier = new SmallModelSemanticClassifier({
-    client: client as unknown as ChatCompletionsClient,
-    model: config.model,
+    modelRuntime,
+    route: {
+      provider: config.provider,
+      model: config.model,
+      baseUrl: config.baseUrl,
+    },
   });
   // agent-runtime satisfies session-runtime's AgentRunnerLike contract, so
   // the app can hand the worker to the session directly.
@@ -431,8 +423,9 @@ export async function main(
     session: runtime,
     onModelSelected: (selection) => {
       semanticClassifier.configure({
-        client: selection.client as unknown as ChatCompletionsClient,
+        provider: selection.config.provider,
         model: selection.config.model,
+        baseUrl: selection.config.baseUrl,
       });
     },
   });

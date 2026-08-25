@@ -91,15 +91,15 @@ if (command === "run build") {
   process.exit(0);
 }
 if (command === "pack --workspace laohuang --json") {
-  writeFileSync("laohuang-0.5.1.tgz", "fake tarball", "utf8");
-  console.log(JSON.stringify([{ filename: "laohuang-0.5.1.tgz" }]));
+  writeFileSync("laohuang-0.6.0.tgz", "fake tarball", "utf8");
+  console.log(JSON.stringify([{ filename: "laohuang-0.6.0.tgz" }]));
   process.exit(0);
 }
 if (args[0] === "install") {
   const binDir = join(process.cwd(), "node_modules", ".bin");
   mkdirSync(binDir, { recursive: true });
   const cliPath = join(binDir, "laohuang");
-  writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('0.5.1')\\n", "utf8");
+  writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('0.6.0')\\n", "utf8");
   chmodSync(cliPath, 0o755);
   process.exit(0);
 }
@@ -114,7 +114,7 @@ process.exit(2);
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /package smoke passed/);
-    assert.equal(existsSync(join(PROJECT_ROOT, "laohuang-0.5.1.tgz")), false);
+    assert.equal(existsSync(join(PROJECT_ROOT, "laohuang-0.6.0.tgz")), false);
   });
 });
 

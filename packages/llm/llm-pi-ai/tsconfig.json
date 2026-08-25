@@ -7,8 +7,6 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../../core/runtime-protocol" },
-    { "path": "../../core/tools" },
     { "path": "../llm" }
   ]
 }
