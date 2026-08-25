@@ -6,9 +6,12 @@ import {
   SessionCommands,
   type AgentLike,
   type SessionLike,
-} from "../src/commands.ts";
+} from "../apps/cli/src/commands.ts";
 import { CredentialStore } from "@laohuang/local-config";
-import { ModelSelector, type ProviderRegistry } from "../src/model-selection.ts";
+import {
+  ModelSelector,
+  type ProviderRegistry,
+} from "../apps/cli/src/model-selection.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";

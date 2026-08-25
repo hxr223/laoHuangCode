@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
 import { EventKind, EventSource } from "../packages/core/runtime-protocol/src/index.ts";
-import type { SessionLike } from "../src/commands.ts";
+import type { SessionLike } from "../apps/cli/src/commands.ts";
 import {
   AgentSession,
   type SemanticClassifierVerdict,

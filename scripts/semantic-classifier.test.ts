@@ -5,7 +5,7 @@ import {
   SmallModelSemanticClassifier,
   type ChatCompletionRequest,
   type ChatCompletionsClient,
-} from "../src/semantic-classifier.ts";
+} from "../apps/cli/src/semantic-classifier.ts";
 
 interface CapturedCall {
   request: ChatCompletionRequest;
