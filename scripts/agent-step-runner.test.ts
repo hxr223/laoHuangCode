@@ -1,16 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { AgentCancelled } from "../src/agent.ts";
+import { AgentCancelled } from "../packages/core/agent-runtime/src/index.ts";
 import type { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import type { ModelAdapter } from "@laohuang/llm";
 import { StreamResult } from "@laohuang/llm";
 import {
   AgentStepRunner,
   type AgentStepRunnerContext,
-} from "../src/core/agent-step-runner.ts";
-import { HistoryCommitter } from "../src/core/history-committer.ts";
-import { GuardPolicy } from "../src/core/guard-policy.ts";
+} from "../packages/core/agent-runtime/src/core/agent-step-runner.ts";
+import { HistoryCommitter } from "../packages/core/agent-runtime/src/core/history-committer.ts";
+import { GuardPolicy } from "../packages/core/agent-runtime/src/core/guard-policy.ts";
 import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
 

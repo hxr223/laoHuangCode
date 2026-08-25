@@ -3,6 +3,7 @@
   "references": [
     { "path": "./packages/core/runtime-protocol" },
     { "path": "./packages/core/tools" },
+    { "path": "./packages/core/agent-runtime" },
     { "path": "./packages/fs/tool-fs" },
     { "path": "./packages/shell/bash-local" },
     { "path": "./packages/shell/tool-bash" },

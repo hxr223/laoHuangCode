@@ -4,9 +4,9 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { CodingAgent } from "../src/agent.ts";
+import { CodingAgent } from "../packages/core/agent-runtime/src/index.ts";
 import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
-import { buildSystemPrompt } from "../src/system-prompt.ts";
+import { buildSystemPrompt } from "../packages/core/agent-runtime/src/system-prompt.ts";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 const EXPECTED_PROMPT = `You are laoHuangCode, a coding agent.

@@ -9,7 +9,7 @@ import {
   AgentError,
   CodingAgent,
   type AgentContext,
-} from "../src/agent.ts";
+} from "../packages/core/agent-runtime/src/index.ts";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import { EventBus, EventKind } from "../packages/core/runtime-protocol/src/index.ts";
 import {

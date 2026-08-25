@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   AgentError,
   CodingAgent,
-} from "./agent.ts";
+} from "@laohuang/agent-runtime";
 import {
   createClient,
   defaultAdapterRegistry,
