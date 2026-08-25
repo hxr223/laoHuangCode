@@ -2,8 +2,9 @@
 
 `laohuang` 是 npm 原生包：`npm install -g laohuang` 直接安装 `apps/cli`
 workspace 生成的 bundle，`bin` 入口指向包内 `dist/bin.js`，运行时只需要 Node.js
-18+ 和官方 `openai` SDK。私有内部 workspace 会被 bundle 进该单文件入口，不作为
-独立 npm 包发布。不再有 Python 内核、内置 wheel 或启动器引导层。
+>=22.19.0 和 `@earendil-works/pi-ai@^0.83.0`。私有内部 workspace 会被 bundle
+进该单文件入口，不作为独立 npm 包发布。不再有 Python 内核、内置 wheel 或启动器
+引导层。
 
 包内容由 `apps/cli/package.json` 的 `files` 字段锁定。运行
 `npm pack --workspace laohuang --json` 应只列出 `package.json`、`dist/bin.js`、

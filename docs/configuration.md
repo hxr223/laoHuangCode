@@ -12,8 +12,12 @@
 → 启动 Agent
 ```
 
-DeepSeek 提供 `deepseek-v4-flash` 和 `deepseek-v4-pro`。OpenAI 在获得 key 后通过
-SDK 读取账户可用模型；如果读取失败，可以手动输入模型名称。
+DeepSeek 提供 `deepseek-v4-flash` 和 `deepseek-v4-pro`。OpenAI 模型来自已安装的
+pi-ai catalog；如果没有列出目标模型，可以手动输入模型名称。
+
+当前产品支持的路由只有 DeepSeek 和 OpenAI。pi-ai 依赖中可能存在其他供应商或模型，
+但只要没有完成配置、认证、请求/响应转换和真实供应商契约测试，就不代表
+`laohuang` 已支持。
 
 ## 运行中切换
 
@@ -24,9 +28,9 @@ SDK 读取账户可用模型；如果读取失败，可以手动输入模型名�
 /model openai <model-name>
 ```
 
-`/model` 默认只改变当前会话，不修改默认 Profile。切换成功前会完成凭据检查和新
-客户端创建；任何失败都不会替换当前客户端。切换后保留已经完成的对话历史，并将
-历史消息规范化为两家服务都接受的 Chat Completions 通用字段。
+`/model` 默认只改变当前会话，不修改默认 Profile。切换成功前会完成凭据检查；下一次
+请求会通过共享 Adapter 解析所选 route 和当前 API key。任何失败都不会替换当前
+route。切换后保留已经完成的可见对话历史，并移除供应商私有 replay 状态。
 
 `/model` 不负责录入凭据。选择尚未登录的供应商时，会提示先运行相应的
 `/login <provider>`。
@@ -42,9 +46,9 @@ SDK 读取账户可用模型；如果读取失败，可以手动输入模型名�
 ```
 
 key 在终端使用隐藏输入（不回显），不会出现在 Shell 历史、普通终端输出或 Agent
-消息中。`/login` 更新当前供应商时会立即重建客户端；`/logout` 删除
-当前供应商的已保存 key 时不会抹除内存中的现有客户端，退出或切换模型后才完全
-失效。模型请求返回 401 时，错误信息会提示运行对应的 `/login <provider>`。
+消息中。`/login` 更新当前供应商时，下一次模型请求会通过共享 Adapter 读取新 key；
+`/logout` 删除当前供应商的已保存 key 后，后续请求会失败并提示重新登录。模型请求
+返回认证错误时，错误信息会提示运行对应的 `/login <provider>`。
 
 旧命令 `/apikey`、`/apikey set <provider>` 和 `/apikey remove <provider>` 暂时
 保留为兼容别名，新用法应优先使用 `/login`、`/logout`。
