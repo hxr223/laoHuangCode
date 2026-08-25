@@ -7,6 +7,6 @@
   },
   "include": ["src"],
   "references": [
-    { "path": "../../core/tools" }
+    { "path": "../../core/runtime-protocol" }
   ]
 }

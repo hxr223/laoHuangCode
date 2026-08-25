@@ -11,6 +11,6 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@laohuang/tools": "0.0.0"
+    "@laohuang/runtime-protocol": "0.0.0"
   }
 }

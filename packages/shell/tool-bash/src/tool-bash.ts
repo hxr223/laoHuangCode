@@ -6,12 +6,23 @@ import { runBash as runBashCommand, ToolExecutionContext } from "@laohuang/bash-
 import {
   optionalPositiveInteger,
   stringArgument,
-  type RunBash,
-  type RunBashOptions,
   type ToolAdapterDefinition,
   type ToolExecutionContextLike,
   type ToolResult,
 } from "@laohuang/tools";
+
+export interface RunBashOptions {
+  cwd: string;
+  timeoutSeconds: number;
+  maxOutputChars: number;
+  context: ToolExecutionContextLike;
+  env: Record<string, string | undefined>;
+}
+
+export type RunBash = (
+  command: string,
+  options: RunBashOptions,
+) => Promise<ToolResult>;
 
 export interface BashToolDefinitionOptions {
   projectRoot: string;

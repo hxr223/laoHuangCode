@@ -7,10 +7,10 @@ import assert from "node:assert/strict";
 
 import {
   ToolRegistry,
-  type RunBash,
   type ToolExecutionContextLike,
   type ToolResult,
 } from "../packages/core/tools/src/index.ts";
+import type { RunBash } from "../packages/shell/tool-bash/src/index.ts";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 // scripts/tools.test.ts runs before the bash-runner workstream lands, so the
@@ -97,6 +97,39 @@ test("registry composes built-in tools in canonical order", async (t) => {
   assert.deepEqual(
     registry.definitions.map((definition) => definition.function.name),
     ["read", "write", "edit", "bash"],
+  );
+});
+
+test("package exports compose and execute built-in tools after build", async (t) => {
+  const projectRoot = await makeTempDir(t);
+  const toolsPackage = await import("@laohuang/tools");
+  const fsPackage = await import("@laohuang/tool-fs");
+  const bashPackage = await import("@laohuang/tool-bash");
+  const bashLocalPackage = await import("@laohuang/bash-local");
+
+  assert.equal(typeof bashLocalPackage.runBash, "function");
+
+  const registry = new toolsPackage.ToolRegistry([
+    ...fsPackage.createFileToolDefinitions({ projectRoot }),
+    bashPackage.createBashToolDefinition({ projectRoot, runBash: testRunBash }),
+  ]);
+
+  assert.deepEqual(
+    registry.definitions.map(
+      (definition: { function: { name: string } }) => definition.function.name,
+    ),
+    ["read", "write", "edit", "bash"],
+  );
+
+  const result = await registry.execute("write", {
+    path: "package-entry.txt",
+    content: "ok\n",
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(
+    await fs.readFile(path.join(projectRoot, "package-entry.txt"), "utf8"),
+    "ok\n",
   );
 });
 
