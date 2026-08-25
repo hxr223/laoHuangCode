@@ -18,8 +18,7 @@ import {
   terminalUiPrompts,
   type SessionReplSession,
 } from "../src/cli.ts";
-import { ConfigManager } from "../src/config.ts";
-import { CredentialStore } from "../src/credentials.ts";
+import { ConfigManager, CredentialStore } from "@laohuang/local-config";
 import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
 import { ModelSelector } from "../src/model-selection.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
@@ -683,6 +682,8 @@ test("configured deepseek profile starts interactive cli", async () => {
     new ConfigManager(configPath).configure({
       name: "deepseek",
       provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
     });
     const outputs: string[] = [];
 
@@ -713,11 +714,17 @@ test("user can list profiles and switch the active one", async () => {
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const manager = new ConfigManager(configPath);
-    manager.configure({ name: "flash", provider: "deepseek" });
+    manager.configure({
+      name: "flash",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+    });
     manager.configure({
       name: "pro",
       provider: "deepseek",
       model: "deepseek-v4-pro",
+      baseUrl: "https://api.deepseek.com",
     });
     const outputs: string[] = [];
     const outputFn = (message: string): void => {
@@ -748,6 +755,8 @@ test("doctor reports resolved runtime configuration", async () => {
     new ConfigManager(configPath).configure({
       name: "deepseek",
       provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
     });
     new CredentialStore(credentialsPath).set("deepseek", "secret");
     const outputs: string[] = [];

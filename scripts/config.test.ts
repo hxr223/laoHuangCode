@@ -6,8 +6,10 @@ import test from "node:test";
 
 // Runtime import of the TypeScript source: Node type stripping requires the
 // real ".ts" extension (".js" specifiers do not resolve to ".ts" files).
-import { ConfigManager } from "../src/config.ts";
-import { CredentialStore } from "../src/credentials.ts";
+import {
+  ConfigManager,
+  CredentialStore,
+} from "../packages/storage/local-config/src/index.ts";
 
 function withTempDir(run: (directory: string) => void): void {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-config-test-"));
@@ -21,7 +23,12 @@ function withTempDir(run: (directory: string) => void): void {
 test("missing provider api key has an actionable error", () => {
   withTempDir((directory) => {
     const manager = new ConfigManager(join(directory, "config.json"));
-    manager.configure({ name: "default", provider: "deepseek" });
+    manager.configure({
+      name: "default",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+    });
 
     assert.throws(
       () =>
@@ -38,7 +45,13 @@ test("openai profile requires an explicit model", () => {
     const manager = new ConfigManager(join(directory, "config.json"));
 
     assert.throws(
-      () => manager.configure({ name: "openai", provider: "openai" }),
+      () =>
+        manager.configure({
+          name: "openai",
+          provider: "openai",
+          model: "",
+          baseUrl: null,
+        }),
       /model is required/,
     );
   });
@@ -50,7 +63,12 @@ test("user can save and resolve a deepseek profile without storing key", () => {
     const manager = new ConfigManager(configPath);
     const credentials = new CredentialStore(join(directory, "credentials.json"));
 
-    manager.configure({ name: "deepseek", provider: "deepseek" });
+    manager.configure({
+      name: "deepseek",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+    });
     credentials.set("deepseek", "deepseek-secret");
     const config = manager.resolve({ credentials });
 
