@@ -8,8 +8,8 @@ import {
   AgentCancelled,
   AgentError,
   CodingAgent,
-  type AgentContext,
 } from "../packages/core/agent-runtime/src/index.ts";
+import type { AgentContext } from "../packages/core/agent-runtime/src/agent.ts";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import { EventBus, EventKind } from "../packages/core/runtime-protocol/src/index.ts";
 import {
@@ -248,6 +248,7 @@ test("model can switch without losing conversation history", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(originalClient),
     model: "old-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -277,6 +278,7 @@ test("user receives a direct model response", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -298,6 +300,7 @@ test("agent executes a tool and returns the follow-up response", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     onToolEvent: (name, args, result) => {
       events.push([name, args, result]);
@@ -338,6 +341,7 @@ test("agent does not limit tool rounds or model requests", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -375,6 +379,7 @@ test("repeated tool call forces a final answer after three matches", async (t) =
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -424,6 +429,7 @@ test("repeated tool counter resets after a different result", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -445,6 +451,7 @@ test("token budget forces final without committing unmatched calls", async (t) =
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     maxTotalTokens: 100,
   });
@@ -462,6 +469,7 @@ test("elapsed budget can force no-tool answer immediately", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     maxElapsedSeconds: 1e-12,
   });
@@ -485,6 +493,7 @@ test("failed forced final reports guard counters and reason", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -518,6 +527,7 @@ test("multiple tool calls run in returned order", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -559,6 +569,7 @@ test("tool batch executes concurrently and returns source order", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 2 }),
   });
 
@@ -601,6 +612,7 @@ test("global sequential mode runs tool calls one by one", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 1 }),
     toolExecution: "sequential",
   });
@@ -635,6 +647,7 @@ test("one sequential tool forces the whole batch to run sequentially", async (t)
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory, {
       executionModes: { bash: "sequential" },
     }),
@@ -667,6 +680,7 @@ test("completion events are live while messages stay source ordered", async (t) 
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -693,6 +707,7 @@ test("consecutive user turns share conversation history", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -714,6 +729,7 @@ test("api failures become actionable agent errors", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -763,6 +779,7 @@ test("events group batch tool calls under one model round", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -803,6 +820,7 @@ test("events distinguish consecutive user turns", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
+    provider: null,
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
@@ -884,6 +902,7 @@ test("failed attempt is not committed to agent history", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -923,6 +942,7 @@ test("cancel at history commit boundary discards assistant", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -960,6 +980,7 @@ test("agent publishes canonical model events", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
+    provider: null,
     tools: createTestToolRegistry(directory),
   });
 
@@ -1005,6 +1026,7 @@ test("cancelled tool batch keeps history pairs", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "model",
+    provider: null,
     tools: new CancellingTools(token),
   });
 

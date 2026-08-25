@@ -111,7 +111,12 @@ test("agent history starts with the built system prompt", async (t) => {
       throw new Error("not used");
     },
   };
-  const agent = new CodingAgent({ modelAdapter, model: "test-model", tools });
+  const agent = new CodingAgent({
+    modelAdapter,
+    model: "test-model",
+    provider: null,
+    tools,
+  });
 
   assert.deepEqual(agent.messages[0], {
     role: "system",
