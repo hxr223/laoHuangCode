@@ -4,7 +4,8 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { CodingAgent, type ChatClientLike } from "../src/agent.ts";
+import { CodingAgent } from "../src/agent.ts";
+import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 import { buildSystemPrompt } from "../src/system-prompt.ts";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
@@ -99,10 +100,18 @@ test("tools payload is deterministic in order and content", async (t) => {
 
 test("agent history starts with the built system prompt", async (t) => {
   const tools = createTestToolRegistry(await makeTempDir(t));
-  const client = {
-    chat: { completions: {} },
-  } as unknown as ChatClientLike;
-  const agent = new CodingAgent({ client, model: "test-model", tools });
+  const modelAdapter: ModelAdapter = {
+    name: "test",
+    capabilities: {
+      streaming: true,
+      reasoningReplay: false,
+      thinkingSettings: false,
+    },
+    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+      throw new Error("not used");
+    },
+  };
+  const agent = new CodingAgent({ modelAdapter, model: "test-model", tools });
 
   assert.deepEqual(agent.messages[0], {
     role: "system",

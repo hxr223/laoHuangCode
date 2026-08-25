@@ -17,6 +17,7 @@ import {
   type ToolResult,
   type ToolSpec,
 } from "../packages/core/tools/src/index.ts";
+import { OpenAICompatibleAdapter } from "@laohuang/llm-openai-compatible";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 // --- Fakes -------------------------------------------------------------------
@@ -89,6 +90,21 @@ class AuthenticationFailingCompletions {
 function fakeClient(...messages: FakeMessage[]) {
   const completions = new FakeCompletions(messages);
   return { chat: { completions }, completions };
+}
+
+function fakeModelAdapter(
+  client: ReturnType<typeof fakeClient>,
+  provider = "openai",
+): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    provider,
+    capabilities: {
+      streaming: true,
+      reasoningReplay: provider === "deepseek",
+      thinkingSettings: provider === "deepseek",
+    },
+    client,
+  });
 }
 
 // --- Streaming fakes (mirrors tests/test_model_stream.py helpers) ------------
@@ -230,7 +246,7 @@ test("model can switch without losing conversation history", async (t) => {
   );
   const events: CollectedEvent[] = [];
   const agent = new CodingAgent({
-    client: originalClient,
+    modelAdapter: fakeModelAdapter(originalClient),
     model: "old-model",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
@@ -238,7 +254,7 @@ test("model can switch without losing conversation history", async (t) => {
   await agent.run("first turn");
 
   agent.switchModel({
-    client: replacementClient,
+    modelAdapter: fakeModelAdapter(replacementClient),
     model: "new-model",
     provider: "openai",
   });
@@ -259,7 +275,7 @@ test("user receives a direct model response", async (t) => {
   const directory = tempDir(t);
   const client = fakeClient(new FakeMessage({ content: "Hello from the model" }));
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -280,7 +296,7 @@ test("agent executes a tool and returns the follow-up response", async (t) => {
   );
   const events: Array<[string, Record<string, unknown>, ToolResult]> = [];
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     onToolEvent: (name, args, result) => {
@@ -320,7 +336,7 @@ test("agent does not limit tool rounds or model requests", async (t) => {
     new FakeMessage({ content: "Finished after 21 tool rounds." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -357,7 +373,7 @@ test("repeated tool call forces a final answer after three matches", async (t) =
     new FakeMessage({ content: "No more tool calls." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
@@ -406,7 +422,7 @@ test("repeated tool counter resets after a different result", async (t) => {
     new FakeMessage({ content: "Finished normally." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -427,7 +443,7 @@ test("token budget forces final without committing unmatched calls", async (t) =
   });
   const client = fakeClient(first, new FakeMessage({ content: "Budget reached." }));
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     maxTotalTokens: 100,
@@ -444,7 +460,7 @@ test("elapsed budget can force no-tool answer immediately", async (t) => {
   const directory = tempDir(t);
   const client = fakeClient(new FakeMessage({ content: "Time limit." }));
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     maxElapsedSeconds: 1e-12,
@@ -467,7 +483,7 @@ test("failed forced final reports guard counters and reason", async (t) => {
     call("call_4"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -500,7 +516,7 @@ test("multiple tool calls run in returned order", async (t) => {
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -541,7 +557,7 @@ test("tool batch executes concurrently and returns source order", async (t) => {
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 2 }),
   });
@@ -583,7 +599,7 @@ test("global sequential mode runs tool calls one by one", async (t) => {
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 1 }),
     toolExecution: "sequential",
@@ -617,7 +633,7 @@ test("one sequential tool forces the whole batch to run sequentially", async (t)
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory, {
       executionModes: { bash: "sequential" },
@@ -649,7 +665,7 @@ test("completion events are live while messages stay source ordered", async (t) 
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
@@ -675,7 +691,7 @@ test("consecutive user turns share conversation history", async (t) => {
     new FakeMessage({ content: "Second answer" }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -696,7 +712,7 @@ test("api failures become actionable agent errors", async (t) => {
   const completions = new FailingCompletions();
   const client = { chat: { completions } };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
   });
@@ -715,7 +731,7 @@ test("authentication failures point to provider login", async (t) => {
   const directory = tempDir(t);
   const client = { chat: { completions: new AuthenticationFailingCompletions() } };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "deepseek-v4-flash",
     provider: "deepseek",
     tools: createTestToolRegistry(directory),
@@ -745,7 +761,7 @@ test("events group batch tool calls under one model round", async (t) => {
     new FakeMessage({ content: "Done" }),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
@@ -780,11 +796,12 @@ test("events group batch tool calls under one model round", async (t) => {
 test("events distinguish consecutive user turns", async (t) => {
   const directory = tempDir(t);
   const events: CollectedEvent[] = [];
+  const client = fakeClient(
+    new FakeMessage({ content: "First" }),
+    new FakeMessage({ content: "Second" }),
+  );
   const agent = new CodingAgent({
-    client: fakeClient(
-      new FakeMessage({ content: "First" }),
-      new FakeMessage({ content: "Second" }),
-    ),
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
@@ -832,7 +849,7 @@ test("agent preserves reasoning for tool round then strips on switch", async (t)
   const completions = new FakeStreamCompletions([first, second]);
   const client = { chat: { completions } };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "deepseek-reasoner",
     provider: "deepseek",
     tools: createTestToolRegistry(directory),
@@ -842,7 +859,11 @@ test("agent preserves reasoning for tool round then strips on switch", async (t)
 
   const assistant = requestMessages(completions, 1).at(-2)!;
   assert.equal(assistant["reasoning_content"], "private reasoning");
-  agent.switchModel({ client, model: "gpt-test", provider: "openai" });
+  agent.switchModel({
+    modelAdapter: fakeModelAdapter(client),
+    model: "gpt-test",
+    provider: "openai",
+  });
   assert.ok(
     agent.messages.every((message) => !("reasoning_content" in message)),
   );
@@ -861,7 +882,7 @@ test("failed attempt is not committed to agent history", async (t) => {
     },
   };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "model",
     tools: createTestToolRegistry(directory),
   });
@@ -900,7 +921,7 @@ test("cancel at history commit boundary discards assistant", async (t) => {
     commitIfActive: () => false,
   };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "model",
     tools: createTestToolRegistry(directory),
   });
@@ -937,7 +958,7 @@ test("agent publishes canonical model events", async (t) => {
   ]);
   const client = { chat: { completions: new FakeStreamCompletions([stream]) } };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "model",
     tools: createTestToolRegistry(directory),
   });
@@ -982,7 +1003,7 @@ test("cancelled tool batch keeps history pairs", async (t) => {
   const token = new CancelToken();
   const client = { chat: { completions: new FakeStreamCompletions([stream]) } };
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "model",
     tools: new CancellingTools(token),
   });

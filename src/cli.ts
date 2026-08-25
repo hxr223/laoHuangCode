@@ -8,10 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   AgentError,
   CodingAgent,
-  type ChatClientLike,
 } from "./agent.ts";
 import {
   createClient,
+  defaultAdapterRegistry,
+  type ChatClientLike,
   type ClientConnectionSettings,
 } from "@laohuang/llm-openai-compatible";
 import { SessionCommands, type CommandResult, type QueueStatus } from "./commands.ts";
@@ -1092,6 +1093,8 @@ export async function main(
     credentials,
     registry: { get: getProvider, names: providerNames },
     createClient,
+    createModelAdapter: (provider, selectedClient) =>
+      defaultAdapterRegistry.resolve(provider, selectedClient as ChatClientLike),
     input: (prompt) => selectorInput(prompt),
     secretInput: (prompt) => selectorSecretInput(prompt),
     output: (message) => {
@@ -1271,7 +1274,10 @@ export async function main(
   }
 
   const agent = new CodingAgent({
-    client: client as ChatClientLike,
+    modelAdapter: defaultAdapterRegistry.resolve(
+      config.provider,
+      client as ChatClientLike,
+    ),
     model: config.model,
     tools: new ToolRegistry([
       ...createFileToolDefinitions({ projectRoot }),
@@ -1350,6 +1356,12 @@ export async function main(
     secretInput: (prompt) => commandsSecretInput(prompt),
     output: sessionOutput,
     session: runtime,
+    onModelSelected: (selection) => {
+      semanticClassifier.configure({
+        client: selection.client as unknown as ChatCompletionsClient,
+        model: selection.config.model,
+      });
+    },
   });
 
   const unsubscribers: Array<() => void> = [];
@@ -1384,10 +1396,6 @@ export async function main(
 
   const handleCommand: CommandHandler = async (command) => {
     const result = await commands.execute(command);
-    semanticClassifier.configure({
-      client: agent.client as unknown as ChatCompletionsClient,
-      model: agent.model,
-    });
     return result;
   };
   commandDispatcher = handleCommand;

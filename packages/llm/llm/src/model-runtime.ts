@@ -13,7 +13,6 @@ import type { ModelRuntimeEventHandler } from "@laohuang/runtime-protocol";
 
 /** Provider-neutral input for one model completion. */
 export interface ModelRuntimeRequest {
-  client: unknown;
   model: string;
   messages: Array<Record<string, unknown>>;
   tools: Array<Record<string, unknown>>;
@@ -49,7 +48,7 @@ export class ModelRuntime {
       throw new ModelStreamCancelled(request.cancelToken.reason || "cancelled");
     }
     try {
-      const result = await this.adapter.complete(request.client, {
+      const result = await this.adapter.runAttempt({
         model: request.model,
         messages: request.messages,
         tools: request.tools,

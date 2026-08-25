@@ -11,9 +11,25 @@ import { CredentialStore } from "../src/credentials.ts";
 import { ModelSelector, type ProviderRegistry } from "../src/model-selection.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 import { TerminalUI } from "../src/tui/ui.ts";
 
 const providers: ProviderRegistry = { get: getProvider, names: providerNames };
+
+function makeModelAdapter(provider: string, client: unknown): ModelAdapter {
+  return {
+    name: provider,
+    capabilities: {
+      streaming: true,
+      reasoningReplay: provider === "deepseek",
+      thinkingSettings: provider === "deepseek",
+    },
+    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+      void client;
+      throw new Error("not used");
+    },
+  };
+}
 
 class FakeAgent implements AgentLike {
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
@@ -37,6 +53,7 @@ function makeCommands(options: { session?: SessionLike | null } = {}): {
       credentials,
       registry: providers,
       createClient,
+      createModelAdapter: makeModelAdapter,
       input: async () => "",
       secretInput: async () => "",
       output: () => {},

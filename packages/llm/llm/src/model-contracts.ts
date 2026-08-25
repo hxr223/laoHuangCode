@@ -107,6 +107,8 @@ export class StreamResult {
   }
 }
 
+export type ModelAttempt = StreamResult;
+
 export interface DeltaEvent {
   kind: string;
   payload: Record<string, unknown>;
@@ -180,10 +182,10 @@ export interface ModelCapabilities {
 }
 
 /** Translates neutral requests to one provider's SDK shape and back. */
-export interface ModelAdapter<Client = unknown> {
+export interface ModelAdapter {
   readonly name: string;
   readonly capabilities: ModelCapabilities;
-  complete(client: Client, request: ModelRequest): Promise<StreamResult>;
+  runAttempt(request: ModelRequest): Promise<ModelAttempt>;
 }
 
 const CONTEXT_OVERFLOW_PATTERN =

@@ -30,10 +30,6 @@ import {
   portableMessage,
   type ModelAdapter,
 } from "@laohuang/llm";
-import {
-  defaultAdapterRegistry,
-  type ChatClientLike,
-} from "@laohuang/llm-openai-compatible";
 import type {
   ToolExecutionContextLike,
   ToolExecutionMode,
@@ -91,7 +87,6 @@ export type ToolEventCallback = (
   result: ToolResult,
 ) => void;
 
-export type { ChatClientLike } from "@laohuang/llm-openai-compatible";
 export type {
   AgentEventPublishOptions,
   PendingInputBatchLike,
@@ -114,7 +109,7 @@ export interface RunOptions {
 }
 
 export interface CodingAgentOptions {
-  client: ChatClientLike;
+  modelAdapter: ModelAdapter;
   model: string;
   tools: AgentToolRegistry;
   maxTotalTokens?: number;
@@ -158,7 +153,6 @@ const RUNTIME_EVENT_KINDS: Record<string, EventKind> = {
 };
 
 export class CodingAgent {
-  client: ChatClientLike;
   model: string;
   provider: string | null;
   /** Provider-neutral model access; resolved from `provider`. */
@@ -195,13 +189,12 @@ export class CodingAgent {
         throw new RangeError(`${name} must be positive`);
       }
     }
-    this.client = options.client;
     this.model = options.model;
     this.tools = options.tools;
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider ?? null;
-    this.adapter = defaultAdapterRegistry.resolve(this.provider);
+    this.adapter = options.modelAdapter;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
@@ -223,17 +216,17 @@ export class CodingAgent {
   }
 
   /** Swap the model client mid-conversation, keeping portable history. */
-  switchModel(options: {    client: unknown;
+  switchModel(options: {
+    modelAdapter: ModelAdapter;
     model: string;
     provider: string;
   }): void {
     const previousModel = this.model;
     const previousProvider = this.provider;
     this.messages = this.messages.map((message) => portableMessage(message));
-    this.client = options.client as ChatClientLike;
     this.model = options.model;
     this.provider = options.provider;
-    this.adapter = defaultAdapterRegistry.resolve(this.provider);
+    this.adapter = options.modelAdapter;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.emit("model_switched", {
       provider: options.provider,
@@ -257,7 +250,6 @@ export class CodingAgent {
     this.turn += 1;
     try {
       const runner = new AgentStepRunner({
-        client: this.client,
         model: this.model,
         provider: this.provider,
         modelRuntime: this.modelRuntime,

@@ -7,6 +7,7 @@ import type {
   ClientConnectionSettings,
   Provider,
 } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter } from "@laohuang/llm";
 
 /**
  * Minimal structural view of the runtime configuration produced here.
@@ -51,15 +52,22 @@ export type CreateClientFn = (
   options?: { clientFactory?: ClientFactory | undefined },
 ) => unknown;
 
+export type ModelAdapterFactory = (
+  provider: string,
+  client: unknown,
+) => ModelAdapter;
+
 export interface ModelSelection {
   readonly config: SelectionConfig;
   readonly client: unknown;
+  readonly modelAdapter: ModelAdapter;
 }
 
 export interface ModelSelectorOptions {
   readonly credentials: CredentialStoreLike;
   readonly registry: ProviderRegistry;
   readonly createClient: CreateClientFn;
+  readonly createModelAdapter: ModelAdapterFactory;
   readonly input: InputFn;
   readonly secretInput: InputFn;
   readonly output?: OutputFn | undefined;
@@ -82,6 +90,7 @@ export class ModelSelector {
   readonly #credentials: CredentialStoreLike;
   readonly #registry: ProviderRegistry;
   readonly #createClient: CreateClientFn;
+  readonly #createModelAdapter: ModelAdapterFactory;
   readonly #input: InputFn;
   readonly #secretInput: InputFn;
   readonly #output: OutputFn;
@@ -91,6 +100,7 @@ export class ModelSelector {
     this.#credentials = options.credentials;
     this.#registry = options.registry;
     this.#createClient = options.createClient;
+    this.#createModelAdapter = options.createModelAdapter;
     this.#input = options.input;
     this.#secretInput = options.secretInput;
     this.#output = options.output ?? ((message) => console.log(message));
@@ -173,7 +183,11 @@ export class ModelSelector {
     if (newApiKey) {
       this.#credentials.set(providerName, apiKey);
     }
-    return { config, client };
+    return {
+      config,
+      client,
+      modelAdapter: this.#createModelAdapter(providerName, client),
+    };
   }
 
   async #chooseProvider(): Promise<string | null> {

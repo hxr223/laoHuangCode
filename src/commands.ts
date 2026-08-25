@@ -12,6 +12,7 @@ import type {
   SelectionConfig,
 } from "./model-selection.ts";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter } from "@laohuang/llm";
 
 export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 
@@ -375,7 +376,7 @@ function* providerCompletions(
 /** Minimal view of CodingAgent (agent.ts) that session commands rely on. */
 export interface AgentLike {
   switchModel(options: {
-    client: unknown;
+    modelAdapter: ModelAdapter;
     model: string;
     provider: string;
   }): void;
@@ -430,6 +431,7 @@ export interface SessionCommandsOptions {
   readonly secretInput: InputFn;
   readonly output?: OutputFn | undefined;
   readonly session?: SessionLike | null | undefined;
+  readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
 }
 
 const ALL_STATES: ReadonlySet<string> = new Set([
@@ -456,6 +458,7 @@ export class SessionCommands {
   readonly #secretInput: InputFn;
   readonly #output: OutputFn;
   readonly #session: SessionLike | null;
+  readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
   #currentConfig: SelectionConfig;
 
   constructor(options: SessionCommandsOptions) {
@@ -467,6 +470,7 @@ export class SessionCommands {
     this.#secretInput = options.secretInput;
     this.#output = options.output ?? ((message) => console.log(message));
     this.#session = options.session ?? null;
+    this.#onModelSelected = options.onModelSelected ?? null;
     this.registry = new CommandRegistry([
       {
         name: "/model",
@@ -684,10 +688,11 @@ export class SessionCommands {
     const previousProvider = this.#currentConfig.provider;
     const previousModel = this.#currentConfig.model;
     this.#agent.switchModel({
-      client: selection.client,
+      modelAdapter: selection.modelAdapter,
       model: selection.config.model,
       provider: selection.config.provider,
     });
+    this.#onModelSelected?.(selection);
     this.#currentConfig = selection.config;
     this.publishModelSwitched(previousProvider, previousModel);
     this.#output(
@@ -742,10 +747,11 @@ export class SessionCommands {
         const previousProvider = this.#currentConfig.provider;
         const previousModel = this.#currentConfig.model;
         this.#agent.switchModel({
-          client: selection.client,
+          modelAdapter: selection.modelAdapter,
           model: selection.config.model,
           provider: selection.config.provider,
         });
+        this.#onModelSelected?.(selection);
         this.#currentConfig = selection.config;
         this.publishModelSwitched(previousProvider, previousModel);
         this.#output(`Logged in to ${provider}; credentials applied.`);
