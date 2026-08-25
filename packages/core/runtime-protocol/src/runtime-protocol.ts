@@ -1,9 +1,9 @@
-import type { CancelToken } from "../cancellation.ts";
+import type { CancelToken } from "./cancellation.ts";
 import type {
   EventBus,
   EventKind,
   EventSource,
-} from "../events.ts";
+} from "./events.ts";
 
 export type CommandResult =
   | { readonly status: "handled" }

@@ -7,7 +7,7 @@ import {
   makeCancelIntent,
   makeFollowUpIntent,
   makePromptIntent,
-} from "../src/core/user-intent.ts";
+} from "../packages/core/runtime-protocol/src/index.ts";
 import { routeHumanIntent } from "../src/core/human-intent-router.ts";
 import {
   makeAnswerAction,
@@ -15,7 +15,7 @@ import {
   makeCancelAction,
   makeCommandAction,
   makePromptAction,
-} from "../src/core/session-action-protocol.ts";
+} from "../packages/core/runtime-protocol/src/index.ts";
 import { SessionState, AgentSession } from "../src/session.ts";
 
 test("idle submit creates a prompt action", () => {

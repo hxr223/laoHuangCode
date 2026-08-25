@@ -4,7 +4,7 @@ import {
   EventKind,
   EventSource,
   type AnyEventEnvelope,
-} from "./events.ts";
+} from "@laohuang/runtime-protocol";
 import {
   TaskState,
   isTerminalTaskState,

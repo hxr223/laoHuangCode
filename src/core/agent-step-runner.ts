@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { CancelToken } from "../cancellation.ts";
+import type { CancelToken } from "@laohuang/runtime-protocol";
 import {
   ModelStreamCancelled,
   ModelStreamError,
@@ -12,7 +12,7 @@ import {
   HistoryCommitter,
   type HistoryCommitContext,
 } from "./history-committer.ts";
-import type { PendingInputBatchLike } from "./runtime-protocol.ts";
+import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 import { GuardPolicy } from "./guard-policy.ts";
 import { ModelRuntime } from "./model-runtime.ts";
 import {

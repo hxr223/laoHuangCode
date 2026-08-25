@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { CancellationError, CancelToken } from "../src/cancellation.ts";
+import {
+  CancellationError,
+  CancelToken,
+} from "../packages/core/runtime-protocol/src/index.ts";
 
 test("cancel is idempotent and notifies once", () => {
   const token = new CancelToken();

@@ -1,7 +1,7 @@
 /** Convert user-facing intents into the session action protocol. */
 
-import type { UserIntent } from "./user-intent.ts";
-import type { SessionAction } from "./session-action.ts";
+import type { UserIntent } from "@laohuang/runtime-protocol";
+import type { SessionAction } from "@laohuang/runtime-protocol";
 import {
   makeAnswerAction,
   makeApprovalAction,
@@ -11,7 +11,7 @@ import {
   makePromptAction,
   makeSteerAction,
   makeFollowUpAction,
-} from "./session-action-protocol.ts";
+} from "@laohuang/runtime-protocol";
 
 /**
  * Split a user-entered slash command using the same POSIX-like quoting rules

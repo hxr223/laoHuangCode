@@ -2,14 +2,14 @@
 
 import { randomUUID } from "node:crypto";
 
-import type { CancelToken } from "./cancellation.ts";
+import type { CancelToken } from "@laohuang/runtime-protocol";
 import {
   EventBus,
   EventKind,
   EventSource,
   type AnyEventEnvelope,
   type EventEnvelope,
-} from "./events.ts";
+} from "@laohuang/runtime-protocol";
 import {
   DeadLetterQueue,
   EventRouter,
@@ -29,14 +29,14 @@ import type {
   AgentRuntimeContext,
   CommandResult,
   QueueStatus,
-} from "./core/runtime-protocol.ts";
+} from "@laohuang/runtime-protocol";
 import {
   QueueDispatcher,
   QueueDispatchStatus,
 } from "./core/queue-dispatcher.ts";
 import { AgentTurnLoop } from "./core/agent-turn-loop.ts";
-import type { QueueBridge, QueueInputBatch } from "./core/queue-bridge.ts";
-import type { SessionAction } from "./core/session-action.ts";
+import type { QueueBridge, QueueInputBatch } from "@laohuang/runtime-protocol";
+import type { SessionAction } from "@laohuang/runtime-protocol";
 import {
   TaskLifecycle,
   TaskRegistry,

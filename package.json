@@ -1,8 +1,10 @@
 {
-  "name": "laohuang",
+  "name": "@laohuang/workspace",
   "version": "0.4.2",
   "description": "A minimal coding agent CLI built on the official openai SDK and Chat Completions native tool calling.",
+  "private": true,
   "type": "module",
+  "workspaces": ["apps/*", "packages/*/*"],
   "repository": {
     "type": "git",
     "url": "https://github.com/hxr223/laoHuangCode"
@@ -19,7 +21,7 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -b",
     "test": "node --test \"scripts/**/*.test.ts\"",
     "check:version": "node scripts/check-package-version.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",

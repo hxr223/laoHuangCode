@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { ToolExecutionContext } from "../src/bash-runner.ts";
-import { CancelToken } from "../src/cancellation.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import type { AssembledToolCall } from "../src/model-stream.ts";
 import {
   ToolRegistry,

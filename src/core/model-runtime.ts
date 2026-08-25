@@ -1,4 +1,4 @@
-import type { CancelToken } from "../cancellation.ts";
+import type { CancelToken } from "@laohuang/runtime-protocol";
 import {
   ModelError,
   modelErrorKind,
@@ -11,7 +11,7 @@ import {
   type AssembledToolCall,
   type StreamResult,
 } from "../model-stream.ts";
-import type { ModelRuntimeEventHandler } from "./runtime-events.ts";
+import type { ModelRuntimeEventHandler } from "@laohuang/runtime-protocol";
 
 /** Provider-neutral input for one model completion. */
 export interface ModelRuntimeRequest {

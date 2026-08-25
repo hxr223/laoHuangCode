@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { AgentCancelled } from "../src/agent.ts";
-import type { CancelToken } from "../src/cancellation.ts";
+import type { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import type { ModelAdapter } from "../src/model-adapter.ts";
 import { StreamResult } from "../src/model-stream.ts";
 import {

@@ -11,7 +11,7 @@
 
 import { randomUUID } from "node:crypto";
 
-import { CancelToken } from "./cancellation.ts";
+import { CancelToken } from "@laohuang/runtime-protocol";
 
 /** Raised when a streamed model response is incomplete or invalid. */
 export class ModelStreamError extends Error {

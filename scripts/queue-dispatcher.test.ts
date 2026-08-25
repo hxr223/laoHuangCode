@@ -6,7 +6,7 @@ import {
   EventKind,
   EventSource,
   type AnyEventEnvelope,
-} from "../src/events.ts";
+} from "../packages/core/runtime-protocol/src/index.ts";
 import {
   DeadLetterQueue,
   EventRouter,
@@ -19,7 +19,7 @@ import {
   TaskState,
   type TaskState as TaskStateValue,
 } from "../src/core/task-lifecycle.ts";
-import type { SessionAction } from "../src/core/session-action.ts";
+import type { SessionAction } from "../packages/core/runtime-protocol/src/index.ts";
 
 function action(
   type: "prompt" | "steer" | "follow_up" | "cancel",

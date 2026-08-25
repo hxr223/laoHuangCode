@@ -1,5 +1,5 @@
-import { CancelToken } from "../cancellation.ts";
-import { EventKind, EventSource, type EventBus } from "../events.ts";
+import { CancelToken } from "@laohuang/runtime-protocol";
+import { EventKind, EventSource, type EventBus } from "@laohuang/runtime-protocol";
 
 export const TaskState = {
   RunningModel: "running_model",

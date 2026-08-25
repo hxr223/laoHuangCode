@@ -20,7 +20,7 @@ import {
 } from "../src/cli.ts";
 import { ConfigManager } from "../src/config.ts";
 import { CredentialStore } from "../src/credentials.ts";
-import { EventKind, EventProjector } from "../src/events.ts";
+import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
 import { ModelSelector } from "../src/model-selection.ts";
 import { createClient } from "../src/client.ts";
 import { getProvider, providerNames } from "../src/providers.ts";

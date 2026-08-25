@@ -14,18 +14,18 @@
 
 import path from "node:path";
 
-import { CancelToken } from "./cancellation.ts";
+import { CancelToken } from "@laohuang/runtime-protocol";
 import {
   EventKind,
   EventSource,
   type CreateEventOptions,
   type EventBus,
-} from "./events.ts";
+} from "@laohuang/runtime-protocol";
 import type {
   AgentEventPublishOptions,
   AgentRuntimeContext,
   PendingInputBatchLike,
-} from "./core/runtime-protocol.ts";
+} from "@laohuang/runtime-protocol";
 import {
   defaultAdapterRegistry,
   portableMessage,
@@ -93,7 +93,7 @@ export type { ChatClientLike } from "./model-adapter.ts";
 export type {
   AgentEventPublishOptions,
   PendingInputBatchLike,
-} from "./core/runtime-protocol.ts";
+} from "@laohuang/runtime-protocol";
 
 /** Structural minimum of ToolRegistry (tools.ts) the agent relies on. */
 export type AgentToolRegistry = ToolRegistryLike;
