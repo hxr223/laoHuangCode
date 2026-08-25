@@ -13,6 +13,6 @@
     { "path": "./packages/llm/llm" },
     { "path": "./packages/llm/llm-openai-compatible" },
     { "path": "./packages/storage/local-config" },
-    { "path": "./tsconfig.legacy.json" }
+    { "path": "./apps/cli" }
   ]
 }

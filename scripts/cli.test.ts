@@ -11,16 +11,18 @@ import { fileURLToPath } from "node:url";
 import {
   VERSION,
   main as cliMain,
+} from "../apps/cli/src/main.ts";
+import {
   runPlainSessionRepl,
   runRepl,
   runSessionRepl,
   supportsTerminalUI,
   terminalUiPrompts,
   type SessionReplSession,
-} from "../src/cli.ts";
+} from "../apps/cli/src/repl.ts";
 import { ConfigManager, CredentialStore } from "@laohuang/local-config";
 import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
-import { ModelSelector } from "../src/model-selection.ts";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
 import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
@@ -35,7 +37,7 @@ import {
 const textEncoder = new TextEncoder();
 
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const CLI_PATH = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const CLI_PATH = fileURLToPath(new URL("../apps/cli/dist/bin.js", import.meta.url));
 
 async function withTempDir(run: (directory: string) => Promise<void>): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-cli-test-"));
