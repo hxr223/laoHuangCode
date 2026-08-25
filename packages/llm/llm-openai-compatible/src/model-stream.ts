@@ -11,68 +11,18 @@
 
 import { randomUUID } from "node:crypto";
 
-import { CancelToken } from "@laohuang/runtime-protocol";
-
-/** Raised when a streamed model response is incomplete or invalid. */
-export class ModelStreamError extends Error {
-  /** True when the stream had already delivered deltas before failing. */
-  hadDelta: boolean;
-
-  constructor(
-    message: string,
-    options: { hadDelta?: boolean; cause?: unknown } = {},
-  ) {
-    super(
-      message,
-      options.cause === undefined ? undefined : { cause: options.cause },
-    );
-    this.name = "ModelStreamError";
-    this.hadDelta = options.hadDelta ?? false;
-  }
-}
-
-/** Raised when a model stream is cooperatively cancelled. */
-export class ModelStreamCancelled extends ModelStreamError {
-  constructor(message: string, options: { cause?: unknown } = {}) {
-    super(message, options);
-    this.name = "ModelStreamCancelled";
-  }
-}
-
-/** Raised when chunks arrive for a request which is no longer active. */
-export class StaleModelRequest extends ModelStreamCancelled {
-  constructor(message: string, options: { cause?: unknown } = {}) {
-    super(message, options);
-    this.name = "StaleModelRequest";
-  }
-}
-
-export type AttemptState = "provisional" | "validated" | "aborted";
-
-export interface AssembledFunction {
-  readonly name: string;
-  readonly arguments: string;
-}
-
-export interface AssembledToolCall {
-  readonly id: string;
-  readonly type: string;
-  readonly function: AssembledFunction;
-}
-
-/** Chat Completions wire shape for one assistant tool call. */
-export function toolCallToDict(
-  toolCall: AssembledToolCall,
-): Record<string, unknown> {
-  return {
-    id: toolCall.id,
-    type: toolCall.type,
-    function: {
-      name: toolCall.function.name,
-      arguments: toolCall.function.arguments,
-    },
-  };
-}
+import type { CancelToken } from "@laohuang/runtime-protocol";
+import {
+  type AssembledFunction,
+  type AssembledToolCall,
+  type AttemptState,
+  type DeltaCallback,
+  type DeltaEvent,
+  ModelStreamCancelled,
+  ModelStreamError,
+  StaleModelRequest,
+  StreamResult,
+} from "@laohuang/llm";
 
 /** Assemble fragmented Chat Completions tool calls by their index. */
 export class ToolCallAccumulator {
@@ -146,57 +96,6 @@ export class ToolCallAccumulator {
       function: { name, arguments: argumentText },
     };
   }
-}
-
-/** A fully validated assistant turn, ready to commit to history. */
-export class StreamResult {
-  readonly requestId: string;
-  readonly content: string | null;
-  readonly reasoningContent: string | null;
-  readonly toolCalls: readonly AssembledToolCall[];
-  readonly finishReason: string;
-  readonly usage: unknown;
-
-  constructor(init: {
-    requestId: string;
-    content: string | null;
-    reasoningContent: string | null;
-    toolCalls: readonly AssembledToolCall[];
-    finishReason: string;
-    usage?: unknown;
-  }) {
-    this.requestId = init.requestId;
-    this.content = init.content;
-    this.reasoningContent = init.reasoningContent;
-    this.toolCalls = init.toolCalls;
-    this.finishReason = init.finishReason;
-    this.usage = init.usage ?? null;
-  }
-
-  /** Assistant message in Chat Completions wire shape (nulls stripped). */
-  messageDict(): Record<string, unknown> {
-    const message: Record<string, unknown> = {
-      role: "assistant",
-      content: this.content,
-    };
-    if (this.reasoningContent) {
-      message["reasoning_content"] = this.reasoningContent;
-    }
-    if (this.toolCalls.length > 0) {
-      message["tool_calls"] = this.toolCalls.map(toolCallToDict);
-    }
-    for (const key of Object.keys(message)) {
-      if (message[key] === null || message[key] === undefined) {
-        delete message[key];
-      }
-    }
-    return message;
-  }
-}
-
-export interface DeltaEvent {
-  kind: string;
-  payload: Record<string, unknown>;
 }
 
 /** A provisional response which can be atomically committed after validation. */
@@ -358,11 +257,6 @@ export class ModelAttempt {
     }
   }
 }
-
-export type DeltaCallback = (
-  kind: string,
-  payload: Record<string, unknown>,
-) => void;
 
 /** Emit model text at most every 40ms or once 4KB is accumulated. */
 class TextDeltaCoalescer {

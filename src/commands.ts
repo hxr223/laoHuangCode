@@ -11,7 +11,7 @@ import type {
   OutputFn,
   SelectionConfig,
 } from "./model-selection.ts";
-import { getProvider, providerNames } from "./providers.ts";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 
 export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 

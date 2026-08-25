@@ -12,13 +12,13 @@ import {
   type AgentLike,
   type SessionLike,
 } from "../src/commands.ts";
-import { createClient } from "../src/client.ts";
+import { createClient } from "@laohuang/llm-openai-compatible";
 import { CredentialStore } from "../src/credentials.ts";
 import {
   ModelSelector,
   type ProviderRegistry,
 } from "../src/model-selection.ts";
-import { getProvider, providerNames } from "../src/providers.ts";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 
 /** Registry wired exactly as production code would wire providers.ts. */
 const registry: ProviderRegistry = { get: getProvider, names: providerNames };

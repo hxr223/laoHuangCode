@@ -27,11 +27,13 @@ import type {
   PendingInputBatchLike,
 } from "@laohuang/runtime-protocol";
 import {
-  defaultAdapterRegistry,
   portableMessage,
-  type ChatClientLike,
   type ModelAdapter,
-} from "./model-adapter.ts";
+} from "@laohuang/llm";
+import {
+  defaultAdapterRegistry,
+  type ChatClientLike,
+} from "@laohuang/llm-openai-compatible";
 import type {
   ToolExecutionContextLike,
   ToolExecutionMode,
@@ -54,7 +56,7 @@ import {
 } from "./core/agent-step-runner.ts";
 import { GuardPolicy } from "./core/guard-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
-import { ModelRuntime } from "./core/model-runtime.ts";
+import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime } from "@laohuang/tools";
 
 export { FORCED_FINAL_PROMPT };
@@ -89,7 +91,7 @@ export type ToolEventCallback = (
   result: ToolResult,
 ) => void;
 
-export type { ChatClientLike } from "./model-adapter.ts";
+export type { ChatClientLike } from "@laohuang/llm-openai-compatible";
 export type {
   AgentEventPublishOptions,
   PendingInputBatchLike,

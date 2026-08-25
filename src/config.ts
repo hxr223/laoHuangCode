@@ -13,7 +13,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import type { CredentialStore } from "./credentials.ts";
-import { getProvider } from "./providers.ts";
+import { getProvider } from "@laohuang/llm-openai-compatible";
 
 /** Runtime configuration resolved from a stored profile. */
 export interface Config {
