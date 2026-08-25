@@ -3,13 +3,13 @@ import assert from "node:assert/strict";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { createClient } from "../src/client.ts";
+import { createClient } from "@laohuang/llm-openai-compatible";
 import {
   ModelSelector,
   type CredentialStoreLike,
   type ProviderRegistry,
 } from "../src/model-selection.ts";
-import { getProvider, providerNames } from "../src/providers.ts";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 
 /** Registry wired exactly as production code would wire providers.ts. */
 const registry: ProviderRegistry = { get: getProvider, names: providerNames };

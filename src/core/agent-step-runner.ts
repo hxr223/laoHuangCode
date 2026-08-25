@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import {
+  ModelRuntime,
   ModelStreamCancelled,
   ModelStreamError,
-} from "../model-stream.ts";
-import { modelErrorKind, type ChatClientLike } from "../model-adapter.ts";
+  modelErrorKind,
+} from "@laohuang/llm";
+import type { ChatClientLike } from "@laohuang/llm-openai-compatible";
 import { touchedPathOf } from "@laohuang/tools";
 import type { ToolExecutionMode, ToolResult } from "@laohuang/tools";
 import {
@@ -14,7 +16,6 @@ import {
 } from "./history-committer.ts";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 import { GuardPolicy } from "./guard-policy.ts";
-import { ModelRuntime } from "./model-runtime.ts";
 import {
   ToolRuntime,
   type ToolRuntimeToolEvent,

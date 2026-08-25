@@ -3,24 +3,23 @@ import assert from "node:assert/strict";
 
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
-  AdapterRegistry,
-  DeepSeekAdapter,
   ModelError,
-  OpenAIAdapter,
+  ModelStreamCancelled,
+  ModelStreamError,
   classifyModelError,
-  defaultAdapterRegistry,
   modelErrorKind,
   portableMessage,
-  type ChatClientLike,
   type ModelAdapter,
   type ModelRequest,
   type ThinkingSettings,
-} from "../src/model-adapter.ts";
-import {
-  ModelStreamCancelled,
-  ModelStreamError,
   type StreamResult,
-} from "../src/model-stream.ts";
+} from "@laohuang/llm";
+import {
+  AdapterRegistry,
+  OpenAICompatibleAdapter,
+  defaultAdapterRegistry,
+  type ChatClientLike,
+} from "@laohuang/llm-openai-compatible";
 
 // --- Fakes (mirror scripts/model-stream.test.ts helpers) ---------------------
 
@@ -163,9 +162,34 @@ function contractStream(): FakeStream {
   ]);
 }
 
-const ADAPTERS: Array<[string, () => ModelAdapter]> = [
-  ["openai", () => new OpenAIAdapter()],
-  ["deepseek", () => new DeepSeekAdapter()],
+const OPENAI_CAPABILITIES = {
+  streaming: true,
+  reasoningReplay: false,
+  thinkingSettings: false,
+};
+const DEEPSEEK_CAPABILITIES = {
+  streaming: true,
+  reasoningReplay: true,
+  thinkingSettings: true,
+};
+
+function makeOpenAIAdapter(): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    provider: "openai",
+    capabilities: OPENAI_CAPABILITIES,
+  });
+}
+
+function makeDeepSeekAdapter(): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    provider: "deepseek",
+    capabilities: DEEPSEEK_CAPABILITIES,
+  });
+}
+
+const ADAPTERS: Array<[string, () => ModelAdapter<ChatClientLike>]> = [
+  ["openai", makeOpenAIAdapter],
+  ["deepseek", makeDeepSeekAdapter],
 ];
 
 // --- Contract: same neutral request through both adapters ----------------------
@@ -354,7 +378,7 @@ test("deepseek: assistant message dict replays reasoning_content", async () => {
       }),
     ]),
   ]);
-  const result = await new DeepSeekAdapter().complete(
+  const result = await makeDeepSeekAdapter().complete(
     fakeClient(completions),
     neutralRequest(),
   );
@@ -378,7 +402,7 @@ test("switchModel portability: downgrade strips reasoning_content", async () => 
       }),
     ]),
   ]);
-  const result = await new DeepSeekAdapter().complete(
+  const result = await makeDeepSeekAdapter().complete(
     fakeClient(completions),
     neutralRequest(),
   );
@@ -401,7 +425,7 @@ test("deepseek: thinking settings validate and translate to the wire", async () 
       chunk({ delta: delta({ content: "ok" }), finish_reason: "stop" }),
     ]),
   ]);
-  await new DeepSeekAdapter().complete(
+  await makeDeepSeekAdapter().complete(
     fakeClient(completions),
     neutralRequest({ thinking: { enabled: true } }),
   );
@@ -410,7 +434,7 @@ test("deepseek: thinking settings validate and translate to the wire", async () 
   });
 
   await assert.rejects(
-    new DeepSeekAdapter().complete(
+    makeDeepSeekAdapter().complete(
       fakeClient(new FakeCompletions([])),
       neutralRequest({
         thinking: { enabled: "yes" } as unknown as ThinkingSettings,
@@ -421,7 +445,7 @@ test("deepseek: thinking settings validate and translate to the wire", async () 
 });
 
 test("openai: thinking settings are rejected as unsupported", async () => {
-  const adapter = new OpenAIAdapter();
+  const adapter = makeOpenAIAdapter();
   assert.equal(adapter.capabilities.thinkingSettings, false);
   await assert.rejects(
     adapter.complete(
@@ -436,8 +460,8 @@ test("openai: thinking settings are rejected as unsupported", async () => {
 
 test("registry resolves known providers and falls back to openai", () => {
   const registry = new AdapterRegistry();
-  const openai = new OpenAIAdapter();
-  const deepseek = new DeepSeekAdapter();
+  const openai = makeOpenAIAdapter();
+  const deepseek = makeDeepSeekAdapter();
   registry.register(openai);
   registry.register(deepseek);
 
@@ -449,9 +473,9 @@ test("registry resolves known providers and falls back to openai", () => {
 });
 
 test("default registry has both built-in adapters", () => {
-  assert.ok(defaultAdapterRegistry.resolve("openai") instanceof OpenAIAdapter);
+  assert.ok(defaultAdapterRegistry.resolve("openai") instanceof OpenAICompatibleAdapter);
   assert.ok(
-    defaultAdapterRegistry.resolve("deepseek") instanceof DeepSeekAdapter,
+    defaultAdapterRegistry.resolve("deepseek") instanceof OpenAICompatibleAdapter,
   );
   assert.equal(
     defaultAdapterRegistry.resolve("deepseek").capabilities.reasoningReplay,

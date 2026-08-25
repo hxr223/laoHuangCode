@@ -4,11 +4,13 @@ import assert from "node:assert/strict";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ChatCompletionStreamer,
+} from "@laohuang/llm-openai-compatible";
+import {
   ModelStreamCancelled,
   ModelStreamError,
   StaleModelRequest,
   type DeltaCallback,
-} from "../src/model-stream.ts";
+} from "@laohuang/llm";
 
 // ---------------------------------------------------------------------------
 // Fakes mirroring tests/test_model_stream.py

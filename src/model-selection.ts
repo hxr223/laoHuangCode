@@ -3,8 +3,10 @@
 // Type-only imports (erased at runtime): the concrete modules are injected
 // below for testability. Production wiring passes `getProvider`/`providerNames`
 // from providers.ts and `createClient` from client.ts.
-import type { ClientConnectionSettings } from "./client.ts";
-import type { Provider } from "./providers.ts";
+import type {
+  ClientConnectionSettings,
+  Provider,
+} from "@laohuang/llm-openai-compatible";
 
 /**
  * Minimal structural view of the runtime configuration produced here.

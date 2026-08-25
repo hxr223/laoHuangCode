@@ -1,5 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
-import type { AssembledToolCall } from "../model-stream.ts";
+import type { AssembledToolCall } from "@laohuang/llm";
 import type { ToolResult } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 

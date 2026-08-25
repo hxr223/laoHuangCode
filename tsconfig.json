@@ -6,6 +6,8 @@
     { "path": "./packages/fs/tool-fs" },
     { "path": "./packages/shell/bash-local" },
     { "path": "./packages/shell/tool-bash" },
+    { "path": "./packages/llm/llm" },
+    { "path": "./packages/llm/llm-openai-compatible" },
     { "path": "./tsconfig.legacy.json" }
   ]
 }

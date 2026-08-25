@@ -2,20 +2,18 @@ import type { CancelToken } from "@laohuang/runtime-protocol";
 import {
   ModelError,
   modelErrorKind,
-  type ChatClientLike,
+  type AssembledToolCall,
   type ModelAdapter,
-} from "../model-adapter.ts";
-import {
+  type ModelRequest,
   ModelStreamCancelled,
   ModelStreamError,
-  type AssembledToolCall,
   type StreamResult,
-} from "../model-stream.ts";
+} from "./model-contracts.ts";
 import type { ModelRuntimeEventHandler } from "@laohuang/runtime-protocol";
 
 /** Provider-neutral input for one model completion. */
 export interface ModelRuntimeRequest {
-  client: ChatClientLike;
+  client: unknown;
   model: string;
   messages: Array<Record<string, unknown>>;
   tools: Array<Record<string, unknown>>;

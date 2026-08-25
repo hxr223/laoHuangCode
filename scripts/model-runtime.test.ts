@@ -4,15 +4,13 @@ import { test } from "node:test";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ModelError,
-  type ChatClientLike,
+  ModelStreamCancelled,
   type ModelAdapter,
   type ModelRequest,
-} from "../src/model-adapter.ts";
-import {
-  ModelStreamCancelled,
   StreamResult,
-} from "../src/model-stream.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+} from "@laohuang/llm";
+import type { ChatClientLike } from "@laohuang/llm-openai-compatible";
+import { ModelRuntime } from "@laohuang/llm";
 
 class StubAdapter implements ModelAdapter {
   readonly name = "stub";

@@ -3,7 +3,10 @@ import { test } from "node:test";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { getProvider, providerNames } from "../src/providers.ts";
+import {
+  getProvider,
+  providerNames,
+} from "@laohuang/llm-openai-compatible";
 
 test("deepseek profile has working agent defaults", () => {
   const provider = getProvider("deepseek");

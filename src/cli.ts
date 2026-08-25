@@ -13,7 +13,7 @@ import {
 import {
   createClient,
   type ClientConnectionSettings,
-} from "./client.ts";
+} from "@laohuang/llm-openai-compatible";
 import { SessionCommands, type CommandResult, type QueueStatus } from "./commands.ts";
 import {
   ConfigManager,
@@ -23,7 +23,7 @@ import {
 import { CredentialStore } from "./credentials.ts";
 import { EventProjector } from "@laohuang/runtime-protocol";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
-import { getProvider, providerNames } from "./providers.ts";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 import { findProjectRoot } from "./project-instructions.ts";
 import { routeHumanIntent } from "./core/human-intent-router.ts";
 import type { SessionAction } from "@laohuang/runtime-protocol";

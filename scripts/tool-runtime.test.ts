@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
-import type { AssembledToolCall } from "../src/model-stream.ts";
+import type { AssembledToolCall } from "@laohuang/llm";
 import {
   ToolExecutionContext,
   ToolRuntime,

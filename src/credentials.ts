@@ -11,7 +11,7 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { providerNames } from "./providers.ts";
+import { providerNames } from "@laohuang/llm-openai-compatible";
 
 const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(providerNames());
 

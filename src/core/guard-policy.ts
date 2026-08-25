@@ -1,4 +1,4 @@
-import type { AssembledToolCall } from "../model-stream.ts";
+import type { AssembledToolCall } from "@laohuang/llm";
 import type { ToolResult } from "@laohuang/tools";
 
 export interface GuardPolicyOptions {
