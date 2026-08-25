@@ -7,7 +7,6 @@ import {
   ModelStreamError,
   modelErrorKind,
 } from "@laohuang/llm";
-import type { ChatClientLike } from "@laohuang/llm-openai-compatible";
 import { touchedPathOf } from "@laohuang/tools";
 import type { ToolExecutionMode, ToolResult } from "@laohuang/tools";
 import {
@@ -35,7 +34,6 @@ export interface AgentStepRunnerContext extends HistoryCommitContext {
 }
 
 export interface AgentStepRunnerOptions {
-  client: ChatClientLike;
   model: string;
   provider: string | null;
   modelRuntime: ModelRuntime;
@@ -139,7 +137,6 @@ export class AgentStepRunner {
       try {
         const modelRequestOpened = context?.modelRequestOpened;
         result = await this.options.modelRuntime.complete({
-          client: this.options.client,
           model: this.options.model,
           messages: requestMessages,
           tools: this.options.toolDefinitions,

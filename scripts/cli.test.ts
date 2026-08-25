@@ -23,6 +23,7 @@ import { CredentialStore } from "../src/credentials.ts";
 import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
 import { ModelSelector } from "../src/model-selection.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 import { AgentSession } from "../src/session.ts";
 import { PromptEofError } from "../src/tui/input.ts";
@@ -468,6 +469,18 @@ test("tty wiring asks model selection through the running terminal ui", async ()
   ui.startLoop(() => {});
   const prompts = terminalUiPrompts(ui);
   const store = new Map<string, string>();
+  const createModelAdapter = (provider: string, client: unknown): ModelAdapter => ({
+    name: provider,
+    capabilities: {
+      streaming: true,
+      reasoningReplay: provider === "deepseek",
+      thinkingSettings: provider === "deepseek",
+    },
+    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+      void client;
+      throw new Error("not used");
+    },
+  });
   const selector = new ModelSelector({
     credentials: {
       get: (provider) => store.get(provider) ?? null,
@@ -477,6 +490,7 @@ test("tty wiring asks model selection through the running terminal ui", async ()
     },
     registry: { get: getProvider, names: providerNames },
     createClient,
+    createModelAdapter,
     input: prompts.input,
     secretInput: prompts.secretInput,
     output: () => {},

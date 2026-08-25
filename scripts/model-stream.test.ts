@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ChatCompletionStreamer,
-} from "@laohuang/llm-openai-compatible";
+} from "../packages/llm/llm-openai-compatible/src/model-stream.ts";
 import {
   ModelStreamCancelled,
   ModelStreamError,

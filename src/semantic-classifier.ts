@@ -8,6 +8,10 @@ import type {
   RouteStrategy,
   RouteTiming,
 } from "./routing.ts";
+import type {
+  ChatCompletionRequest,
+  ChatCompletionsClient,
+} from "@laohuang/llm-openai-compatible";
 
 export type {
   RouteDecision,
@@ -15,6 +19,10 @@ export type {
   RouteStrategy,
   RouteTiming,
 };
+export type {
+  ChatCompletionRequest,
+  ChatCompletionsClient,
+} from "@laohuang/llm-openai-compatible";
 
 /** Minimal shape of events.EventEnvelope used by the classifier. */
 export interface SemanticClassifierEvent {
@@ -26,44 +34,6 @@ export interface SemanticClassifierTask {
   readonly taskId: string;
   /** TaskState value, e.g. "running_model". */
   readonly state: string;
-}
-
-// ---------------------------------------------------------------------------
-// Model client (structural subset of the official openai SDK surface)
-// ---------------------------------------------------------------------------
-
-export interface ChatCompletionMessage {
-  role: "system" | "user";
-  content: string;
-}
-
-export interface ChatCompletionRequest {
-  model: string;
-  messages: ChatCompletionMessage[];
-  temperature: number;
-  response_format: { type: "json_object" };
-}
-
-export interface ChatCompletionResponse {
-  choices?:
-    | Array<{ message?: { content?: string | null } | null } | null>
-    | null;
-}
-
-/**
- * Minimal structural client: the openai npm SDK satisfies this through
- * `client.chat.completions.create(body, { timeout })` where `timeout` is in
- * milliseconds.
- */
-export interface ChatCompletionsClient {
-  chat: {
-    completions: {
-      create(
-        body: ChatCompletionRequest,
-        options?: { timeout?: number },
-      ): Promise<ChatCompletionResponse>;
-    };
-  };
 }
 
 const SYSTEM_PROMPT = `Classify one new user message for a running coding task.

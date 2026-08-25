@@ -1,5 +1,6 @@
 import {
   ModelError,
+  type ModelAttempt,
   ModelStreamCancelled,
   ModelStreamError,
   classifyModelError,
@@ -7,7 +8,6 @@ import {
   type ModelCapabilities,
   type ModelErrorKind,
   type ModelRequest,
-  type StreamResult,
   type ThinkingSettings,
 } from "@laohuang/llm";
 
@@ -20,6 +20,35 @@ import {
 /** Structural view of `client.chat` from the openai SDK (or a fake). */
 export interface ChatClientLike {
   chat: { completions: ChatCompletionsEndpoint };
+}
+
+export interface ChatCompletionMessage {
+  role: "system" | "user";
+  content: string;
+}
+
+export interface ChatCompletionRequest {
+  model: string;
+  messages: ChatCompletionMessage[];
+  temperature: number;
+  response_format: { type: "json_object" };
+}
+
+export interface ChatCompletionResponse {
+  choices?:
+    | Array<{ message?: { content?: string | null } | null } | null>
+    | null;
+}
+
+export interface ChatCompletionsClient {
+  chat: {
+    completions: {
+      create(
+        body: ChatCompletionRequest,
+        options?: { timeout?: number },
+      ): Promise<ChatCompletionResponse>;
+    };
+  };
 }
 
 export const OPENAI_CAPABILITIES: ModelCapabilities = {
@@ -37,28 +66,28 @@ export const DEEPSEEK_CAPABILITIES: ModelCapabilities = {
 export interface OpenAICompatibleAdapterOptions {
   readonly provider: string;
   readonly capabilities: ModelCapabilities;
+  readonly client: ChatClientLike;
 }
 
 /**
  * Chat Completions adapter for OpenAI and OpenAI-compatible endpoints.
  * Owns the request/stream behavior by wrapping ChatCompletionStreamer.
  */
-export class OpenAICompatibleAdapter implements ModelAdapter<ChatClientLike> {
+export class OpenAICompatibleAdapter implements ModelAdapter {
   readonly name: string;
   readonly capabilities: ModelCapabilities;
+  private readonly client: ChatClientLike;
 
   constructor(options: OpenAICompatibleAdapterOptions) {
     this.name = options.provider;
     this.capabilities = options.capabilities;
+    this.client = options.client;
   }
 
-  async complete(
-    client: ChatClientLike,
-    request: ModelRequest,
-  ): Promise<StreamResult> {
+  async runAttempt(request: ModelRequest): Promise<ModelAttempt> {
     try {
       return await new ChatCompletionStreamer(
-        client.chat.completions,
+        this.client.chat.completions,
       ).complete(this.translateRequest(request));
     } catch (error) {
       throw normalizeModelError(error);
@@ -93,46 +122,56 @@ export class OpenAICompatibleAdapter implements ModelAdapter<ChatClientLike> {
 
 /** Maps provider names to adapters; unknown names fall back to OpenAI. */
 export class AdapterRegistry {
-  private readonly adapters = new Map<string, ModelAdapter<ChatClientLike>>();
+  private readonly presets = new Map<string, ModelCapabilities>();
 
-  register(adapter: ModelAdapter<ChatClientLike>): void {
-    this.adapters.set(adapter.name, adapter);
+  register(options: {
+    readonly provider: string;
+    readonly capabilities: ModelCapabilities;
+  }): void {
+    this.presets.set(options.provider, options.capabilities);
   }
 
-  get(name: string): ModelAdapter<ChatClientLike> | undefined {
-    return this.adapters.get(name);
+  get(name: string): ModelCapabilities | undefined {
+    return this.presets.get(name);
   }
 
   /** Resolve a provider name, defaulting to the OpenAI adapter. */
-  resolve(name: string | null | undefined): ModelAdapter<ChatClientLike> {
+  resolve(
+    name: string | null | undefined,
+    client: ChatClientLike,
+  ): ModelAdapter {
     if (name) {
-      const adapter = this.adapters.get(name);
-      if (adapter !== undefined) {
-        return adapter;
+      const capabilities = this.presets.get(name);
+      if (capabilities !== undefined) {
+        return new OpenAICompatibleAdapter({
+          provider: name,
+          capabilities,
+          client,
+        });
       }
     }
-    const fallback = this.adapters.get("openai");
+    const fallback = this.presets.get("openai");
     if (fallback === undefined) {
       throw new Error("No model adapter registered for openai");
     }
-    return fallback;
+    return new OpenAICompatibleAdapter({
+      provider: "openai",
+      capabilities: fallback,
+      client,
+    });
   }
 }
 
 /** Built-in registry with the two first-party adapter presets. */
 export const defaultAdapterRegistry = new AdapterRegistry();
-defaultAdapterRegistry.register(
-  new OpenAICompatibleAdapter({
-    provider: "openai",
-    capabilities: OPENAI_CAPABILITIES,
-  }),
-);
-defaultAdapterRegistry.register(
-  new OpenAICompatibleAdapter({
-    provider: "deepseek",
-    capabilities: DEEPSEEK_CAPABILITIES,
-  }),
-);
+defaultAdapterRegistry.register({
+  provider: "openai",
+  capabilities: OPENAI_CAPABILITIES,
+});
+defaultAdapterRegistry.register({
+  provider: "deepseek",
+  capabilities: DEEPSEEK_CAPABILITIES,
+});
 
 /** Kind of a normalized ModelError, or a fresh classification. */
 export function modelErrorKind(error: unknown): ModelErrorKind {

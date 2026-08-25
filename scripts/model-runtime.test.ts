@@ -9,7 +9,6 @@ import {
   type ModelRequest,
   StreamResult,
 } from "@laohuang/llm";
-import type { ChatClientLike } from "@laohuang/llm-openai-compatible";
 import { ModelRuntime } from "@laohuang/llm";
 
 class StubAdapter implements ModelAdapter {
@@ -28,7 +27,7 @@ class StubAdapter implements ModelAdapter {
     this.completeFn = completeFn;
   }
 
-  complete(_client: ChatClientLike, request: ModelRequest): Promise<StreamResult> {
+  runAttempt(request: ModelRequest): Promise<StreamResult> {
     this.requests.push(request);
     return this.completeFn(request);
   }
@@ -53,7 +52,6 @@ function result(): StreamResult {
 
 function request(overrides: Record<string, unknown> = {}) {
   return {
-    client: { chat: { completions: undefined as never } },
     model: "test-model",
     messages: [{ role: "user", content: "hello" }],
     tools: [{ type: "function", function: { name: "read" } }],

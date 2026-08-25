@@ -37,8 +37,7 @@ class StubAdapter implements ModelAdapter {
     this.responses = responses[Symbol.iterator]();
   }
 
-  complete(
-    _client: { chat: { completions: never } },
+  runAttempt(
     request: {
       messages: Array<Record<string, unknown>>;
     },
@@ -93,7 +92,6 @@ function createRunner(options: {
     createCancelled: (message) => new AgentCancelled(message),
   });
   return new AgentStepRunner({
-    client: { chat: { completions: undefined as never } },
     model: "test-model",
     provider: null,
     modelRuntime: new ModelRuntime(options.adapter),
