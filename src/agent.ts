@@ -21,6 +21,11 @@ import {
   type CreateEventOptions,
   type EventBus,
 } from "./events.ts";
+import type {
+  AgentEventPublishOptions,
+  AgentRuntimeContext,
+  PendingInputBatchLike,
+} from "./core/runtime-protocol.ts";
 import {
   defaultAdapterRegistry,
   portableMessage,
@@ -85,35 +90,22 @@ export type ToolEventCallback = (
 ) => void;
 
 export type { ChatClientLike } from "./model-adapter.ts";
+export type {
+  AgentEventPublishOptions,
+  PendingInputBatchLike,
+} from "./core/runtime-protocol.ts";
 
 /** Structural minimum of ToolRegistry (tools.ts) the agent relies on. */
 export type AgentToolRegistry = ToolRegistryLike;
-
-/** Pending user input handed over at a session safe point. */
-export interface PendingInputBatchLike {
-  content?: string | undefined;
-  eventIds?: readonly string[] | undefined;
-}
-
-/** Options for the session-owned publish hook. */
-export interface AgentEventPublishOptions {
-  source: EventSource;
-  correlation_id: string | null;
-  payload: Record<string, unknown>;
-}
 
 /**
  * Capabilities the owning session (session.ts) exposes to one agent run.
  * Every member is optional; without a context the agent runs standalone and
  * manages its own history commits and cancellation checks.
  */
-export interface AgentContext extends AgentStepRunnerContext {
-  readonly sessionId?: string | null;
-  readonly taskId?: string | null;
-  readonly cancelToken?: CancelToken | null;
-  readonly eventBus?: EventBus | null;
-  publish?(kind: EventKind, options: AgentEventPublishOptions): unknown;
-}
+export interface AgentContext
+  extends AgentRuntimeContext,
+    AgentStepRunnerContext {}
 
 export interface RunOptions {
   cancelToken?: CancelToken | null;

@@ -1,13 +1,9 @@
 import type { CancelToken } from "../cancellation.ts";
 import type { AssembledToolCall } from "../model-stream.ts";
 import type { ToolResult } from "../tools.ts";
+import type { PendingInputBatchLike } from "./runtime-protocol.ts";
 
 export type HistoryMessage = Record<string, unknown>;
-
-export interface PendingInputBatchLike {
-  content?: string | undefined;
-  eventIds?: readonly string[] | undefined;
-}
 
 export interface HistoryCommitContext {
   commitInput?(append: () => void, rollback: () => void): boolean;

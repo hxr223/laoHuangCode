@@ -1,6 +1,6 @@
 /** Terminal frame data assembly, separate from terminal paint mechanics. */
 
-import type { EditorLike } from "./ui.ts";
+import type { EditorLike } from "./contracts.ts";
 import type { ScreenFrame } from "./screen.ts";
 import { truncateToWidth, visibleWidth } from "./screen.ts";
 import type { UIState } from "./state.ts";

@@ -3,8 +3,6 @@
 import { randomUUID } from "node:crypto";
 
 import type { CancelToken } from "./cancellation.ts";
-import type { CodingAgent } from "./agent.ts";
-import type { CommandResult, QueueStatus } from "./commands.ts";
 import {
   EventBus,
   EventKind,
@@ -24,6 +22,14 @@ import {
   type SafetyPolicy,
   type SemanticClassifier,
 } from "./routing.ts";
+import type {
+  AgentEventPublishOptions,
+  AgentRunner,
+  AgentRunnerResult,
+  AgentRuntimeContext,
+  CommandResult,
+  QueueStatus,
+} from "./core/runtime-protocol.ts";
 import {
   QueueDispatcher,
   QueueDispatchStatus,
@@ -88,33 +94,20 @@ export interface Submission {
   readonly reason: string;
 }
 
-export type TaskRunnerResult = string | null | Promise<string | null>;
+export type TaskRunnerResult = AgentRunnerResult;
 
 /**
- * Structural contract for the model/tool worker: CodingAgent (agent.ts)
- * satisfies it — `run(userInput, context, options?)` takes the TaskContext as
- * its second argument and resolves to the final assistant text (or null).
+ * Structural contract for the model/tool worker.
  */
-export interface AgentRunnerLike {
-  run(userInput: string, context: TaskContext): TaskRunnerResult;
-}
+export type AgentRunnerLike = AgentRunner;
 
 export type TaskRunner =
   | ((content: string, context: TaskContext) => TaskRunnerResult)
-  | AgentRunnerLike;
+  | AgentRunner;
 
 export type CommandDispatcher = (
   command: string,
 ) => CommandResult | Promise<CommandResult>;
-
-// Compile-time contract check (tsc covers src/ only): the real CodingAgent
-// from agent.ts is a valid AgentRunnerLike — its run(userInput, context,
-// options?) accepts this module's TaskContext, whose publish options use the
-// events.ts snake_case convention (correlation_id) that agent.ts emits.
-type AssertCodingAgentIsRunner =
-  CodingAgent extends AgentRunnerLike ? true : never;
-const assertCodingAgentIsRunner: AssertCodingAgentIsRunner = true;
-void assertCodingAgentIsRunner;
 
 function sameEventIds(
   inflight: readonly RoutedEvent[],
@@ -127,7 +120,7 @@ function sameEventIds(
 }
 
 /** Capabilities exposed to one model/tool worker invocation. */
-export class TaskContext {
+export class TaskContext implements AgentRuntimeContext {
   readonly sessionId: string;
   readonly taskId: string;
   readonly #session: AgentSession;
@@ -162,12 +155,8 @@ export class TaskContext {
    * convention (snake_case), matching agent.ts's AgentContext.publish.
    */
   publish(
-    kind: string,
-    options: {
-      source: EventSource | string;
-      correlation_id?: string | null;
-      payload?: Record<string, unknown>;
-    },
+    kind: EventKind,
+    options: AgentEventPublishOptions,
   ): Promise<AnyEventEnvelope> {
     return this.#session.publishInternalEvent(kind, {
       source: options.source,

@@ -3,6 +3,7 @@
 import { EventKind, EventSource } from "./events.ts";
 import { makeCancelAction } from "./core/session-action-protocol.ts";
 import type { SessionAction } from "./core/session-action.ts";
+import type { CommandResult, QueueStatus } from "./core/runtime-protocol.ts";
 import type {
   InputFn,
   ModelSelection,
@@ -11,21 +12,16 @@ import type {
   SelectionConfig,
 } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
-import type { CompletionItem } from "./tui/editor.ts";
 
-// The canonical CompletionItem lives in terminal/editor.ts; re-exported here
-// so the command layer and consumers share one definition.
-export type { CompletionItem } from "./tui/editor.ts";
+export type { CommandResult, QueueStatus } from "./core/runtime-protocol.ts";
+
+export interface CompletionItem {
+  readonly value: string;
+  readonly description: string;
+  readonly start: number;
+}
 
 export type CommandHandler = (args: string[]) => boolean | Promise<boolean>;
-
-/** Explicit outcome from the one command execution entry. */
-export type CommandResult =
-  | { readonly status: "handled" }
-  | { readonly status: "not_found"; readonly command: string }
-  | { readonly status: "blocked"; readonly command: string }
-  | { readonly status: "exit_requested" }
-  | { readonly status: "error"; readonly error: unknown };
 
 export type ArgumentCompleter = (
   args: readonly string[],
@@ -45,7 +41,7 @@ export interface CommandSpec {
  * Split a command line the way POSIX `shlex.split` does: whitespace separated,
  * single/double quotes, backslash escapes. Throws on unterminated quotes.
  */
-export function shlexSplit(text: string): string[] {
+function splitCommandArgs(text: string): string[] {
   const tokens: string[] = [];
   let current = "";
   let started = false;
@@ -281,7 +277,7 @@ export class CommandRegistry {
   async execute(command: string, options: { state?: string } = {}): Promise<CommandResult> {
     let parts: string[];
     try {
-      parts = shlexSplit(command);
+      parts = splitCommandArgs(command);
     } catch (error) {
       return { status: "error", error };
     }
@@ -386,15 +382,6 @@ export interface AgentLike {
   clearHistory?(): void;
   /** Conversation history, trimmed in place when no clearHistory exists. */
   messages?: unknown[] | undefined;
-}
-
-/** Aggregate queue counters returned by AgentSession.queueStatus. */
-export interface QueueStatus {
-  readonly pending?: number | undefined;
-  readonly pendingTokens?: number | undefined;
-  readonly held?: number | undefined;
-  readonly heldTokens?: number | undefined;
-  readonly deadLetters?: number | undefined;
 }
 
 /** Minimal view of the session's active task for state inspection. */

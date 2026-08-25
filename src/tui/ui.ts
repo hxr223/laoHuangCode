@@ -19,11 +19,19 @@ import { appendFileSync } from "node:fs";
 
 export { toTuiInputEvent } from "./editor.ts";
 export type {
-  CompletionItem as CompletionItemLike,
   EditorEffect,
   InputAction,
   InputActionKind,
 } from "./editor.ts";
+export type {
+  CompletionItemLike,
+  EditorFactory,
+  EditorLike,
+  EditorRenderResult,
+  InputDecoderFactory,
+  InputDecoderHooks,
+  InputDecoderLike,
+} from "./contracts.ts";
 export type { TuiInputEvent } from "../keybindings/key-id.ts";
 
 import {
@@ -62,10 +70,17 @@ import {
   InputActionKind,
   inputAction,
   toTuiInputEvent,
-  type CompletionItem as CompletionItemLike,
   type EditorEffect,
   type InputAction,
 } from "./editor.ts";
+import type {
+  CompletionItemLike,
+  EditorFactory,
+  EditorLike,
+  InputDecoderFactory,
+  InputDecoderHooks,
+  InputDecoderLike,
+} from "./contracts.ts";
 import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
@@ -85,49 +100,7 @@ import { FocusManager } from "./focus-manager.ts";
 import { OverlayManager } from "./overlay-manager.ts";
 import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
 
-// ---------------------------------------------------------------------------
-// Shared input contracts (implemented by terminal/input.ts once landed)
-// ---------------------------------------------------------------------------
-
 const WELCOME_TEXT = "hello, welcome to laoHuang";
-
-export interface EditorRenderResult {
-  lines: string[];
-  cursorRow: number;
-  cursorColumn: number;
-}
-
-/** The editor surface the interactive loop renders and drives. */
-export interface EditorLike {
-  text: string;
-  cursor: number;
-  historyIndex: number | null;
-  readonly completions: readonly CompletionItemLike[];
-  selectedCompletion: number | null;
-  apply(action: InputAction, options: { runtimeActive: boolean }): EditorEffect;
-  setCompletions(values: readonly CompletionItemLike[]): void;
-  renderLines(
-    width: number,
-    options: { prompt?: string; mask?: boolean },
-  ): EditorRenderResult;
-}
-
-/** Hooks the input decoder uses to negotiate terminal keyboard modes. */
-export interface InputDecoderHooks {
-  enableModifyOtherKeys(): void;
-  disableModifyOtherKeys(): void;
-}
-
-/** Bytes-to-actions input pipeline used by the interactive loop. */
-export interface InputDecoderLike {
-  kittyProtocolActive: boolean;
-  feed(data: Uint8Array): InputAction[];
-  flush(): InputAction[];
-  clear(): void;
-}
-
-export type EditorFactory = () => EditorLike;
-export type InputDecoderFactory = (hooks: InputDecoderHooks) => InputDecoderLike;
 
 /** Slash-command completion source (commands.ts once landed). */
 export interface CommandRegistryLike {
