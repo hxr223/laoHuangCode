@@ -1,38 +1,31 @@
-import type { CancelToken } from "@laohuang/runtime-protocol";
+import type { CancelToken, ModelRuntimeEventHandler } from "@laohuang/runtime-protocol";
 import {
   ModelError,
   modelErrorKind,
-  type AssembledToolCall,
   type ModelAdapter,
+  type ModelEvent,
+  type ModelMessage,
   type ModelRequest,
+  type ModelResult,
   ModelStreamCancelled,
   ModelStreamError,
-  type StreamResult,
 } from "./model-contracts.ts";
-import type { ModelRuntimeEventHandler } from "@laohuang/runtime-protocol";
+import type { ToolSpec } from "@laohuang/tools";
 
 /** Provider-neutral input for one model completion. */
 export interface ModelRuntimeRequest {
-  model: string;
-  messages: Array<Record<string, unknown>>;
-  tools: Array<Record<string, unknown>>;
-  toolChoice?: string | Record<string, unknown> | null;
-  requestId?: string | undefined;
-  cancelToken?: CancelToken | null;
-  isRequestActive?: ((requestId: string) => boolean) | null;
-  onDelta?: ModelRuntimeEventHandler | null;
-  onRequestOpened?: (() => boolean | void) | null;
-}
-
-/** Fully validated model output, independent of a provider SDK response. */
-export interface ModelRuntimeResult {
-  readonly requestId: string;
-  readonly content: string | null;
-  readonly reasoningContent: string | null;
-  readonly toolCalls: readonly AssembledToolCall[];
-  readonly finishReason: string;
-  readonly usage: unknown;
-  messageDict(): Record<string, unknown>;
+  readonly provider: string;
+  readonly model: string;
+  readonly baseUrl?: string;
+  readonly messages: readonly ModelMessage[];
+  readonly tools: readonly ToolSpec[];
+  readonly toolChoice: "auto" | "none";
+  readonly temperature?: number;
+  readonly requestId?: string;
+  readonly cancelToken?: CancelToken | null;
+  readonly isRequestActive?: ((requestId: string) => boolean) | null;
+  readonly onDelta?: ModelRuntimeEventHandler | null;
+  readonly onRequestOpened?: (() => boolean | void) | null;
 }
 
 /** Owns adapter invocation, cancellation preflight, and error normalization. */
@@ -43,41 +36,56 @@ export class ModelRuntime {
     this.adapter = adapter;
   }
 
-  async complete(request: ModelRuntimeRequest): Promise<ModelRuntimeResult> {
+  async complete(request: ModelRuntimeRequest): Promise<ModelResult> {
     if (request.cancelToken?.isCancelled()) {
       throw new ModelStreamCancelled(request.cancelToken.reason || "cancelled");
     }
     try {
-      const result = await this.adapter.runAttempt({
+      const adapterRequest: ModelRequest = {
+        provider: request.provider,
         model: request.model,
+        ...(request.baseUrl === undefined ? {} : { baseUrl: request.baseUrl }),
         messages: request.messages,
         tools: request.tools,
-        toolChoice: request.toolChoice ?? null,
-        requestId: request.requestId,
-        cancelToken: request.cancelToken ?? null,
-        isRequestActive: request.isRequestActive ?? null,
-        onDelta: request.onDelta === undefined || request.onDelta === null
-          ? null
-          : (kind, payload) => request.onDelta?.(kind as Parameters<ModelRuntimeEventHandler>[0], payload),
-        onRequestOpened: request.onRequestOpened ?? null,
-      });
-      return toModelRuntimeResult(result);
+        toolChoice: request.toolChoice,
+        ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+        ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
+        ...(request.cancelToken == null ? {} : { cancelToken: request.cancelToken }),
+        ...(request.isRequestActive == null
+          ? {}
+          : { isRequestActive: request.isRequestActive }),
+        ...(request.onDelta == null
+          ? {}
+          : { onEvent: (event: ModelEvent) => forwardEvent(event, request.onDelta) }),
+        ...(request.onRequestOpened == null
+          ? {}
+          : { onRequestOpened: request.onRequestOpened }),
+      };
+      return await this.adapter.runAttempt(adapterRequest);
     } catch (error) {
       throw normalizeRuntimeError(error, request.cancelToken ?? null);
     }
   }
 }
 
-function toModelRuntimeResult(result: StreamResult): ModelRuntimeResult {
-  return {
-    requestId: result.requestId,
-    content: result.content,
-    reasoningContent: result.reasoningContent,
-    toolCalls: result.toolCalls,
-    finishReason: result.finishReason,
-    usage: result.usage,
-    messageDict: () => result.messageDict(),
-  };
+function forwardEvent(
+  event: ModelEvent,
+  handler: ModelRuntimeEventHandler | null | undefined,
+): void {
+  if (event.type === "text-delta") {
+    handler?.("model_text_delta", { text: event.text });
+  } else if (event.type === "reasoning-delta") {
+    handler?.("model_reasoning_delta", { text: event.text });
+  } else if (event.type === "tool-call-delta") {
+    handler?.("model_tool_call_delta", {
+      index: event.index,
+      id: event.id,
+      name: event.name ?? null,
+      arguments: event.argumentsDelta,
+    });
+  } else {
+    handler?.("model_response_validating", {});
+  }
 }
 
 function normalizeRuntimeError(
