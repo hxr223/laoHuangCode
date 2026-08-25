@@ -1,0 +1,49 @@
+{
+  "name": "laohuang",
+  "version": "0.5.1",
+  "description": "A minimal coding agent CLI built on the official openai SDK and Chat Completions native tool calling.",
+  "type": "module",
+  "bin": {
+    "laohuang": "dist/bin.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "bundle": "node build.mjs",
+    "prepack": "npm run bundle"
+  },
+  "files": [
+    "dist/bin.js",
+    "dist/bin.js.map",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "openai": "^6.49.0"
+  },
+  "devDependencies": {
+    "@laohuang/agent-runtime": "0.0.0",
+    "@laohuang/llm": "0.0.0",
+    "@laohuang/llm-openai-compatible": "0.0.0",
+    "@laohuang/local-config": "0.0.0",
+    "@laohuang/project-instructions": "0.0.0",
+    "@laohuang/runtime-protocol": "0.0.0",
+    "@laohuang/session-runtime": "0.0.0",
+    "@laohuang/tool-bash": "0.0.0",
+    "@laohuang/tool-fs": "0.0.0",
+    "@laohuang/tools": "0.0.0",
+    "@laohuang/tui": "0.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hxr223/laoHuangCode"
+  },
+  "homepage": "https://github.com/hxr223/laoHuangCode#readme",
+  "bugs": "https://github.com/hxr223/laoHuangCode/issues",
+  "publishConfig": {
+    "access": "public"
+  },
+  "license": "MIT"
+}

@@ -1,6 +1,6 @@
 # laoHuangCode
 
-一个最小的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
+一个轻量级的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
 Chat Completions 原生工具调用。
 
 当前提供四个工具：`read`、`write`、`edit`、`bash`。所有工具均直接执行，当前原型
@@ -36,7 +36,7 @@ git clone https://github.com/hxr223/laoHuangCode.git
 cd laoHuangCode
 npm ci
 npm run build
-node dist/cli.js
+node apps/cli/dist/bin.js
 ```
 
 ## 模型配置
@@ -102,9 +102,8 @@ laohuang
 - `Ctrl+D`：退出。
 
 模型文本和 Bash stderr/状态采用 append-only inline 流式展示，工具输出按 tool call 分组；
-被取消或截断的半条模型回复会保留在屏幕上并标记“未加入上下文”。完整的逐轮事件仍可
-通过 Web 日志面板查看。输出被重定向或由程序调用 CLI 时，会自动回退到稳定的纯文本
-格式。
+被取消或截断的半条模型回复会保留在屏幕上并标记“未加入上下文”。输出被重定向或由程序
+调用 CLI 时，会自动回退到稳定的纯文本格式。
 
 ### TUI 设计方向
 
@@ -122,27 +121,24 @@ laohuang
 
 当前版本不会在工具执行前请求确认。请只在你信任的项目和环境中运行。
 
-### Web 日志面板
-
-```bash
-laohuang --web
-laohuang --web --web-port 9000
-```
-
-面板默认位于 <http://127.0.0.1:8765>，展示模型轮次、工具调用和最终
-回复。它只监听本机，数据只存在内存中，进程退出后清空。
-
 ## 开发与发布检查
 
 ```bash
 npm ci
 npm run build
 npm test
+npm run smoke:package
 ```
 
-`npm run build` 通过 `tsc` 把 `src/` 编译到 `dist/`；`npm test` 使用 Node 自带的
-`node:test` 运行 `test/` 下的离线测试套件，不需要网络访问。发布流程见
+`npm run build` 通过 TypeScript project references 构建 `apps/cli` 和
+`packages/*/*`，再把 CLI bundle 写入 `apps/cli/dist/bin.js`；`npm test` 使用
+Node 自带的 `node:test` 运行 `scripts/` 下的离线测试套件，不需要网络访问。
+`scripts/` 还包含 workspace 架构检查、版本检查、npm 打包/安装烟测、tmux 终端烟测、
+发布后 registry 验证、测试统计和 CLI CPU profile 脚本。发布流程见
 [发布流程](docs/publishing.md) 和 [npm 分发说明](docs/npm-distribution.md)。
+
+源码结构是私有 npm workspace：`apps/cli` 是唯一应用和唯一发布包，内部运行时、
+工具、模型适配器、配置、会话和 TUI 边界放在 `packages/<domain>/<package>`。
 
 ## 安全边界
 

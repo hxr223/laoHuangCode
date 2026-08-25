@@ -1,6 +1,8 @@
 .DS_Store
 .env
 dist/
+.build/
 node_modules/
 *.tgz
+*.tsbuildinfo
 .worktrees/
