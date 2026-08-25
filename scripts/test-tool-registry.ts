@@ -1,13 +1,15 @@
 import {
   ToolRegistry,
-  type RunBash,
   type ToolExecutionMode,
 } from "../packages/core/tools/src/index.ts";
 import {
   createFileToolDefinitions,
   type ToolFileIo,
 } from "../packages/fs/tool-fs/src/index.ts";
-import { createBashToolDefinition } from "../packages/shell/tool-bash/src/index.ts";
+import {
+  createBashToolDefinition,
+  type RunBash,
+} from "../packages/shell/tool-bash/src/index.ts";
 
 export interface TestToolRegistryOptions {
   bashTimeoutSeconds?: number;

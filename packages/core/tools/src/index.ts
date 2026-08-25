@@ -231,19 +231,6 @@ export class ToolRegistry implements ToolRegistryLike {
   }
 }
 
-export interface RunBashOptions {
-  cwd: string;
-  timeoutSeconds: number;
-  maxOutputChars: number;
-  context: ToolExecutionContextLike;
-  env: Record<string, string | undefined>;
-}
-
-export type RunBash = (
-  command: string,
-  options: RunBashOptions,
-) => Promise<ToolResult>;
-
 export function cancelledResult(context: ToolExecutionContextLike): ToolResult {
   return {
     ok: false,
