@@ -12,7 +12,6 @@
     { "path": "./packages/context/project-instructions" },
     { "path": "./packages/llm/llm" },
     { "path": "./packages/llm/llm-pi-ai" },
-    { "path": "./packages/llm/llm-openai-compatible" },
     { "path": "./packages/storage/local-config" },
     { "path": "./apps/cli" }
   ]

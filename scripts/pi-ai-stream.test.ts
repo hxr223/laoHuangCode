@@ -7,6 +7,7 @@ import {
   type ModelEvent,
   type ModelRequest,
 } from "@laohuang/llm";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import { consumePiEvents } from "../packages/llm/llm-pi-ai/src/index.ts";
 import type {
   AssistantMessage,
@@ -169,6 +170,59 @@ test("consumePiEvents rejects invalid terminal streams", async () => {
     ),
     (error: unknown) => error instanceof ModelError && error.kind === "protocol",
   );
+  await assert.rejects(
+    consumePiEvents(
+      events([{ type: "done", reason: "stop", message: assistant([]) }]),
+      request(),
+    ),
+    (error: unknown) => error instanceof ModelError && error.kind === "protocol",
+  );
+});
+
+test("consumePiEvents rejects invalid usage counts", async () => {
+  await assert.rejects(
+    consumePiEvents(
+      events([{
+        type: "done",
+        reason: "stop",
+        message: assistant([{ type: "text", text: "hello" }], {
+          usage: {
+            ...assistant([]).usage,
+            output: -1,
+          },
+        }),
+      }]),
+      request(),
+    ),
+    (error: unknown) => error instanceof ModelError && error.kind === "protocol",
+  );
+});
+
+test("consumePiEvents cancels and rejects stale streams after deltas", async () => {
+  const token = new CancelToken();
+  await assert.rejects(
+    consumePiEvents(
+      cancellingEvents(token),
+      request({ cancelToken: token }),
+    ),
+    ModelStreamCancelled,
+  );
+
+  const activeChecks = [true, false][Symbol.iterator]();
+  await assert.rejects(
+    consumePiEvents(
+      events([
+        { type: "text_delta", contentIndex: 0, delta: "partial", partial: assistant([]) },
+        {
+          type: "done",
+          reason: "stop",
+          message: assistant([{ type: "text", text: "partial" }]),
+        },
+      ]),
+      request({ isRequestActive: () => activeChecks.next().value === true }),
+    ),
+    ModelStreamCancelled,
+  );
 });
 
 test("consumePiEvents rejects textual DSML envelopes but keeps ordinary DSML prose", async () => {
@@ -197,7 +251,7 @@ test("consumePiEvents rejects textual DSML envelopes but keeps ordinary DSML pro
   ]);
 });
 
-function request(): ModelRequest {
+function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
   return {
     provider: "deepseek",
     model: "deepseek-v4-flash",
@@ -205,6 +259,7 @@ function request(): ModelRequest {
     tools: [],
     toolChoice: "auto",
     requestId: "request-1",
+    ...overrides,
   };
 }
 
@@ -212,6 +267,18 @@ async function* events(
   items: readonly AssistantMessageEvent[],
 ): AsyncGenerator<AssistantMessageEvent> {
   yield* items;
+}
+
+async function* cancellingEvents(
+  token: CancelToken,
+): AsyncGenerator<AssistantMessageEvent> {
+  yield { type: "text_delta", contentIndex: 0, delta: "partial", partial: assistant([]) };
+  token.cancel("stop now");
+  yield {
+    type: "done",
+    reason: "stop",
+    message: assistant([{ type: "text", text: "partial" }]),
+  };
 }
 
 function assistant(

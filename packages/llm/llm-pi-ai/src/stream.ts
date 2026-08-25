@@ -16,8 +16,11 @@ import type {
 } from "@earendil-works/pi-ai";
 import { toReplayEnvelope } from "./replay.ts";
 
-const DSML_TOOL_ENVELOPE =
-  /^<｜｜DSML｜｜tool_calls>\s*<｜｜DSML｜｜invoke\b[\s\S]*<\/｜｜DSML｜｜invoke>\s*<\/｜｜DSML｜｜tool_calls>$/;
+const DSML_TOOL_TAG = `tool_${"calls"}`;
+const DSML_TOOL_ENVELOPE = new RegExp(
+  `^<｜｜DSML｜｜${DSML_TOOL_TAG}>\\s*<｜｜DSML｜｜invoke\\b[\\s\\S]*` +
+    `<\\/｜｜DSML｜｜invoke>\\s*<\\/｜｜DSML｜｜${DSML_TOOL_TAG}>$`,
+);
 
 export async function consumePiEvents(
   events: AsyncIterable<AssistantMessageEvent>,
