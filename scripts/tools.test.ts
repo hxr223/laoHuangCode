@@ -95,9 +95,40 @@ test("registry composes built-in tools in canonical order", async (t) => {
   const registry = createTestToolRegistry(projectRoot);
 
   assert.deepEqual(
-    registry.definitions.map((definition) => definition.function.name),
+    registry.definitions.map((definition) => definition.name),
     ["read", "write", "edit", "bash"],
   );
+});
+
+test("registry exposes neutral tool specs without provider envelopes", () => {
+  const registry = new ToolRegistry([
+    {
+      spec: {
+        name: "echo",
+        description: "Echo text",
+        parameters: {
+          type: "object",
+          properties: { text: { type: "string" } },
+          required: ["text"],
+          additionalProperties: false,
+        },
+        promptGuidelines: [],
+      },
+      execute: (args) => ({ ok: true, content: String(args["text"] ?? "") }),
+    },
+  ]);
+
+  assert.deepEqual(registry.definitions, [{
+    name: "echo",
+    description: "Echo text",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string" } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    promptGuidelines: [],
+  }]);
 });
 
 test("package exports compose and execute built-in tools after build", async (t) => {
@@ -116,7 +147,7 @@ test("package exports compose and execute built-in tools after build", async (t)
 
   assert.deepEqual(
     registry.definitions.map(
-      (definition: { function: { name: string } }) => definition.function.name,
+      (definition: { name: string }) => definition.name,
     ),
     ["read", "write", "edit", "bash"],
   );
@@ -559,9 +590,9 @@ test("bash schema requires a description", async (t) => {
   const tools = createTestToolRegistry(directory, { runBash: testRunBash });
 
   const bash = tools.definitions.find(
-    (definition) => definition.function.name === "bash",
+    (definition) => definition.name === "bash",
   );
-  const required = (bash?.function.parameters as Record<string, unknown>)[
+  const required = (bash?.parameters as Record<string, unknown>)[
     "required"
   ];
   assert.ok((required as string[]).includes("description"));

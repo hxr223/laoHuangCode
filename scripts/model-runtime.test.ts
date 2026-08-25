@@ -4,73 +4,91 @@ import { test } from "node:test";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ModelError,
+  ModelRuntime,
   ModelStreamCancelled,
   type ModelAdapter,
+  type ModelProviderInfo,
+  type ModelInfo,
   type ModelRequest,
-  StreamResult,
+  type ModelResult,
 } from "@laohuang/llm";
-import { ModelRuntime } from "@laohuang/llm";
 
 class StubAdapter implements ModelAdapter {
   readonly name = "stub";
-  readonly capabilities = {
-    streaming: true,
-    reasoningReplay: false,
-    thinkingSettings: false,
-  };
   requests: ModelRequest[] = [];
   private readonly completeFn: (
     request: ModelRequest,
-  ) => Promise<StreamResult>;
+  ) => Promise<ModelResult>;
 
-  constructor(completeFn: (request: ModelRequest) => Promise<StreamResult>) {
+  constructor(completeFn: (request: ModelRequest) => Promise<ModelResult>) {
     this.completeFn = completeFn;
   }
 
-  runAttempt(request: ModelRequest): Promise<StreamResult> {
+  runAttempt(request: ModelRequest): Promise<ModelResult> {
     this.requests.push(request);
     return this.completeFn(request);
   }
+
+  listProviders(): readonly ModelProviderInfo[] {
+    return [{ id: "deepseek", name: "DeepSeek" }];
+  }
+
+  listModels(provider: string): readonly ModelInfo[] {
+    return [{ provider, id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }];
+  }
 }
 
-function result(): StreamResult {
-  return new StreamResult({
-    requestId: "request-1",
-    content: "final answer",
-    reasoningContent: "considering tools",
-    toolCalls: [
-      {
-        id: "call-1",
-        type: "function",
-        function: { name: "read", arguments: '{"path":"answer.txt"}' },
-      },
-    ],
-    finishReason: "tool_calls",
-    usage: { total_tokens: 12 },
-  });
-}
-
-function request(overrides: Record<string, unknown> = {}) {
+function result(): ModelResult {
   return {
-    model: "test-model",
+    requestId: "request-1",
+    finishReason: "tool-calls",
+    usage: { inputTokens: 8, outputTokens: 4, reasoningTokens: 2 },
+    message: {
+      role: "assistant",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      content: [
+        { type: "text", text: "final answer" },
+        { type: "reasoning", text: "considering tools" },
+        {
+          type: "tool-call",
+          call: { id: "call-1", name: "read", arguments: "{\"path\":\"answer.txt\"}" },
+        },
+      ],
+    },
+  };
+}
+
+function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
+  return {
+    provider: "deepseek",
+    model: "deepseek-v4-flash",
     messages: [{ role: "user", content: "hello" }],
-    tools: [{ type: "function", function: { name: "read" } }],
+    tools: [{
+      name: "read",
+      description: "Read file",
+      parameters: { type: "object" },
+      promptGuidelines: [],
+    }],
     toolChoice: "auto",
     requestId: "request-1",
     ...overrides,
   };
 }
 
-test("forwards streamed content, reasoning, and tool-call deltas", async () => {
+test("forwards typed streamed content, reasoning, and tool-call deltas", async () => {
   const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
   const adapter = new StubAdapter(async (modelRequest) => {
-    modelRequest.onDelta?.("model_text_delta", { text: "final " });
-    modelRequest.onDelta?.("model_reasoning_delta", { text: "considering " });
-    modelRequest.onDelta?.("model_tool_call_delta", {
+    modelRequest.onEvent?.({ type: "text-delta", text: "final " });
+    modelRequest.onEvent?.({ type: "reasoning-delta", text: "considering " });
+    modelRequest.onEvent?.({
+      type: "tool-call-delta",
+      index: 0,
       id: "call-1",
       name: "read",
-      arguments: '{"path":',
+      argumentsDelta: "{\"path\":",
     });
+    modelRequest.onEvent?.({ type: "response-validating" });
     return result();
   });
   const runtime = new ModelRuntime(adapter);
@@ -85,19 +103,16 @@ test("forwards streamed content, reasoning, and tool-call deltas", async () => {
     { kind: "model_reasoning_delta", payload: { text: "considering " } },
     {
       kind: "model_tool_call_delta",
-      payload: { id: "call-1", name: "read", arguments: '{"path":' },
+      payload: {
+        index: 0,
+        id: "call-1",
+        name: "read",
+        arguments: "{\"path\":",
+      },
     },
+    { kind: "model_response_validating", payload: {} },
   ]);
-  assert.equal(completion.content, "final answer");
-  assert.equal(completion.reasoningContent, "considering tools");
-  assert.deepEqual(completion.toolCalls, [
-    {
-      id: "call-1",
-      type: "function",
-      function: { name: "read", arguments: '{"path":"answer.txt"}' },
-    },
-  ]);
-  assert.equal(completion.finishReason, "tool_calls");
+  assert.deepEqual(completion, result());
 });
 
 test("does not invoke the adapter after model cancellation", async () => {
