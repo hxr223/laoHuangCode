@@ -102,7 +102,7 @@ import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
 
 const WELCOME_TEXT = "hello, welcome to laoHuang";
 
-/** Slash-command completion source (commands.ts once landed). */
+/** Slash-command completion source supplied by the host application. */
 export interface CommandRegistryLike {
   complete(text: string, options: { state: string }): CompletionItemLike[];
 }

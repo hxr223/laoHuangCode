@@ -8,7 +8,7 @@ import {
   visibleWidth,
   wrapTextToWidth,
   type ScreenFrame,
-} from "../src/tui/screen.ts";
+} from "../packages/terminal/tui/src/tui/screen.ts";
 import { TerminalEmulator } from "./helpers/terminal-emulator.ts";
 
 function frame(

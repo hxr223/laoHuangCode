@@ -42,14 +42,15 @@ import {
   SmallModelSemanticClassifier,
   type ChatCompletionsClient,
 } from "./semantic-classifier.ts";
-import { PromptCancelledError, PromptEofError } from "./tui/input.ts";
 import {
   PlainEventSink,
+  PromptCancelledError,
+  PromptEofError,
   StdTerminalDriver,
   TerminalUI,
   type LoopInputSource,
   type SubmitOptions,
-} from "./tui/ui.ts";
+} from "@laohuang/tui";
 import { ToolRegistry } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
 import { createBashToolDefinition } from "@laohuang/tool-bash";
