@@ -11,8 +11,8 @@ import {
   inputAction,
   type CompletionItem,
   type InputAction,
-} from "../src/tui/editor.ts";
-import { makeKeyInput } from "../src/keybindings/key-id.ts";
+} from "../packages/terminal/tui/src/tui/editor.ts";
+import { makeKeyInput } from "../packages/terminal/tui/src/keybindings/key-id.ts";
 
 /**
  * Mirror of the Python test helper: StdinBuffer -> TerminalInputFilter ->

@@ -5,11 +5,13 @@ import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const appRoot = join(repositoryRoot, "apps", "cli");
+const appManifestPath = join(appRoot, "package.json");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
-    cwd: options.cwd ?? PROJECT_ROOT,
+    cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -47,7 +49,7 @@ function resolveBinName(manifest) {
 
 function main() {
   const skipBuild = process.argv.includes("--skip-build");
-  const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(appManifestPath, "utf8"));
   const binName = resolveBinName(manifest);
   let tarballPath = "";
   const installDir = mkdtempSync(join(tmpdir(), "laohuang-package-smoke-"));
@@ -56,8 +58,8 @@ function main() {
     if (!skipBuild) {
       run("npm", ["run", "build"]);
     }
-    const filename = parsePackOutput(run("npm", ["pack", "--json"]));
-    tarballPath = resolve(PROJECT_ROOT, filename);
+    const filename = parsePackOutput(run("npm", ["pack", "--workspace", "laohuang", "--json"]));
+    tarballPath = resolve(repositoryRoot, filename);
     run("npm", ["install", tarballPath, "--ignore-scripts"], { cwd: installDir });
     const binPath = join(installDir, "node_modules", ".bin", binName);
     if (!existsSync(binPath)) {

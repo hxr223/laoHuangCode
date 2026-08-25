@@ -6,7 +6,7 @@ import { test } from "node:test";
 import {
   createClient,
   type ClientConnectionSettings,
-} from "../src/client.ts";
+} from "@laohuang/llm-openai-compatible";
 
 test("openai-compatible client receives resolved connection settings", () => {
   const calls: ClientConnectionSettings[] = [];

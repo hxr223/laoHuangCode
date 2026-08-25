@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION_NAME="${LAOHUANG_SMOKE_SESSION:-laohuang-smoke-$$}"
-SMOKE_COMMAND="${LAOHUANG_SMOKE_COMMAND:-node dist/cli.js --version}"
+SMOKE_COMMAND="${LAOHUANG_SMOKE_COMMAND:-node apps/cli/dist/bin.js --version}"
 SMOKE_SLEEP="${LAOHUANG_SMOKE_SLEEP:-1}"
 
 cd "$ROOT_DIR"

@@ -11,13 +11,15 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { CodingAgent, type AgentContext } from "../src/agent.ts";
-import { CancelToken } from "../src/cancellation.ts";
+import { CodingAgent } from "@laohuang/agent-runtime";
+import type { AgentContext } from "../packages/core/agent-runtime/src/agent.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   findProjectRoot,
   loadBaselineInstructions,
-} from "../src/project-instructions.ts";
-import { ToolRegistry } from "../src/tools.ts";
+} from "../packages/context/project-instructions/src/index.ts";
+import { OpenAICompatibleAdapter } from "@laohuang/llm-openai-compatible";
+import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 // --- Fakes (mirrors scripts/agent.test.ts FakeCompletions) -------------------
 
@@ -61,6 +63,18 @@ class FakeCompletions {
 function fakeClient(...messages: FakeMessage[]) {
   const completions = new FakeCompletions(messages);
   return { chat: { completions }, completions };
+}
+
+function fakeModelAdapter(client: ReturnType<typeof fakeClient>): OpenAICompatibleAdapter {
+  return new OpenAICompatibleAdapter({
+    provider: "openai",
+    capabilities: {
+      streaming: true,
+      reasoningReplay: false,
+      thinkingSettings: false,
+    },
+    client,
+  });
 }
 
 function requestMessages(
@@ -289,9 +303,10 @@ test("first request order is system, user, then baseline reminder", async (t) =>
   writeInstructions(root, "AGENTS.md", "Always run tests.");
   const client = fakeClient(new FakeMessage("answer one"));
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -318,9 +333,10 @@ test("baseline is injected once across two run turns", async (t) => {
     new FakeMessage("answer two"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -344,9 +360,10 @@ test("no instruction files means no injected message", async (t) => {
   const root = tempDir(t);
   const client = fakeClient(new FakeMessage("answer"));
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -365,9 +382,10 @@ test("agent without instruction options injects nothing", async (t) => {
   writeInstructions(root, "AGENTS.md", "Always run tests.");
   const client = fakeClient(new FakeMessage("answer"));
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
   });
 
   await agent.run("hello");
@@ -403,9 +421,10 @@ test("successful read discovers descendant instructions after tool results", asy
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -441,9 +460,10 @@ test("successful edit also discovers descendant instructions", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -479,9 +499,10 @@ test("one reminder covers the root-to-dir chain broad to specific", async (t) =>
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -515,9 +536,10 @@ test("bash never triggers discovery", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -545,9 +567,10 @@ test("failed and out-of-root file operations yield no discovery", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -579,9 +602,10 @@ test("cancelled tool operations yield no discovery", async (t) => {
     ]),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -602,9 +626,10 @@ test("scopes loaded by the baseline are not re-injected", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -642,9 +667,10 @@ test("a scope discovered once is not re-injected on later touches", async (t) =>
     new FakeMessage("two"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });
@@ -689,9 +715,10 @@ test("touched absolute path never appears in serialized history", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
-    client,
+    modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    tools: new ToolRegistry(root),
+    provider: null,
+    tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
   });

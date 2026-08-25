@@ -51,6 +51,9 @@ key 在终端使用隐藏输入（不回显），不会出现在 Shell 历史、
 
 ## 本地文件
 
+配置实现位于私有 workspace `@laohuang/local-config`，CLI 只通过该包读取和写入
+profile 与凭据文件。
+
 默认配置目录是 `~/.config/laohuang`：
 
 ```text

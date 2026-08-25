@@ -11,28 +11,33 @@ import { fileURLToPath } from "node:url";
 import {
   VERSION,
   main as cliMain,
+} from "../apps/cli/src/main.ts";
+import {
   runPlainSessionRepl,
   runRepl,
   runSessionRepl,
   supportsTerminalUI,
   terminalUiPrompts,
   type SessionReplSession,
-} from "../src/cli.ts";
-import { ConfigManager } from "../src/config.ts";
-import { CredentialStore } from "../src/credentials.ts";
-import { EventKind, EventProjector } from "../src/events.ts";
-import { ModelSelector } from "../src/model-selection.ts";
-import { createClient } from "../src/client.ts";
-import { getProvider, providerNames } from "../src/providers.ts";
-import { AgentSession } from "../src/session.ts";
-import { PromptEofError } from "../src/tui/input.ts";
-import { MemoryTerminalDriver } from "../src/tui/screen.ts";
-import { PlainEventSink, TerminalUI } from "../src/tui/ui.ts";
+} from "../apps/cli/src/repl.ts";
+import { ConfigManager, CredentialStore } from "@laohuang/local-config";
+import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
+import { createClient } from "@laohuang/llm-openai-compatible";
+import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
+import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
+import { AgentSession } from "@laohuang/session-runtime";
+import {
+  MemoryTerminalDriver,
+  PlainEventSink,
+  PromptEofError,
+  TerminalUI,
+} from "../packages/terminal/tui/src/index.ts";
 
 const textEncoder = new TextEncoder();
 
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
-const CLI_PATH = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+const CLI_PATH = fileURLToPath(new URL("../apps/cli/dist/bin.js", import.meta.url));
 
 async function withTempDir(run: (directory: string) => Promise<void>): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-cli-test-"));
@@ -468,6 +473,18 @@ test("tty wiring asks model selection through the running terminal ui", async ()
   ui.startLoop(() => {});
   const prompts = terminalUiPrompts(ui);
   const store = new Map<string, string>();
+  const createModelAdapter = (provider: string, client: unknown): ModelAdapter => ({
+    name: provider,
+    capabilities: {
+      streaming: true,
+      reasoningReplay: provider === "deepseek",
+      thinkingSettings: provider === "deepseek",
+    },
+    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+      void client;
+      throw new Error("not used");
+    },
+  });
   const selector = new ModelSelector({
     credentials: {
       get: (provider) => store.get(provider) ?? null,
@@ -477,6 +494,7 @@ test("tty wiring asks model selection through the running terminal ui", async ()
     },
     registry: { get: getProvider, names: providerNames },
     createClient,
+    createModelAdapter,
     input: prompts.input,
     secretInput: prompts.secretInput,
     output: () => {},
@@ -669,6 +687,8 @@ test("configured deepseek profile starts interactive cli", async () => {
     new ConfigManager(configPath).configure({
       name: "deepseek",
       provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
     });
     const outputs: string[] = [];
 
@@ -699,11 +719,17 @@ test("user can list profiles and switch the active one", async () => {
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const manager = new ConfigManager(configPath);
-    manager.configure({ name: "flash", provider: "deepseek" });
+    manager.configure({
+      name: "flash",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
+    });
     manager.configure({
       name: "pro",
       provider: "deepseek",
       model: "deepseek-v4-pro",
+      baseUrl: "https://api.deepseek.com",
     });
     const outputs: string[] = [];
     const outputFn = (message: string): void => {
@@ -734,6 +760,8 @@ test("doctor reports resolved runtime configuration", async () => {
     new ConfigManager(configPath).configure({
       name: "deepseek",
       provider: "deepseek",
+      model: "deepseek-v4-flash",
+      baseUrl: "https://api.deepseek.com",
     });
     new CredentialStore(credentialsPath).set("deepseek", "secret");
     const outputs: string[] = [];

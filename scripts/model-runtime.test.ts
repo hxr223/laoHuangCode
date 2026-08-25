@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { CancelToken } from "../src/cancellation.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ModelError,
-  type ChatClientLike,
+  ModelStreamCancelled,
   type ModelAdapter,
   type ModelRequest,
-} from "../src/model-adapter.ts";
-import {
-  ModelStreamCancelled,
   StreamResult,
-} from "../src/model-stream.ts";
-import { ModelRuntime } from "../src/core/model-runtime.ts";
+} from "@laohuang/llm";
+import { ModelRuntime } from "@laohuang/llm";
 
 class StubAdapter implements ModelAdapter {
   readonly name = "stub";
@@ -30,7 +27,7 @@ class StubAdapter implements ModelAdapter {
     this.completeFn = completeFn;
   }
 
-  complete(_client: ChatClientLike, request: ModelRequest): Promise<StreamResult> {
+  runAttempt(request: ModelRequest): Promise<StreamResult> {
     this.requests.push(request);
     return this.completeFn(request);
   }
@@ -55,7 +52,6 @@ function result(): StreamResult {
 
 function request(overrides: Record<string, unknown> = {}) {
   return {
-    client: { chat: { completions: undefined as never } },
     model: "test-model",
     messages: [{ role: "user", content: "hello" }],
     tools: [{ type: "function", function: { name: "read" } }],

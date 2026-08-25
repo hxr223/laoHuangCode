@@ -6,11 +6,11 @@ import {
   COMPOSER_COMPONENT,
   createModalOverlay,
   createSelectorOverlay,
-} from "../src/tui/components.ts";
-import { FocusManager } from "../src/tui/focus-manager.ts";
-import { OverlayManager } from "../src/tui/overlay-manager.ts";
-import { TerminalUI, type CommandRegistryLike } from "../src/tui/ui.ts";
-import { MemoryTerminalDriver } from "../src/tui/screen.ts";
+} from "../packages/terminal/tui/src/tui/components.ts";
+import { FocusManager } from "../packages/terminal/tui/src/tui/focus-manager.ts";
+import { OverlayManager } from "../packages/terminal/tui/src/tui/overlay-manager.ts";
+import { TerminalUI, type CommandRegistryLike } from "../packages/terminal/tui/src/tui/ui.ts";
+import { MemoryTerminalDriver } from "../packages/terminal/tui/src/tui/screen.ts";
 
 const encoder = new TextEncoder();
 

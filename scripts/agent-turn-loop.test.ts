@@ -1,19 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { EventBus } from "../src/events.ts";
+import { EventBus } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   AgentTurnLoop,
   type AgentTurnContext,
-} from "../src/core/agent-turn-loop.ts";
+  TaskLifecycle,
+  TaskState,
+} from "../packages/core/session-runtime/src/index.ts";
 import type {
   QueueBridge,
   QueueInputBatch,
-} from "../src/core/queue-bridge.ts";
-import {
-  TaskLifecycle,
-  TaskState,
-} from "../src/core/task-lifecycle.ts";
+} from "../packages/core/runtime-protocol/src/index.ts";
 
 class TestContext implements AgentTurnContext {
   readonly cancelToken;

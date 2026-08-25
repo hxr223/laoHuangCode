@@ -1,14 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { CancelToken } from "../src/cancellation.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ChatCompletionStreamer,
+} from "../packages/llm/llm-openai-compatible/src/model-stream.ts";
+import {
   ModelStreamCancelled,
   ModelStreamError,
   StaleModelRequest,
   type DeltaCallback,
-} from "../src/model-stream.ts";
+} from "@laohuang/llm";
 
 // ---------------------------------------------------------------------------
 // Fakes mirroring tests/test_model_stream.py

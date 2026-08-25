@@ -1,25 +1,16 @@
 {
-  "name": "laohuang",
-  "version": "0.4.2",
-  "description": "A minimal coding agent CLI built on the official openai SDK and Chat Completions native tool calling.",
+  "name": "@laohuang/workspace",
+  "private": true,
   "type": "module",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/hxr223/laoHuangCode"
-  },
-  "homepage": "https://github.com/hxr223/laoHuangCode#readme",
-  "bugs": "https://github.com/hxr223/laoHuangCode/issues",
-  "publishConfig": {
-    "access": "public"
-  },
-  "bin": {
-    "laohuang": "dist/cli.js"
-  },
+  "workspaces": [
+    "apps/*",
+    "packages/*/*"
+  ],
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -b && npm run bundle --workspace laohuang",
     "test": "node --test \"scripts/**/*.test.ts\"",
     "check:version": "node scripts/check-package-version.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",
@@ -29,17 +20,9 @@
     "profile:cli": "node scripts/profile-cli.mjs",
     "prepack": "npm run build"
   },
-  "files": [
-    "dist",
-    "README.md",
-    "LICENSE"
-  ],
-  "dependencies": {
-    "openai": "^6.49.0"
-  },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.5.0"
-  },
-  "license": "MIT"
+  }
 }

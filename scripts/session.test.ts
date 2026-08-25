@@ -2,15 +2,15 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 
-import { EventKind, EventSource } from "../src/events.ts";
-import type { SessionLike } from "../src/commands.ts";
-import { type SemanticClassifierVerdict } from "../src/routing.ts";
-import { TaskState } from "../src/core/task-lifecycle.ts";
+import { EventKind, EventSource } from "../packages/core/runtime-protocol/src/index.ts";
+import type { SessionLike } from "../apps/cli/src/commands.ts";
 import {
   AgentSession,
+  type SemanticClassifierVerdict,
+  TaskState,
   type TaskContext,
   type TaskRunnerResult,
-} from "../src/session.ts";
+} from "../packages/core/session-runtime/src/index.ts";
 
 /** Promise-based stand-in for the threading.Event gates the Python tests use. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -411,7 +411,7 @@ test("close({wait: false}) still drains the event bus", async () => {
 
 test("a pending waitForIdle does not keep the process alive", () => {
   const script = `
-    import { AgentSession } from ${JSON.stringify(new URL("../src/session.ts", import.meta.url).href)};
+    import { AgentSession } from ${JSON.stringify(new URL("../packages/core/session-runtime/src/index.ts", import.meta.url).href)};
     const session = new AgentSession(() => new Promise(() => {}), {
       sessionId: "session-1",
     });

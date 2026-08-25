@@ -1,13 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseKey } from "../src/keybindings/key-parser.ts";
-import { DEFAULT_KEYBINDINGS } from "../src/keybindings/default-keybindings.ts";
+import { parseKey } from "../packages/terminal/tui/src/keybindings/key-parser.ts";
+import { DEFAULT_KEYBINDINGS } from "../packages/terminal/tui/src/keybindings/default-keybindings.ts";
 import {
   KeybindingsManager,
   type Keybinding,
-} from "../src/keybindings/keybindings.ts";
-import { hintForAction } from "../src/keybindings/hints.ts";
+} from "../packages/terminal/tui/src/keybindings/keybindings.ts";
+import { hintForAction } from "../packages/terminal/tui/src/keybindings/hints.ts";
 
 test("parses ctrl+o into a normalized key", () => {
   assert.deepEqual(parseKey("ctrl+o"), {
