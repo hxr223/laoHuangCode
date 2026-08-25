@@ -1,6 +1,6 @@
 /** Append-only display transcript storage, independent from terminal drawing. */
 
-import type { UIUpdate } from "../ui-state.ts";
+import type { UIUpdate } from "./state.ts";
 
 export interface TranscriptBlock {
   kind: string;

@@ -12,7 +12,7 @@ import {
   ModelStreamCancelled,
   StreamResult,
 } from "../src/model-stream.ts";
-import { ModelRuntime } from "../src/runtime/model-runtime.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
 
 class StubAdapter implements ModelAdapter {
   readonly name = "stub";

@@ -1,8 +1,8 @@
 /** Audience-specific policy for converting runtime events into display events. */
 
-import type { RuntimeEvent } from "../runtime/runtime-events.ts";
+import type { RuntimeEvent } from "../core/runtime-events.ts";
 
-export type DisplayAudience = "terminal" | "web";
+export type DisplayAudience = "terminal";
 
 export interface DisplayEvent {
   readonly kind: string;
@@ -61,8 +61,8 @@ export function displayGapMessage(dropped: number): string {
 
 /**
  * Projects canonical EventEnvelope-shaped events and RuntimeEvent-shaped
- * values. Runtime events use camelCase task metadata, while terminal/web
- * event envelopes retain their existing snake_case metadata.
+ * values. Runtime events use camelCase task metadata, while terminal event
+ * envelopes retain their existing snake_case metadata.
  */
 export class DisplayPolicy {
   readonly audience: DisplayAudience;

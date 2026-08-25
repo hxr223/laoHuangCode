@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { DisplayPolicy } from "../src/ui/display-policy.ts";
-import { makeToggleToolOutputDisplayAction } from "../src/ui/display-actions.ts";
-import { isSessionAction } from "../src/runtime/session-action-protocol.ts";
+import { DisplayPolicy } from "../src/tui/display-policy.ts";
+import { makeToggleToolOutputDisplayAction } from "../src/tui/display-actions.ts";
+import { isSessionAction } from "../src/core/session-action-protocol.ts";
 
 function event(
   kind: string,
@@ -66,16 +66,6 @@ test("lifecycle events are never dropped", () => {
   for (const kind of ["task.started", "task.completed", "task.failed", "task.cancelled"]) {
     assert.equal(policy.project(event(kind)).length, 1, kind);
   }
-});
-
-test("web policy keeps stdout without terminal folding", () => {
-  const policy = new DisplayPolicy({ audience: "web" });
-
-  assert.equal(
-    policy.project(event("tool.output_delta", { stream: "stdout", text: "full output" }))[0]
-      ?.text,
-    "full output",
-  );
 });
 
 test("tool output toggles remain local display actions", () => {

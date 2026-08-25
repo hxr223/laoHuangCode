@@ -5,21 +5,24 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  BasicEditorState,
-  BasicInputDecoder,
   PlainEventSink,
   StdTerminalDriver,
   TerminalUI,
   type CommandRegistryLike,
   type LoopInputSource,
-} from "../src/terminal/ui.ts";
-import { makeToggleToolOutputDisplayAction } from "../src/ui/display-actions.ts";
+} from "../src/tui/ui.ts";
+import { CompletionList } from "../src/tui/components/completion-list.ts";
+import { ToolCard } from "../src/tui/components/tool-card.ts";
+import { Transcript } from "../src/tui/components/transcript.ts";
+import { EditorState } from "../src/tui/editor.ts";
+import { TerminalInputDecoder } from "../src/tui/terminal-input-decoder.ts";
+import { makeToggleToolOutputDisplayAction } from "../src/tui/display-actions.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
   stripTerminalControls,
   visibleWidth,
-} from "../src/terminal/screen.ts";
+} from "../src/tui/screen.ts";
 import { TerminalEmulator } from "./helpers/terminal-emulator.ts";
 
 const encoder = new TextEncoder();
@@ -35,6 +38,153 @@ function event(
 ): Record<string, unknown> {
   return { kind, correlation_id: correlationId, payload };
 }
+
+test("completion list is a focusable width-bounded component", () => {
+  const list = new CompletionList({
+    items: [
+      { value: "/help", description: "Show help", start: -5 },
+      { value: "/model", description: "Switch model", start: -6 },
+    ],
+    selectedIndex: 1,
+  });
+
+  assert.deepEqual(list.render(20), [
+    "  /help  Show help",
+    "› /model  Switch mod",
+  ]);
+  assert.equal(list.focused, false);
+  list.focused = true;
+  assert.equal(list.focused, true);
+});
+
+test("tool card renders status metadata and expanded output inside width", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const card = new ToolCard({
+    block: {
+      kind: "tool",
+      key: "call-12345678",
+      text: "",
+      mutable: false,
+      name: "bash",
+      subject: "echo hello",
+      status: "completed",
+      exitCode: 0,
+      durationMs: 42,
+      streamError: "",
+      toolOutput: "hello from stdout",
+      toolOutputExpanded: true,
+      style: "",
+    },
+    theme: ui.theme,
+  });
+
+  const rendered = stripTerminalControls(card.render(32).join("\n"));
+
+  assert.ok(rendered.includes("bash"));
+  assert.ok(rendered.includes("completed"));
+  assert.ok(rendered.includes("exit 0"));
+  assert.ok(rendered.includes("42ms"));
+  assert.ok(rendered.includes("hello from stdout"));
+  assert.ok(card.render(32).every((line) => visibleWidth(line) <= 32));
+});
+
+test("transcript component reports the first mutable rendered row", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const transcript = new Transcript({
+    blocks: [
+      {
+        kind: "user",
+        key: "u1",
+        text: "first question",
+        mutable: false,
+        name: "",
+        subject: "",
+        status: "",
+        exitCode: null,
+        durationMs: null,
+        streamError: "",
+        toolOutput: "",
+        toolOutputExpanded: false,
+        style: "",
+      },
+      {
+        kind: "assistant",
+        key: "r1",
+        text: "streaming answer",
+        mutable: true,
+        name: "",
+        subject: "",
+        status: "",
+        exitCode: null,
+        durationMs: null,
+        streamError: "",
+        toolOutput: "",
+        toolOutputExpanded: false,
+        style: "",
+      },
+    ],
+    theme: ui.theme,
+  });
+
+  const rendered = transcript.renderWithMetadata(80);
+
+  assert.equal(rendered.activeStart, 1);
+  assert.ok(rendered.lines[rendered.activeStart]?.includes("streaming answer"));
+});
+
+test("default terminal ui editor exits on a second idle ctrl c", async () => {
+  class ScriptedInput implements LoopInputSource {
+    #dataHandlers: Array<(data: Uint8Array) => void> = [];
+    #endHandlers: Array<() => void> = [];
+
+    on(event: "data" | "end", listener: (...args: never[]) => void): void {
+      if (event === "data") {
+        this.#dataHandlers.push(listener as (data: Uint8Array) => void);
+      } else {
+        this.#endHandlers.push(listener as () => void);
+      }
+    }
+
+    off(event: "data" | "end", listener: (...args: never[]) => void): void {
+      if (event === "data") {
+        this.#dataHandlers = this.#dataHandlers.filter((handler) => handler !== listener);
+      } else {
+        this.#endHandlers = this.#endHandlers.filter((handler) => handler !== listener);
+      }
+    }
+
+    pause(): void {}
+
+    emitData(data: Uint8Array): void {
+      for (const handler of [...this.#dataHandlers]) {
+        handler(data);
+      }
+    }
+  }
+
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const loop = ui.interactiveLoop;
+  assert.ok(loop !== null);
+  if (loop === null) {
+    return;
+  }
+  const input = new ScriptedInput();
+  let finished = false;
+
+  loop.start(() => {});
+  const done = loop.run(input).then(() => {
+    finished = true;
+  });
+  input.emitData(bytes("\x03"));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(finished, false);
+
+  input.emitData(bytes("\x03"));
+  await done;
+
+  assert.equal(finished, true);
+});
 
 /** Minimal slash-command registry double matching CommandRegistry.complete. */
 function createRegistry(
@@ -315,7 +465,7 @@ test("frame active start includes mutable response", () => {
   const ui = new TerminalUI({ theme: "dark" });
   ui.applyProjectedEvent(event("model.text_delta", "r1", { text: "one" }));
 
-  const frame = ui.buildFrame({ width: 80, editor: new BasicEditorState() });
+  const frame = ui.buildFrame({ width: 80, editor: new EditorState() });
 
   assert.ok((frame.lines[frame.activeStart] as string).includes("one"));
 });
@@ -455,7 +605,7 @@ test("raw loop apple shift enter uses native shift detector", () => {
   const ui = new TerminalUI({
     driver: terminal,
     decoderFactory: (hooks) =>
-      new BasicInputDecoder(hooks, {
+      new TerminalInputDecoder(hooks, {
         isAppleTerminal: () => true,
         shiftPressed: () => true,
       }),
@@ -571,7 +721,7 @@ test("frame uses only content rows for a completion", () => {
     commandRegistry: registry,
     model: "deepseek-v4-flash",
   });
-  const editor = new BasicEditorState();
+  const editor = new EditorState();
   editor.apply({ kind: "insert", text: "/e" }, { runtimeActive: false });
   editor.setCompletions(registry.complete(editor.text, { state: "IDLE" }));
   const frame = ui.buildFrame({ width: 80, editor });
@@ -594,7 +744,7 @@ test("frame lines fit visible width with cjk content", () => {
     model: "deepseek-v4-flash-extra-long",
   });
   ui.acceptUserInput("你好abc你好abc你好abc");
-  const editor = new BasicEditorState();
+  const editor = new EditorState();
   editor.apply({ kind: "insert", text: "/e" }, { runtimeActive: false });
   editor.setCompletions(registry.complete(editor.text, { state: "IDLE" }));
 
@@ -615,7 +765,7 @@ test("tool card lines fit visible width with styled text", () => {
     }),
   );
 
-  const frame = ui.buildFrame({ width: 18, editor: new BasicEditorState() });
+  const frame = ui.buildFrame({ width: 18, editor: new EditorState() });
 
   assert.ok(frame.lines.length > 0);
   assert.ok(frame.lines.every((line) => visibleWidth(line) <= 18));
@@ -632,7 +782,7 @@ test("completion shrink clears stale rows without clearing scrollback", () => {
   const ui = new TerminalUI({ driver: terminal, commandRegistry: registry });
   ui.acceptUserInput("saved scrollback");
   const renderer = new PiMainScreenRenderer(terminal);
-  const editor = new BasicEditorState();
+  const editor = new EditorState();
   editor.apply({ kind: "insert", text: "/" }, { runtimeActive: false });
   editor.setCompletions(registry.complete(editor.text, { state: "IDLE" }));
   renderer.render(ui.buildFrame({ width: 40, editor }));
@@ -657,7 +807,7 @@ test("frame grows only for actual multiline input", () => {
   const ui = new TerminalUI({
     driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
   });
-  const editor = new BasicEditorState();
+  const editor = new EditorState();
   editor.apply(
     { kind: "insert", text: "first line\nsecond line" },
     { runtimeActive: false },
@@ -815,7 +965,6 @@ test("welcome panel shows session context", () => {
     projectRoot: "/tmp/demo",
     provider: "deepseek",
     model: "deepseek-v4-pro",
-    dashboardUrl: "http://127.0.0.1:8765/",
   });
 
   ui.showWelcome();
@@ -824,7 +973,6 @@ test("welcome panel shows session context", () => {
   assert.ok(rendered.includes("hello, welcome to laoHuang"));
   assert.ok(rendered.includes("/tmp/demo"));
   assert.ok(rendered.includes("deepseek/deepseek-v4-pro"));
-  assert.ok(rendered.includes("http://127.0.0.1:8765/"));
 });
 
 /** Scriptable stdin double for the production run() loop. */

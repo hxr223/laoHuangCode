@@ -35,10 +35,13 @@ laoHuangCode/
 │   ├── semantic-classifier.ts # 独立、无历史的小模型语义分类请求
 │   ├── session.ts             # 后台任务、状态机、安全点与取消协调
 │   ├── tools.ts               # read/write/edit/bash
-│   ├── ui-state.ts            # UIState 与 UIEventReducer
-│   ├── web.ts                 # 本地运行事件面板
-│   └── terminal/
+│   └── tui/
+│       ├── AGENTS.md          # TUI 组件化与边界约束
 │       ├── ui.ts              # 唯一终端写入者与事件消费
+│       ├── state.ts           # UIState 与 UIEventReducer
+│       ├── display-policy.ts  # 运行时事件到终端展示事件的投影策略
+│       ├── transcript-store.ts # append-only 展示 transcript 状态
+│       ├── frame-builder.ts   # 终端 frame 数据拼装
 │       ├── screen.ts          # 增量差分渲染器与可见宽度/wcwidth 工具
 │       ├── editor.ts          # 原始输入解码、编辑器状态机与补全
 │       ├── input.ts           # 首次启动设置问题的一次性 raw-mode 提示
@@ -48,7 +51,7 @@ laoHuangCode/
 │   ├── *.test.ts              # Node test 离线测试
 │   ├── check-package-version.mjs
 │   ├── package-smoke.mjs
-│   ├── terminal-smoke.sh
+│   ├── tui-smoke.sh
 │   ├── verify-published-version.mjs
 │   ├── test-stats.mjs
 │   └── profile-cli.mjs
@@ -67,7 +70,7 @@ flowchart LR
 
     subgraph Core["TypeScript Agent 内核"]
         Bin --> CLI["cli.ts"]
-        CLI --> TUI["terminal/ui.ts"]
+        CLI --> TUI["tui/ui.ts"]
         CLI --> Profiles["config.ts + providers.ts"]
         CLI --> Secrets["credentials.ts"]
         CLI --> Commands["commands.ts + model-selection.ts"]
@@ -86,14 +89,12 @@ flowchart LR
         Router --> Events
         Bash --> Events
         Events -->|Terminal View| TUI
-        Events -->|Web View| Web["web.ts"]
     end
 
     TUI -->|inline 增量输出| User
     Client --> SDK["OpenAI SDK / Chat Completions"]
     Stream --> SDK
     Registry --> Tools["read / write / edit / bash"]
-    Browser([本机浏览器]) --> Web
 ```
 
 ## 并发模型：事件循环代替线程
@@ -106,7 +107,7 @@ flowchart LR
   发出，回传模型的 `tool` 消息保持原始调用顺序。
 - 跨组件取消由 `cancellation.ts` 的共享 `CancelToken` 协调：模型 stream、尚未
   启动的工具和活动 Bash 进程组各自注册回调，取消是协作式的。
-- `events.ts` 的 EventBus 为每个 Terminal/Web 订阅者维护一个独立的有界
+- `events.ts` 的 EventBus 为每个订阅者维护一个独立的有界
   mailbox，由各自的 Promise 循环排空；慢消费者只在自己的 mailbox 上堆积，
   不会阻塞 Agent 或其他消费者。
 
@@ -162,7 +163,7 @@ Agent 会向模型追加每个调用对应的 `tool` 角色结果，保持每个
 指纹。触发任一保护后不再执行工具，只允许额外一次 `tool_choice=none` 的模型请求根据
 已有信息收尾。若供应商仍返回工具调用或收尾请求失败，错误会包含触发原因、工具轮数、
 模型请求数、累计 Token 与耗时。`model.response_summary` 和 `agent.guard_*` 事件会把
-每轮 usage 及保护决策同步到 Web 面板。
+每轮 usage 及保护决策同步到事件总线。
 
 ## 事件路由、队列与取消
 
@@ -216,34 +217,31 @@ SIGTERM，2 秒后仍未退出再发送 SIGKILL。
 
 ## 终端渲染
 
-`terminal/ui.ts` 是唯一终端写入者：一切可见内容都是 append-only 的块序列，可变块
-inline 流式更新，轮次结束后冻结、绝不重写。`terminal/screen.ts` 是增量差分
+`tui/ui.ts` 是唯一终端写入者：一切可见内容都是 append-only 的块序列，可变块
+inline 流式更新，轮次结束后冻结、绝不重写。`tui/screen.ts` 是增量差分
 渲染器，每帧只写一次同步输出，同时集中维护可见宽度、转义序列和 wcwidth 工具。
-`terminal/editor.ts` 在字节层解码 stdin（bracketed paste、拆分转义序列、kitty
-键盘协议），驱动文本/历史/补全状态机；`terminal/input.ts` 复用同一解码管线渲染
-首次启动的设置问题。`terminal/theme.ts` 和 `terminal/markdown.ts` 手写了主题 token
+`tui/editor.ts` 在字节层解码 stdin（bracketed paste、拆分转义序列、kitty
+键盘协议），驱动文本/历史/补全状态机；`tui/input.ts` 复用同一解码管线渲染
+首次启动的设置问题。`tui/theme.ts` 和 `tui/markdown.ts` 手写了主题 token
 到 SGR 的转换和一个小型 Markdown 渲染器，不依赖任何终端 UI 库。
 
-## Web 可观测事件
+## 可观测事件
 
-启用 `--web` 后，Web 面板与 TerminalUI 订阅同一个 `EventBus`。模型、工具、路由、
-队列和取消事件都使用不可变 `EventEnvelope`，包含 `event_id/session_id/task_id`、
-`correlation_id` 和 Session 内严格递增的 `sequence`。每个消费者先经过
-`EventProjector` 生成递归脱敏视图，API key、token、password 等字段不会进入面板；
-DeepSeek 原始 reasoning delta 也不会进入 Terminal View。
+TerminalUI 订阅 `EventBus`。模型、工具、路由、队列和取消事件都使用不可变
+`EventEnvelope`，包含 `event_id/session_id/task_id`、`correlation_id` 和 Session
+内严格递增的 `sequence`。消费者先经过 `EventProjector` 生成递归脱敏视图，API key、
+token、password 等字段不会进入展示面；DeepSeek 原始 reasoning delta 也不会进入
+Terminal View。
 
 事件规范会校验 source、必需 payload、字段类型、task/correlation 元数据与 payload
 大小。模型文本同样按 4KB/约 40ms 合并后发布，避免把每个 SDK token 直接变成 UI
-事件。EventBus 为每个 Terminal/Web 订阅者创建独立的有界 mailbox；慢消费者只对
-自己的 mailbox 施加背压，高频相邻 delta 在接近容量时合并，并为控制/生命周期事件
-保留容量。若一个投影连保留容量也完全耗尽，只丢弃该慢投影的后续视图，不能阻塞
-Agent、取消或其他消费者；Canonical pull buffer 仍保留最近的有界事件用于诊断。
+事件。EventBus 为每个订阅者创建独立的有界 mailbox；慢消费者只对自己的 mailbox
+施加背压，高频相邻 delta 在接近容量时合并，并为控制/生命周期事件保留容量。若一个
+投影连保留容量也完全耗尽，只丢弃该慢投影的后续视图，不能阻塞 Agent、取消或其他
+消费者。
 
 本地命令反馈同样发布为 `ui.message`，与模型和工具事件共用 Session sequence；这样
 命令提示不会越过更早的模型分片。Session 正常关闭时会先排空事件，再关闭 EventBus
 subscriber mailbox，避免嵌入式调用或重复测试留下悬挂的 Promise 循环。
-
-浏览器每 500ms 从 `/api/events?after=<id>` 拉取增量事件。日志仅在内存中，CLI 退出
-时 Web 服务一并停止。
 
 > 当前没有工具确认或 Bash 沙箱。`bash` 拥有当前用户在操作系统中的权限。

@@ -1,8 +1,8 @@
 /** Slash commands available inside an interactive agent session. */
 
 import { EventKind, EventSource } from "./events.ts";
-import { makeCancelAction } from "./runtime/session-action-protocol.ts";
-import type { SessionAction } from "./runtime/session-action.ts";
+import { makeCancelAction } from "./core/session-action-protocol.ts";
+import type { SessionAction } from "./core/session-action.ts";
 import type {
   InputFn,
   ModelSelection,
@@ -11,11 +11,11 @@ import type {
   SelectionConfig,
 } from "./model-selection.ts";
 import { getProvider, providerNames } from "./providers.ts";
-import type { CompletionItem } from "./terminal/editor.ts";
+import type { CompletionItem } from "./tui/editor.ts";
 
 // The canonical CompletionItem lives in terminal/editor.ts; re-exported here
 // so the command layer and consumers share one definition.
-export type { CompletionItem } from "./terminal/editor.ts";
+export type { CompletionItem } from "./tui/editor.ts";
 
 export type CommandHandler = (args: string[]) => boolean | Promise<boolean>;
 

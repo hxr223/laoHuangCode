@@ -9,8 +9,8 @@ import {
 } from "../src/tui/components.ts";
 import { FocusManager } from "../src/tui/focus-manager.ts";
 import { OverlayManager } from "../src/tui/overlay-manager.ts";
-import { TerminalUI, type CommandRegistryLike } from "../src/terminal/ui.ts";
-import { MemoryTerminalDriver } from "../src/terminal/screen.ts";
+import { TerminalUI, type CommandRegistryLike } from "../src/tui/ui.ts";
+import { MemoryTerminalDriver } from "../src/tui/screen.ts";
 
 const encoder = new TextEncoder();
 

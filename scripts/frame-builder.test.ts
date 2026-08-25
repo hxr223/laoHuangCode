@@ -1,10 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { BasicEditorState } from "../src/terminal/ui.ts";
-import { FrameBuilder } from "../src/ui/frame-builder.ts";
-import { TranscriptStore } from "../src/ui/transcript-store.ts";
-import { createUIState } from "../src/ui-state.ts";
+import { EditorState } from "../src/tui/editor.ts";
+import { FrameBuilder } from "../src/tui/frame-builder.ts";
+import { TranscriptStore } from "../src/tui/transcript-store.ts";
+import { createUIState } from "../src/tui/state.ts";
 
 test("frame builder exposes title, welcome, and status data", () => {
   const state = createUIState();
@@ -15,7 +15,7 @@ test("frame builder exposes title, welcome, and status data", () => {
   const store = new TranscriptStore();
   store.append({ kind: "notice", key: "welcome", text: "hello, welcome to laoHuang" });
   store.append({ kind: "notice", key: "other", text: "laoHuangCode diagnostic detail" });
-  const editor = new BasicEditorState();
+  const editor = new EditorState();
   editor.text = "hello";
   editor.cursor = 5;
 

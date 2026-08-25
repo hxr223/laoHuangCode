@@ -8,11 +8,11 @@ import { StreamResult } from "../src/model-stream.ts";
 import {
   AgentStepRunner,
   type AgentStepRunnerContext,
-} from "../src/runtime/agent-step-runner.ts";
-import { HistoryCommitter } from "../src/runtime/history-committer.ts";
-import { GuardPolicy } from "../src/runtime/guard-policy.ts";
-import { ModelRuntime } from "../src/runtime/model-runtime.ts";
-import { ToolRuntime } from "../src/runtime/tool-runtime.ts";
+} from "../src/core/agent-step-runner.ts";
+import { HistoryCommitter } from "../src/core/history-committer.ts";
+import { GuardPolicy } from "../src/core/guard-policy.ts";
+import { ModelRuntime } from "../src/core/model-runtime.ts";
+import { ToolRuntime } from "../src/core/tool-runtime.ts";
 import type { ToolResult } from "../src/tools.ts";
 
 class TestCancelToken {

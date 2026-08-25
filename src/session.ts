@@ -27,17 +27,17 @@ import {
 import {
   QueueDispatcher,
   QueueDispatchStatus,
-} from "./runtime/queue-dispatcher.ts";
-import { AgentTurnLoop } from "./runtime/agent-turn-loop.ts";
-import type { QueueBridge, QueueInputBatch } from "./runtime/queue-bridge.ts";
-import type { SessionAction } from "./runtime/session-action.ts";
+} from "./core/queue-dispatcher.ts";
+import { AgentTurnLoop } from "./core/agent-turn-loop.ts";
+import type { QueueBridge, QueueInputBatch } from "./core/queue-bridge.ts";
+import type { SessionAction } from "./core/session-action.ts";
 import {
   TaskLifecycle,
   TaskRegistry,
   TaskState,
   isTerminalTaskState,
   type TaskRecord,
-} from "./runtime/task-lifecycle.ts";
+} from "./core/task-lifecycle.ts";
 
 export const SessionState = {
   Idle: "idle",

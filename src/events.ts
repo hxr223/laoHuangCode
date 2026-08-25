@@ -685,7 +685,6 @@ export interface ProjectedEvent {
 export class EventProjector {
   static readonly AUDIENCES: ReadonlySet<string> = new Set([
     "terminal",
-    "web",
     "log",
     "router",
   ]);
@@ -738,7 +737,7 @@ export type SubscriberCallback = (
 /**
  * One bounded queue per subscriber, drained by a promise loop.
  *
- * A slow terminal or web projection can no longer stall another subscriber.
+ * A slow terminal projection can no longer stall another subscriber.
  * Under pressure only adjacent compatible deltas are combined; lifecycle and
  * control events are never discarded.
  */

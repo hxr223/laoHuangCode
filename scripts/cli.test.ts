@@ -25,9 +25,9 @@ import { ModelSelector } from "../src/model-selection.ts";
 import { createClient } from "../src/client.ts";
 import { getProvider, providerNames } from "../src/providers.ts";
 import { AgentSession } from "../src/session.ts";
-import { PromptEofError } from "../src/terminal/input.ts";
-import { MemoryTerminalDriver } from "../src/terminal/screen.ts";
-import { PlainEventSink, TerminalUI } from "../src/terminal/ui.ts";
+import { PromptEofError } from "../src/tui/input.ts";
+import { MemoryTerminalDriver } from "../src/tui/screen.ts";
+import { PlainEventSink, TerminalUI } from "../src/tui/ui.ts";
 
 const textEncoder = new TextEncoder();
 
@@ -608,35 +608,6 @@ test("first start collects provider key and model in the terminal", async () => 
       new ConfigManager(configPath).listProfiles()[0]!.model,
       "deepseek-v4-flash",
     );
-  });
-});
-
-test("web flag starts dashboard and cleanly exits", async () => {
-  await withTempDir(async (directory) => {
-    const configPath = join(directory, "config.json");
-    new ConfigManager(configPath).configure({
-      name: "default",
-      provider: "deepseek",
-    });
-    new CredentialStore(join(directory, "credentials.json")).set(
-      "deepseek",
-      "test-key",
-    );
-
-    const completed = spawnSync(
-      process.execPath,
-      [CLI_PATH, "--web", "--web-port", "0"],
-      {
-        cwd: PROJECT_ROOT,
-        env: { ...process.env, LAOHUANG_CONFIG: configPath },
-        input: "/exit\n",
-        encoding: "utf8",
-        timeout: 30_000,
-      },
-    );
-
-    assert.equal(completed.status, 0, completed.stderr);
-    assert.ok(completed.stdout.includes("Web dashboard: http://127.0.0.1:"));
   });
 });
 

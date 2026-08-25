@@ -7,7 +7,7 @@ import {
   PromptCancelledError,
   PromptEofError,
   type PiInputSessionOptions,
-} from "../src/terminal/input.ts";
+} from "../src/tui/input.ts";
 
 interface FakeIO {
   input: PassThrough;

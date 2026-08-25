@@ -11,7 +11,7 @@ import {
   inputAction,
   type CompletionItem,
   type InputAction,
-} from "../src/terminal/editor.ts";
+} from "../src/tui/editor.ts";
 import { makeKeyInput } from "../src/keybindings/key-id.ts";
 
 /**
