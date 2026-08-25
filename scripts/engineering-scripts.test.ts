@@ -175,7 +175,15 @@ process.exit(2);
 
     const result = runScript(
       "scripts/verify-published-version.mjs",
-      ["0.4.2", "--attempts", "1", "--interval-ms", "0"],
+      [
+        "0.4.2",
+        "--package-name",
+        "laohuang",
+        "--attempts",
+        "1",
+        "--interval-ms",
+        "0",
+      ],
       { PATH: `${binDir}${delimiter}${process.env.PATH ?? ""}` },
     );
 
