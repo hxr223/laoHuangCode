@@ -12,7 +12,7 @@ import { ModelSelector, type ProviderRegistry } from "../src/model-selection.ts"
 import { createClient } from "@laohuang/llm-openai-compatible";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
 import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
-import { TerminalUI } from "../src/tui/ui.ts";
+import { TerminalUI } from "../packages/terminal/tui/src/index.ts";
 
 const providers: ProviderRegistry = { get: getProvider, names: providerNames };
 

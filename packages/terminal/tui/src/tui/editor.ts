@@ -144,8 +144,7 @@ export function editorEffect(partial: Partial<EditorEffect> = {}): EditorEffect 
 /**
  * A completion independent of any particular input widget.
  *
- * Canonical definition; src/commands.ts (CommandRegistry.complete) imports
- * and re-exports it so the command layer shares one contract with the editor.
+ * Canonical definition shared by command completion producers and the editor.
  */
 export interface CompletionItem {
   readonly value: string;

@@ -10,6 +10,7 @@
     { "path": "./packages/core/tools" },
     { "path": "./packages/core/agent-runtime" },
     { "path": "./packages/core/session-runtime" },
+    { "path": "./packages/terminal/tui" },
     { "path": "./packages/fs/tool-fs" },
     { "path": "./packages/shell/bash-local" },
     { "path": "./packages/shell/tool-bash" },

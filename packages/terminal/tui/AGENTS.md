@@ -2,9 +2,10 @@
 
 ## Product Contract
 
-`src/tui/` owns terminal presentation: component rendering, layout, focus, overlays,
-keyboard input, transcript display, and terminal screen painting. Agent runtime,
-model calls, tool execution, and session orchestration stay outside this directory.
+`packages/terminal/tui/` owns terminal presentation: component rendering,
+layout, focus, overlays, keyboard input, transcript display, and terminal
+screen painting. Agent runtime, model calls, tool execution, and session
+orchestration stay outside this package.
 
 ## Component Direction
 
@@ -20,11 +21,11 @@ model calls, tool execution, and session orchestration stay outside this directo
 
 ## Boundaries
 
-- `core/` publishes runtime events and lifecycle state; it must not import from `tui/`.
-- `tui/` may import stable event/state types from non-UI layers, but presentation
+- Runtime packages publish runtime events and lifecycle state; they must not import from `@laohuang/tui`.
+- `@laohuang/tui` may import stable event/state types from non-UI layers, but presentation
   policy and render state live here.
 - Keep terminal byte handling, screen diffing, layout, focus, and overlays inside
-  `tui/`.
+  this package.
 
 ## Tests
 

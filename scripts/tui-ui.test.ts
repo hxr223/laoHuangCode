@@ -10,19 +10,19 @@ import {
   TerminalUI,
   type CommandRegistryLike,
   type LoopInputSource,
-} from "../src/tui/ui.ts";
-import { CompletionList } from "../src/tui/components/completion-list.ts";
-import { ToolCard } from "../src/tui/components/tool-card.ts";
-import { Transcript } from "../src/tui/components/transcript.ts";
-import { EditorState } from "../src/tui/editor.ts";
-import { TerminalInputDecoder } from "../src/tui/terminal-input-decoder.ts";
-import { makeToggleToolOutputDisplayAction } from "../src/tui/display-actions.ts";
+} from "../packages/terminal/tui/src/tui/ui.ts";
+import { CompletionList } from "../packages/terminal/tui/src/tui/components/completion-list.ts";
+import { ToolCard } from "../packages/terminal/tui/src/tui/components/tool-card.ts";
+import { Transcript } from "../packages/terminal/tui/src/tui/components/transcript.ts";
+import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
+import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
+import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
   stripTerminalControls,
   visibleWidth,
-} from "../src/tui/screen.ts";
+} from "../packages/terminal/tui/src/tui/screen.ts";
 import { TerminalEmulator } from "./helpers/terminal-emulator.ts";
 
 const encoder = new TextEncoder();

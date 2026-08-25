@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { TerminalUI } from "../src/tui/ui.ts";
-import { MemoryTerminalDriver } from "../src/tui/screen.ts";
+import {
+  MemoryTerminalDriver,
+  TerminalUI,
+} from "../packages/terminal/tui/src/index.ts";
 
 test("an unavailable key action shows a notice without submitting model input", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
