@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+const appRoot = join(repositoryRoot, "apps", "cli");
+const appManifestPath = join(appRoot, "package.json");
 
 function parseArgs(argv) {
-  const args = { packageJson: "package.json" };
+  const args = { packageJson: appManifestPath };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--package-json") {

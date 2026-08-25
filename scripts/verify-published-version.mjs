@@ -5,6 +5,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const PROJECT_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const appRoot = join(PROJECT_ROOT, "apps", "cli");
+const appManifestPath = join(appRoot, "package.json");
 
 function parseArgs(argv) {
   const args = {
@@ -44,7 +46,7 @@ function npmView(packageName, version) {
 }
 
 async function main() {
-  const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"));
+  const manifest = JSON.parse(readFileSync(appManifestPath, "utf8"));
   const args = parseArgs(process.argv.slice(2));
   const packageName = args.packageName || manifest.name;
   const version = args.version || manifest.version;

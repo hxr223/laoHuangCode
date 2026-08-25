@@ -1,8 +1,9 @@
 # 项目架构
 
 `laoHuangCode` 是一个纯 TypeScript/Node.js 的 coding agent。npm 包 `laohuang`
-是唯一制品：`tsc` 把 `src/` 编译到 `dist/`，`bin` 入口是 `dist/cli.js`，运行时
-只依赖官方 `openai` npm SDK 和 Node.js 18+ 标准库，不需要 Python。
+是唯一发布制品：私有根 workspace 负责编排 TypeScript project references，
+`apps/cli` 把 CLI bundle 写入 `apps/cli/dist/bin.js`，运行时只依赖官方 `openai`
+npm SDK 和 Node.js 18+ 标准库，不需要 Python。
 
 ## 项目目录
 
@@ -18,37 +19,29 @@ laoHuangCode/
 │   ├── publishing.md
 │   ├── security.md
 │   └── superpowers/           # 设计文档与历史记录
-├── src/
-│   ├── agent.ts               # 模型—工具循环与事件发布
-│   ├── bash-runner.ts         # Bash 双流读取、限长结果与进程组取消
-│   ├── cancellation.ts        # Task 级 CancelToken
-│   ├── cli.ts                 # CLI 入口、config/doctor 子命令与交互 REPL
-│   ├── client.ts              # OpenAI SDK 客户端工厂
-│   ├── commands.ts            # Slash 命令与分层补全
-│   ├── config.ts              # Profile 存储与解析
-│   ├── credentials.ts         # 私有凭据文件
-│   ├── events.ts              # EventEnvelope、EventBus 与投影脱敏
-│   ├── model-stream.ts        # Chat Completions 流暂存、拼装与提交
-│   ├── model-selection.ts     # 供应商与模型交互选择、首次启动凭据引导
-│   ├── providers.ts           # DeepSeek/OpenAI 预设
-│   ├── routing.ts             # 四层路由、Scheduler 与有界队列
-│   ├── semantic-classifier.ts # 独立、无历史的小模型语义分类请求
-│   ├── session.ts             # 后台任务、状态机、安全点与取消协调
-│   ├── tools.ts               # read/write/edit/bash
-│   └── tui/
-│       ├── AGENTS.md          # TUI 组件化与边界约束
-│       ├── ui.ts              # 唯一终端写入者与事件消费
-│       ├── state.ts           # UIState 与 UIEventReducer
-│       ├── display-policy.ts  # 运行时事件到终端展示事件的投影策略
-│       ├── transcript-store.ts # append-only 展示 transcript 状态
-│       ├── frame-builder.ts   # 终端 frame 数据拼装
-│       ├── screen.ts          # 增量差分渲染器与可见宽度/wcwidth 工具
-│       ├── editor.ts          # 原始输入解码、编辑器状态机与补全
-│       ├── input.ts           # 首次启动设置问题的一次性 raw-mode 提示
-│       ├── theme.ts           # 终端颜色 token 与 ANSI SGR 转换
-│       └── markdown.ts        # Markdown 到带样式 ANSI 行的渲染
+├── apps/
+│   └── cli/
+│       ├── src/               # CLI composition root、commands、REPL、model selection
+│       ├── dist/bin.js        # 发布包 bin 入口，构建产物
+│       ├── package.json       # npm 包 `laohuang` 的版本、bin、files 与 openai 依赖
+│       ├── README.md          # 随包发布的 README
+│       └── LICENSE            # 随包发布的 license
+├── packages/
+│   ├── context/project-instructions/     # AGENTS/CODEX/project instruction 读取
+│   ├── core/agent-runtime/               # 模型—工具循环与事件发布
+│   ├── core/runtime-protocol/            # 事件、取消、队列、AgentRunner 等公共协议
+│   ├── core/session-runtime/             # 后台任务、路由、队列、安全点与取消协调
+│   ├── core/tools/                       # ToolRegistry 与工具协议
+│   ├── fs/tool-fs/                       # read/write/edit 工具适配器
+│   ├── llm/llm/                          # provider-neutral ModelAdapter 合同
+│   ├── llm/llm-openai-compatible/        # OpenAI/DeepSeek Chat Completions 适配器
+│   ├── shell/bash-local/                 # Bash 双流读取、限长结果与进程组取消
+│   ├── shell/tool-bash/                  # Bash tool adapter
+│   ├── storage/local-config/             # Profile 与凭据文件
+│   └── terminal/tui/                     # 终端渲染、输入、补全和展示状态
 ├── scripts/                   # 测试与构建、检查、发布等工程脚本
 │   ├── *.test.ts              # Node test 离线测试
+│   ├── workspace-architecture.test.ts
 │   ├── check-package-version.mjs
 │   ├── package-smoke.mjs
 │   ├── tui-smoke.sh
@@ -57,8 +50,9 @@ laoHuangCode/
 │   └── profile-cli.mjs
 ├── LICENSE
 ├── README.md
-├── package.json
-└── tsconfig.json
+├── package.json               # 私有 workspace 根，仅编排 build/test/release checks
+├── tsconfig.base.json
+└── tsconfig.json              # project references
 ```
 
 ## 模块关系
@@ -66,36 +60,38 @@ laoHuangCode/
 ```mermaid
 flowchart LR
     User([用户]) --> Entry["laohuang 命令"]
-    Entry -->|npm 全局安装| Bin["dist/cli.js"]
+    Entry -->|npm 全局安装| Bin["apps/cli/dist/bin.js"]
 
-    subgraph Core["TypeScript Agent 内核"]
-        Bin --> CLI["cli.ts"]
-        CLI --> TUI["tui/ui.ts"]
-        CLI --> Profiles["config.ts + providers.ts"]
-        CLI --> Secrets["credentials.ts"]
-        CLI --> Commands["commands.ts + model-selection.ts"]
-        Profiles --> Client["client.ts"]
-        Secrets --> Client
-        Commands --> Client
-        CLI --> Session["session.ts · AgentSession"]
-        Session --> Router["routing.ts · Router/Scheduler/Queues"]
-        Session --> Agent["agent.ts"]
-        Commands -->|switch_model| Agent
-        Agent --> Stream["model-stream.ts"]
-        Agent --> Registry["tools.ts"]
-        Registry --> Bash["bash-runner.ts"]
-        Session --> Cancel["cancellation.ts"]
-        Agent --> Events["events.ts · EventBus"]
-        Router --> Events
-        Bash --> Events
-        Events -->|Terminal View| TUI
-    end
+    Bin --> CLI["apps/cli"]
+    CLI --> TUI["@laohuang/tui"]
+    CLI --> Session["@laohuang/session-runtime"]
+    CLI --> Agent["@laohuang/agent-runtime"]
+    CLI --> Config["@laohuang/local-config"]
+    CLI --> FS["@laohuang/tool-fs"]
+    CLI --> BashTool["@laohuang/tool-bash"]
+    CLI --> OpenAICompat["@laohuang/llm-openai-compatible"]
+    CLI --> Instructions["@laohuang/project-instructions"]
+
+    Session --> Protocol["@laohuang/runtime-protocol"]
+    Agent --> Protocol
+    Agent --> LLM["@laohuang/llm"]
+    Agent --> Tools["@laohuang/tools"]
+    Agent --> Instructions
+    OpenAICompat --> LLM
+    OpenAICompat --> SDK["OpenAI SDK / Chat Completions"]
+    FS --> Tools
+    BashTool --> Tools
+    BashTool --> BashLocal["@laohuang/bash-local"]
+    TUI --> Protocol
 
     TUI -->|inline 增量输出| User
-    Client --> SDK["OpenAI SDK / Chat Completions"]
-    Stream --> SDK
-    Registry --> Tools["read / write / edit / bash"]
+    Tools --> ToolNames["read / write / edit / bash"]
 ```
+
+根 `package.json` 是 private，只声明 `apps/*` 和 `packages/*/*`。每个内部 package
+也是 private、版本固定为 `0.0.0`，只通过 `@laohuang/*` 包名公开根出口；生产代码不
+跨 package root 使用相对导入，也不 deep-import 其他 workspace 的 `src/` 或 `dist/`。
+`scripts/workspace-architecture.test.ts` 会持续检查这些约束和 workspace 依赖环。
 
 ## 并发模型：事件循环代替线程
 
@@ -227,7 +223,7 @@ inline 流式更新，轮次结束后冻结、绝不重写。`tui/screen.ts` 是
 
 ## 可观测事件
 
-TerminalUI 订阅 `EventBus`。模型、工具、路由、队列和取消事件都使用不可变
+TerminalUI 订阅 runtime event stream。模型、工具、路由、队列和取消事件都使用不可变
 `EventEnvelope`，包含 `event_id/session_id/task_id`、`correlation_id` 和 Session
 内严格递增的 `sequence`。消费者先经过 `EventProjector` 生成递归脱敏视图，API key、
 token、password 等字段不会进入展示面；DeepSeek 原始 reasoning delta 也不会进入
