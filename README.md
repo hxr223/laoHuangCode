@@ -36,7 +36,7 @@ git clone https://github.com/hxr223/laoHuangCode.git
 cd laoHuangCode
 npm ci
 npm run build
-node dist/cli.js
+node apps/cli/dist/bin.js
 ```
 
 ## 模型配置
@@ -130,11 +130,15 @@ npm test
 npm run smoke:package
 ```
 
-`npm run build` 通过 `tsc` 把 `src/` 编译到 `dist/`；`npm test` 使用 Node 自带的
-`node:test` 运行 `scripts/` 下的离线测试套件，不需要网络访问。`scripts/` 还包含
-版本检查、npm 打包/安装烟测、tmux 终端烟测、发布后 registry 验证、测试统计和
-CLI CPU profile 脚本。发布流程见
+`npm run build` 通过 TypeScript project references 构建 `apps/cli` 和
+`packages/*/*`，再把 CLI bundle 写入 `apps/cli/dist/bin.js`；`npm test` 使用
+Node 自带的 `node:test` 运行 `scripts/` 下的离线测试套件，不需要网络访问。
+`scripts/` 还包含 workspace 架构检查、版本检查、npm 打包/安装烟测、tmux 终端烟测、
+发布后 registry 验证、测试统计和 CLI CPU profile 脚本。发布流程见
 [发布流程](docs/publishing.md) 和 [npm 分发说明](docs/npm-distribution.md)。
+
+源码结构是私有 npm workspace：`apps/cli` 是唯一应用和唯一发布包，内部运行时、
+工具、模型适配器、配置、会话和 TUI 边界放在 `packages/<domain>/<package>`。
 
 ## 安全边界
 
