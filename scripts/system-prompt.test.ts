@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 
 import { CodingAgent, type ChatClientLike } from "../src/agent.ts";
 import { buildSystemPrompt } from "../src/system-prompt.ts";
-import { ToolRegistry } from "../src/tools.ts";
+import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 const EXPECTED_PROMPT = `You are laoHuangCode, a coding agent.
 
@@ -47,13 +47,13 @@ async function makeTempDir(t: import("node:test").TestContext): Promise<string> 
 }
 
 test("built prompt matches the stable snapshot", async (t) => {
-  const tools = new ToolRegistry(await makeTempDir(t));
+  const tools = createTestToolRegistry(await makeTempDir(t));
 
   assert.equal(buildSystemPrompt(tools), EXPECTED_PROMPT);
 });
 
 test("tool sections appear in the fixed read/write/edit/bash order", async (t) => {
-  const tools = new ToolRegistry(await makeTempDir(t));
+  const tools = createTestToolRegistry(await makeTempDir(t));
   const prompt = buildSystemPrompt(tools);
 
   const positions = ["## read", "## write", "## edit", "## bash"].map(
@@ -67,13 +67,13 @@ test("tool sections appear in the fixed read/write/edit/bash order", async (t) =
 });
 
 test("prompt is deterministic across builds", async (t) => {
-  const tools = new ToolRegistry(await makeTempDir(t));
+  const tools = createTestToolRegistry(await makeTempDir(t));
 
   assert.equal(buildSystemPrompt(tools), buildSystemPrompt(tools));
 });
 
 test("promptGuidelines never leaks into the tools payload", async (t) => {
-  const tools = new ToolRegistry(await makeTempDir(t));
+  const tools = createTestToolRegistry(await makeTempDir(t));
   const payload = JSON.stringify(tools.definitions);
 
   assert.ok(!payload.includes("promptGuidelines"));
@@ -85,7 +85,7 @@ test("promptGuidelines never leaks into the tools payload", async (t) => {
 });
 
 test("tools payload is deterministic in order and content", async (t) => {
-  const tools = new ToolRegistry(await makeTempDir(t));
+  const tools = createTestToolRegistry(await makeTempDir(t));
 
   assert.equal(
     JSON.stringify(tools.definitions),
@@ -98,7 +98,7 @@ test("tools payload is deterministic in order and content", async (t) => {
 });
 
 test("agent history starts with the built system prompt", async (t) => {
-  const tools = new ToolRegistry(await makeTempDir(t));
+  const tools = createTestToolRegistry(await makeTempDir(t));
   const client = {
     chat: { completions: {} },
   } as unknown as ChatClientLike;

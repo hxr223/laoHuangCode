@@ -12,8 +12,7 @@ import {
 import { HistoryCommitter } from "../src/core/history-committer.ts";
 import { GuardPolicy } from "../src/core/guard-policy.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
-import { ToolRuntime } from "../src/core/tool-runtime.ts";
-import type { ToolResult } from "../src/tools.ts";
+import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
 
 class TestCancelToken {
   cancelled = false;

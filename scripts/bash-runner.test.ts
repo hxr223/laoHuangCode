@@ -6,7 +6,10 @@ import { test } from "node:test";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { runBash, ToolExecutionContext } from "../src/bash-runner.ts";
+import {
+  ToolExecutionContext,
+  runBash,
+} from "../packages/shell/bash-local/src/index.ts";
 
 interface RecordedEvent {
   kind: string;

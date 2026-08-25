@@ -45,7 +45,9 @@ import {
   type LoopInputSource,
   type SubmitOptions,
 } from "./tui/ui.ts";
-import { ToolRegistry } from "./tools.ts";
+import { ToolRegistry } from "@laohuang/tools";
+import { createFileToolDefinitions } from "@laohuang/tool-fs";
+import { createBashToolDefinition } from "@laohuang/tool-bash";
 
 export const VERSION = readPackageVersion();
 
@@ -1271,7 +1273,10 @@ export async function main(
   const agent = new CodingAgent({
     client: client as ChatClientLike,
     model: config.model,
-    tools: new ToolRegistry(projectRoot),
+    tools: new ToolRegistry([
+      ...createFileToolDefinitions({ projectRoot }),
+      createBashToolDefinition({ projectRoot }),
+    ]),
     provider: config.provider,
     projectRoot: instructionRoot,
     startupCwd: process.cwd(),

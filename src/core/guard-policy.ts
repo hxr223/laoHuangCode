@@ -1,5 +1,5 @@
 import type { AssembledToolCall } from "../model-stream.ts";
-import type { ToolResult } from "../tools.ts";
+import type { ToolResult } from "@laohuang/tools";
 
 export interface GuardPolicyOptions {
   maxTotalTokens: number;

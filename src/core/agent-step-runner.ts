@@ -6,8 +6,8 @@ import {
   ModelStreamError,
 } from "../model-stream.ts";
 import { modelErrorKind, type ChatClientLike } from "../model-adapter.ts";
-import { touchedPathOf } from "../tools.ts";
-import type { ToolExecutionMode, ToolResult } from "../tools.ts";
+import { touchedPathOf } from "@laohuang/tools";
+import type { ToolExecutionMode, ToolResult } from "@laohuang/tools";
 import {
   HistoryCommitter,
   type HistoryCommitContext,
@@ -19,7 +19,7 @@ import {
   ToolRuntime,
   type ToolRuntimeToolEvent,
   type ToolRuntimeToolResultEvent,
-} from "./tool-runtime.ts";
+} from "@laohuang/tools";
 
 export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
 Do not call any tools. Give the user the best concise answer possible from the

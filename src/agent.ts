@@ -37,7 +37,7 @@ import type {
   ToolExecutionMode,
   ToolRegistryLike,
   ToolResult,
-} from "./tools.ts";
+} from "@laohuang/tools";
 import { buildSystemPrompt } from "./system-prompt.ts";
 import {
   discoverInstructions,
@@ -55,7 +55,7 @@ import {
 import { GuardPolicy } from "./core/guard-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
 import { ModelRuntime } from "./core/model-runtime.ts";
-import { ToolRuntime } from "./core/tool-runtime.ts";
+import { ToolRuntime } from "@laohuang/tools";
 
 export { FORCED_FINAL_PROMPT };
 

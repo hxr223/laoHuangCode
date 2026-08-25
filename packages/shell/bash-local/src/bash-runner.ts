@@ -11,6 +11,13 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 
+import {
+  ToolExecutionContext,
+  type ToolEventPublisher,
+  type ToolEventSink,
+  type ToolExecutionContextInit,
+} from "@laohuang/tools";
+
 export type BashStatus =
   | "completed"
   | "failed"
@@ -31,94 +38,12 @@ export const MODEL_API_KEY_ENV_NAMES = [
   "LAOHUANG_API_KEY",
 ] as const;
 
-/** Structural minimum for the CancelToken owned by cancellation.ts. */
-export interface CancelTokenLike {
-  isCancelled?: () => boolean;
-  isSet?: () => boolean;
-  cancelled?: boolean;
-  reason?: unknown;
-}
-
-/** Structural minimum for the EventBus owned by events.ts. */
-export interface ToolEventPublisher {
-  publish(
-    kind: string,
-    options: {
-      source: string;
-      session_id: string;
-      task_id: string | null;
-      correlation_id: string | null;
-      payload: Record<string, unknown>;
-    },
-  ): void;
-}
-
-export type ToolEventSink =
-  | ToolEventPublisher
-  | ((kind: string, payload: Record<string, unknown>) => void);
-
-export interface ToolExecutionContextInit {
-  sessionId?: string | null;
-  taskId?: string | null;
-  toolCallId?: string | null;
-  cancelToken?: CancelTokenLike | null;
-  eventSink?: ToolEventSink | null;
-}
-
-/** Runtime metadata and optional cooperative services for a tool call. */
-export class ToolExecutionContext {
-  sessionId: string | null;
-  taskId: string | null;
-  toolCallId: string | null;
-  cancelToken: CancelTokenLike | null;
-  eventSink: ToolEventSink | null;
-
-  constructor(init: ToolExecutionContextInit = {}) {
-    this.sessionId = init.sessionId ?? null;
-    this.taskId = init.taskId ?? null;
-    this.toolCallId = init.toolCallId ?? null;
-    this.cancelToken = init.cancelToken ?? null;
-    this.eventSink = init.eventSink ?? null;
-  }
-
-  isCancelled(): boolean {
-    const token = this.cancelToken;
-    if (token == null) return false;
-    if (typeof token.isCancelled === "function") {
-      return Boolean(token.isCancelled.call(token));
-    }
-    if (typeof token.isSet === "function") {
-      return Boolean(token.isSet.call(token));
-    }
-    return Boolean(token.cancelled);
-  }
-
-  get cancellationReason(): string {
-    const reason = this.cancelToken?.reason;
-    return reason ? String(reason) : "cancelled";
-  }
-
-  /** Publish through an EventBus, with a tiny callback fallback for tests. */
-  publish(kind: string, payload: Record<string, unknown>): void {
-    const sink = this.eventSink;
-    if (sink == null) return;
-
-    if (typeof sink === "function") {
-      sink(kind, payload);
-      return;
-    }
-
-    if (typeof sink.publish === "function") {
-      sink.publish(kind, {
-        source: "tool",
-        session_id: this.sessionId ?? "local",
-        task_id: this.taskId,
-        correlation_id: this.toolCallId,
-        payload,
-      });
-    }
-  }
-}
+export {
+  ToolExecutionContext,
+  type ToolEventPublisher,
+  type ToolEventSink,
+  type ToolExecutionContextInit,
+};
 
 export interface BashResultInit {
   status: BashStatus;

@@ -1,6 +1,6 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import type { AssembledToolCall } from "../model-stream.ts";
-import type { ToolResult } from "../tools.ts";
+import type { ToolResult } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 
 export type HistoryMessage = Record<string, unknown>;
