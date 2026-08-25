@@ -1,15 +1,14 @@
-import { ToolExecutionContext } from "../bash-runner.ts";
 import type { CancelToken } from "@laohuang/runtime-protocol";
-import type { AssembledToolCall } from "../model-stream.ts";
 import type {
+  ToolCall,
   ToolExecutionContextLike,
   ToolExecutionMode,
   ToolRegistryLike,
   ToolResult,
-} from "../tools.ts";
+} from "./index.ts";
 
 export interface ToolRuntimeRequest {
-  toolCalls: readonly AssembledToolCall[];
+  toolCalls: readonly ToolCall[];
   executionMode: ToolExecutionMode;
   cancelToken: CancelToken | null;
   onToolStart?: ((event: ToolRuntimeToolEvent) => void) | null;
@@ -19,7 +18,7 @@ export interface ToolRuntimeRequest {
 export interface ToolRuntimeToolEvent {
   readonly index: number;
   readonly batchSize: number;
-  readonly toolCall: AssembledToolCall;
+  readonly toolCall: ToolCall;
   readonly args: Record<string, unknown>;
 }
 
@@ -48,7 +47,11 @@ export class ToolRuntime {
   ) {
     this.tools = tools;
     this.createExecutionContext = options.createExecutionContext ??
-      ((toolCallId, cancelToken) => new ToolExecutionContext({ toolCallId, cancelToken }));
+      ((_, cancelToken) => ({
+        isCancelled: () => isCancelled(cancelToken),
+        cancellationReason: cancelToken?.reason || "cancelled",
+        publish: () => {},
+      }));
   }
 
   async execute(request: ToolRuntimeRequest): Promise<ToolBatchResult> {

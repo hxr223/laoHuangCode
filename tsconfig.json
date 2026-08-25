@@ -2,6 +2,10 @@
   "files": [],
   "references": [
     { "path": "./packages/core/runtime-protocol" },
+    { "path": "./packages/core/tools" },
+    { "path": "./packages/fs/tool-fs" },
+    { "path": "./packages/shell/bash-local" },
+    { "path": "./packages/shell/tool-bash" },
     { "path": "./tsconfig.legacy.json" }
   ]
 }

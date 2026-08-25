@@ -13,11 +13,11 @@ import {
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import { EventBus, EventKind } from "../packages/core/runtime-protocol/src/index.ts";
 import {
-  ToolRegistry,
   type ToolDefinition,
   type ToolResult,
   type ToolSpec,
-} from "../src/tools.ts";
+} from "../packages/core/tools/src/index.ts";
+import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 // --- Fakes -------------------------------------------------------------------
 
@@ -232,7 +232,7 @@ test("model can switch without losing conversation history", async (t) => {
   const agent = new CodingAgent({
     client: originalClient,
     model: "old-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
   await agent.run("first turn");
@@ -261,7 +261,7 @@ test("user receives a direct model response", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   const result = await agent.run("Say hello");
@@ -282,7 +282,7 @@ test("agent executes a tool and returns the follow-up response", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     onToolEvent: (name, args, result) => {
       events.push([name, args, result]);
     },
@@ -322,7 +322,7 @@ test("agent does not limit tool rounds or model requests", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   const result = await agent.run("Read every missing path");
@@ -359,7 +359,7 @@ test("repeated tool call forces a final answer after three matches", async (t) =
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
 
@@ -408,7 +408,7 @@ test("repeated tool counter resets after a different result", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   assert.equal(await agent.run("Read files"), "Finished normally.");
@@ -429,7 +429,7 @@ test("token budget forces final without committing unmatched calls", async (t) =
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     maxTotalTokens: 100,
   });
 
@@ -446,7 +446,7 @@ test("elapsed budget can force no-tool answer immediately", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     maxElapsedSeconds: 1e-12,
   });
 
@@ -469,7 +469,7 @@ test("failed forced final reports guard counters and reason", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   await assert.rejects(agent.run("Ignore the guard"), (error: unknown) => {
@@ -502,7 +502,7 @@ test("multiple tool calls run in returned order", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   const result = await agent.run("Create and read a result");
@@ -543,7 +543,7 @@ test("tool batch executes concurrently and returns source order", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory, { bashTimeoutSeconds: 2 }),
+    tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 2 }),
   });
 
   await agent.run("Run both checks");
@@ -585,7 +585,7 @@ test("global sequential mode runs tool calls one by one", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory, { bashTimeoutSeconds: 1 }),
+    tools: createTestToolRegistry(directory, { bashTimeoutSeconds: 1 }),
     toolExecution: "sequential",
   });
 
@@ -619,7 +619,7 @@ test("one sequential tool forces the whole batch to run sequentially", async (t)
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory, {
+    tools: createTestToolRegistry(directory, {
       executionModes: { bash: "sequential" },
     }),
   });
@@ -651,7 +651,7 @@ test("completion events are live while messages stay source ordered", async (t) 
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
 
@@ -677,7 +677,7 @@ test("consecutive user turns share conversation history", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   await agent.run("First question");
@@ -698,7 +698,7 @@ test("api failures become actionable agent errors", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   await assert.rejects(agent.run("Hello"), (error: unknown) => {
@@ -718,7 +718,7 @@ test("authentication failures point to provider login", async (t) => {
     client,
     model: "deepseek-v4-flash",
     provider: "deepseek",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   await assert.rejects(agent.run("Hello"), (error: unknown) => {
@@ -747,7 +747,7 @@ test("events group batch tool calls under one model round", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
 
@@ -786,7 +786,7 @@ test("events distinguish consecutive user turns", async (t) => {
       new FakeMessage({ content: "Second" }),
     ),
     model: "test-model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
     onAgentEvent: collectEvents(events),
   });
 
@@ -835,7 +835,7 @@ test("agent preserves reasoning for tool round then strips on switch", async (t)
     client,
     model: "deepseek-reasoner",
     provider: "deepseek",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   assert.equal(await agent.run("read it"), "finished");
@@ -863,7 +863,7 @@ test("failed attempt is not committed to agent history", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   await assert.rejects(agent.run("hello"), (error: unknown) => {
@@ -902,7 +902,7 @@ test("cancel at history commit boundary discards assistant", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   await assert.rejects(agent.run("hello", context), (error: unknown) => {
@@ -939,7 +939,7 @@ test("agent publishes canonical model events", async (t) => {
   const agent = new CodingAgent({
     client,
     model: "model",
-    tools: new ToolRegistry(directory),
+    tools: createTestToolRegistry(directory),
   });
 
   assert.equal(await agent.run("hi", context), "hello");

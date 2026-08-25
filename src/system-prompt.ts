@@ -9,7 +9,7 @@
  * or project-instruction content.
  */
 
-import type { ToolSpec } from "./tools.ts";
+import type { ToolSpec } from "@laohuang/tools";
 
 /** Structural minimum a registry must provide to the prompt builder. */
 export interface ToolSpecSource {
