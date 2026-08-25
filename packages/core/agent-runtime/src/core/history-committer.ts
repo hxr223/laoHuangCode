@@ -1,9 +1,9 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
-import type { AssembledToolCall } from "@laohuang/llm";
-import type { ToolResult } from "@laohuang/tools";
+import type { ModelMessage } from "@laohuang/llm";
+import type { ToolCall, ToolResult } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 
-export type HistoryMessage = Record<string, unknown>;
+export type HistoryMessage = ModelMessage;
 
 export interface HistoryCommitContext {
   commitInput?(append: () => void, rollback: () => void): boolean;
@@ -81,14 +81,21 @@ export class HistoryCommitter {
   }
 
   commitToolResults(
-    toolCalls: readonly AssembledToolCall[],
+    toolCalls: readonly ToolCall[],
     toolResults: readonly ToolResult[],
   ): void {
     for (let index = 0; index < toolCalls.length; index += 1) {
+      const call = toolCalls[index];
+      const result = toolResults[index];
+      if (call === undefined || result === undefined) {
+        continue;
+      }
       this.messages.push({
-        role: "tool",
-        tool_call_id: toolCalls[index]?.id,
-        content: JSON.stringify(toolResults[index]),
+        role: "tool-result",
+        toolCallId: call.id,
+        toolName: call.name,
+        content: JSON.stringify(result),
+        isError: result.ok !== true,
       });
     }
   }

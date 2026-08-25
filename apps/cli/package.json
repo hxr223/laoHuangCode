@@ -1,13 +1,13 @@
 {
   "name": "laohuang",
-  "version": "0.5.1",
-  "description": "A minimal coding agent CLI built on the official openai SDK and Chat Completions native tool calling.",
+  "version": "0.6.0",
+  "description": "A terminal coding agent CLI with a provider-neutral model runtime.",
   "type": "module",
   "bin": {
     "laohuang": "dist/bin.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "scripts": {
     "build": "tsc -b",
@@ -21,12 +21,12 @@
     "LICENSE"
   ],
   "dependencies": {
-    "openai": "^6.49.0"
+    "@earendil-works/pi-ai": "^0.83.0"
   },
   "devDependencies": {
     "@laohuang/agent-runtime": "0.0.0",
     "@laohuang/llm": "0.0.0",
-    "@laohuang/llm-openai-compatible": "0.0.0",
+    "@laohuang/llm-pi-ai": "0.0.0",
     "@laohuang/local-config": "0.0.0",
     "@laohuang/project-instructions": "0.0.0",
     "@laohuang/runtime-protocol": "0.0.0",

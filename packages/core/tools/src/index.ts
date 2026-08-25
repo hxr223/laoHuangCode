@@ -1,16 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
 
-export interface ToolPayloadDefinition {
-  type: "function";
-  function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-}
-
-export type ToolDefinition = ToolPayloadDefinition;
-
 /**
  * Internal immutable specification for one fixed tool. `promptGuidelines`
  * feeds only the stable System Prompt; it is never serialized into the model
@@ -141,11 +130,8 @@ export const NOOP_TOOL_CONTEXT: ToolExecutionContextLike = {
 
 export interface ToolCall {
   readonly id: string;
-  readonly type: string;
-  readonly function: {
-    readonly name: string;
-    readonly arguments: string;
-  };
+  readonly name: string;
+  readonly arguments: string;
 }
 
 export interface ToolAdapterDefinition {
@@ -159,7 +145,7 @@ export interface ToolAdapterDefinition {
 
 /** Structural tool surface consumed by the agent and ToolRuntime. */
 export interface ToolRegistryLike {
-  readonly definitions: readonly ToolDefinition[];
+  readonly definitions: readonly ToolSpec[];
   readonly orderedSpecs: readonly ToolSpec[];
   executionMode(name: string): ToolExecutionMode | undefined;
   execute(
@@ -191,14 +177,12 @@ export class ToolRegistry implements ToolRegistryLike {
     this.modeOverrides = { ...(options.executionModes ?? {}) };
   }
 
-  get definitions(): ToolDefinition[] {
+  get definitions(): ToolSpec[] {
     return this.orderedSpecs.map((spec) => ({
-      type: "function",
-      function: {
-        name: spec.name,
-        description: spec.description,
-        parameters: spec.parameters,
-      },
+      name: spec.name,
+      description: spec.description,
+      parameters: spec.parameters,
+      promptGuidelines: [...spec.promptGuidelines],
     }));
   }
 

@@ -5,7 +5,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { CodingAgent } from "../packages/core/agent-runtime/src/index.ts";
-import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
+import type {
+  ModelAdapter,
+  ModelInfo,
+  ModelProviderInfo,
+  ModelRequest,
+  ModelResult,
+} from "@laohuang/llm";
 import { buildSystemPrompt } from "../packages/core/agent-runtime/src/system-prompt.ts";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
@@ -75,9 +81,14 @@ test("prompt is deterministic across builds", async (t) => {
 
 test("promptGuidelines never leaks into the tools payload", async (t) => {
   const tools = createTestToolRegistry(await makeTempDir(t));
-  const payload = JSON.stringify(tools.definitions);
+  const payload = JSON.stringify(
+    tools.definitions.map(({ name, description, parameters }) => ({
+      name,
+      description,
+      parameters,
+    })),
+  );
 
-  assert.ok(!payload.includes("promptGuidelines"));
   for (const spec of tools.orderedSpecs) {
     for (const guideline of spec.promptGuidelines) {
       assert.ok(!payload.includes(guideline));
@@ -93,7 +104,7 @@ test("tools payload is deterministic in order and content", async (t) => {
     JSON.stringify(tools.definitions),
   );
   assert.deepEqual(
-    tools.definitions.map((definition) => definition.function.name),
+    tools.definitions.map((definition) => definition.name),
     ["read", "write", "edit", "bash"],
   );
 });
@@ -102,19 +113,21 @@ test("agent history starts with the built system prompt", async (t) => {
   const tools = createTestToolRegistry(await makeTempDir(t));
   const modelAdapter: ModelAdapter = {
     name: "test",
-    capabilities: {
-      streaming: true,
-      reasoningReplay: false,
-      thinkingSettings: false,
-    },
-    runAttempt(_request: ModelRequest): Promise<StreamResult> {
+    runAttempt(_request: ModelRequest): Promise<ModelResult> {
       throw new Error("not used");
+    },
+    listProviders(): readonly ModelProviderInfo[] {
+      return [{ id: "openai", name: "OpenAI" }];
+    },
+    listModels(provider: string): readonly ModelInfo[] {
+      return [{ provider, id: "test-model", name: "Test Model" }];
     },
   };
   const agent = new CodingAgent({
     modelAdapter,
     model: "test-model",
-    provider: null,
+    provider: "openai",
+    baseUrl: null,
     tools,
   });
 

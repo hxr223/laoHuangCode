@@ -21,7 +21,8 @@
    再增加人工审批。
 6. 为 `main` 启用分支保护，只允许 pull request 合并，并要求 `CI` 工作流全部通过。
 
-npm Trusted Publishing 需要 Node 22.14+ 和 npm 11.5.1+；工作流固定使用 Node 24。
+npm Trusted Publishing 需要 Node 22.14+ 和 npm 11.5.1+；`laohuang` 运行时要求
+Node.js >=22.19.0，工作流固定使用 Node 24。
 具体设置以 [npm 官方 Trusted Publishing 文档](https://docs.npmjs.com/trusted-publishers/)
 为准。
 

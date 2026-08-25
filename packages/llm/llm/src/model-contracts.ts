@@ -1,4 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
+import type { ToolCall, ToolSpec } from "@laohuang/tools";
 
 /** Raised when a streamed model response is incomplete or invalid. */
 export class ModelStreamError extends Error {
@@ -36,123 +37,138 @@ export class StaleModelRequest extends ModelStreamCancelled {
 
 export type AttemptState = "provisional" | "validated" | "aborted";
 
-export interface AssembledFunction {
-  readonly name: string;
-  readonly arguments: string;
+export interface SystemModelMessage {
+  readonly role: "system";
+  readonly content: string;
 }
 
-export interface AssembledToolCall {
-  readonly id: string;
-  readonly type: string;
-  readonly function: AssembledFunction;
+export interface UserModelMessage {
+  readonly role: "user";
+  readonly content: string;
 }
 
-/** Chat Completions wire shape for one assistant tool call. */
-export function toolCallToDict(
-  toolCall: AssembledToolCall,
-): Record<string, unknown> {
-  return {
-    id: toolCall.id,
-    type: toolCall.type,
-    function: {
-      name: toolCall.function.name,
-      arguments: toolCall.function.arguments,
-    },
-  };
+export interface TextContentBlock {
+  readonly type: "text";
+  readonly text: string;
 }
 
-/** A fully validated assistant turn, ready to commit to history. */
-export class StreamResult {
-  readonly requestId: string;
-  readonly content: string | null;
-  readonly reasoningContent: string | null;
-  readonly toolCalls: readonly AssembledToolCall[];
-  readonly finishReason: string;
-  readonly usage: unknown;
+export interface ReasoningContentBlock {
+  readonly type: "reasoning";
+  readonly text: string;
+}
 
-  constructor(init: {
-    requestId: string;
-    content: string | null;
-    reasoningContent: string | null;
-    toolCalls: readonly AssembledToolCall[];
-    finishReason: string;
-    usage?: unknown;
-  }) {
-    this.requestId = init.requestId;
-    this.content = init.content;
-    this.reasoningContent = init.reasoningContent;
-    this.toolCalls = init.toolCalls;
-    this.finishReason = init.finishReason;
-    this.usage = init.usage ?? null;
-  }
+export interface ToolCallContentBlock {
+  readonly type: "tool-call";
+  readonly call: ToolCall;
+}
 
-  /** Assistant message in Chat Completions wire shape (nulls stripped). */
-  messageDict(): Record<string, unknown> {
-    const message: Record<string, unknown> = {
-      role: "assistant",
-      content: this.content,
-    };
-    if (this.reasoningContent) {
-      message["reasoning_content"] = this.reasoningContent;
+export type AssistantContentBlock =
+  | TextContentBlock
+  | ReasoningContentBlock
+  | ToolCallContentBlock;
+
+export interface ModelReplayEnvelope {
+  readonly adapter: string;
+  readonly version: number;
+  readonly state: unknown;
+}
+
+export interface AssistantModelMessage {
+  readonly role: "assistant";
+  readonly provider: string;
+  readonly model: string;
+  readonly content: readonly AssistantContentBlock[];
+  readonly replay?: ModelReplayEnvelope;
+}
+
+export interface ToolResultModelMessage {
+  readonly role: "tool-result";
+  readonly toolCallId: string;
+  readonly toolName: string;
+  readonly content: string;
+  readonly isError: boolean;
+}
+
+export type ModelMessage =
+  | SystemModelMessage
+  | UserModelMessage
+  | AssistantModelMessage
+  | ToolResultModelMessage;
+
+export type ModelFinishReason = "stop" | "tool-calls" | "max-tokens";
+
+export interface ModelUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly cacheReadTokens?: number;
+  readonly cacheWriteTokens?: number;
+  readonly reasoningTokens?: number;
+}
+
+export type ModelEvent =
+  | { readonly type: "text-delta"; readonly text: string }
+  | { readonly type: "reasoning-delta"; readonly text: string }
+  | {
+      readonly type: "tool-call-delta";
+      readonly index: number;
+      readonly id: string;
+      readonly name?: string;
+      readonly argumentsDelta: string;
     }
-    if (this.toolCalls.length > 0) {
-      message["tool_calls"] = this.toolCalls.map(toolCallToDict);
-    }
-    for (const key of Object.keys(message)) {
-      if (message[key] === null || message[key] === undefined) {
-        delete message[key];
-      }
-    }
-    return message;
-  }
-}
+  | { readonly type: "response-validating" };
 
-export type ModelAttempt = StreamResult;
-
-export interface DeltaEvent {
-  kind: string;
-  payload: Record<string, unknown>;
-}
-
-export type DeltaCallback = (
-  kind: string,
-  payload: Record<string, unknown>,
-) => void;
-
-/**
- * Optional thinking/reasoning request settings. The agent never sends these
- * today; they are where provider-specific thinking configuration enters.
- */
-export interface ThinkingSettings {
-  enabled: boolean;
-}
-
-/** Provider-neutral completion request consumed by a ModelAdapter. */
 export interface ModelRequest {
-  model: string;
-  /** Normalized history in Chat Completions wire shape. */
-  messages: Array<Record<string, unknown>>;
-  tools: Array<Record<string, unknown>>;
-  toolChoice?: string | Record<string, unknown> | null;
-  requestId?: string | undefined;
-  cancelToken?: CancelToken | null;
-  isRequestActive?: ((requestId: string) => boolean) | null;
-  onDelta?: DeltaCallback | null;
-  onRequestOpened?: (() => boolean | void) | null;
-  thinking?: ThinkingSettings | null;
+  readonly provider: string;
+  readonly model: string;
+  readonly baseUrl?: string;
+  readonly messages: readonly ModelMessage[];
+  readonly tools: readonly ToolSpec[];
+  readonly toolChoice: "auto" | "none";
+  readonly temperature?: number;
+  readonly requestId?: string;
+  readonly cancelToken?: CancelToken;
+  readonly isRequestActive?: (requestId: string) => boolean;
+  readonly onEvent?: (event: ModelEvent) => void;
+  readonly onRequestOpened?: () => boolean | void;
+}
+
+export interface ModelResult {
+  readonly requestId: string;
+  readonly message: AssistantModelMessage;
+  readonly finishReason: ModelFinishReason;
+  readonly usage: ModelUsage;
+}
+
+export interface ModelProviderInfo {
+  readonly id: string;
+  readonly name: string;
+}
+
+export interface ModelInfo {
+  readonly provider: string;
+  readonly id: string;
+  readonly name: string;
+}
+
+/** Translates LaoHuang model requests to one provider implementation. */
+export interface ModelAdapter {
+  readonly name: string;
+  runAttempt(request: ModelRequest): Promise<ModelResult>;
+  listProviders(): readonly ModelProviderInfo[];
+  listModels(provider: string): readonly ModelInfo[];
 }
 
 /**
- * Normalized failure taxonomy. Intentionally coarse: the agent only branches
- * on `authentication` today; the other kinds exist so retry/compact/notify
- * decisions can key off a stable classification instead of SDK internals.
+ * Normalized failure taxonomy. Intentionally coarse: owners above the Adapter
+ * make stable decisions from these kinds instead of SDK internals.
  */
 export type ModelErrorKind =
   | "authentication"
   | "rate_limited"
   | "context_overflow"
   | "server"
-  | "retryable";
+  | "retryable"
+  | "protocol";
 
 /** A model failure normalized into the ModelErrorKind taxonomy. */
 export class ModelError extends ModelStreamError {
@@ -166,26 +182,6 @@ export class ModelError extends ModelStreamError {
     this.name = "ModelError";
     this.kind = options.kind;
   }
-}
-
-/** Request/history/streaming behavior flags, kept minimal and honest. */
-export interface ModelCapabilities {
-  /** Streams deltas over the Chat Completions streaming protocol. */
-  readonly streaming: boolean;
-  /**
-   * Replays `reasoning_content` from prior assistant messages back to the
-   * provider as opaque state for same-provider tool-call continuation.
-   */
-  readonly reasoningReplay: boolean;
-  /** Accepts ThinkingSettings on the neutral request. */
-  readonly thinkingSettings: boolean;
-}
-
-/** Translates neutral requests to one provider's SDK shape and back. */
-export interface ModelAdapter {
-  readonly name: string;
-  readonly capabilities: ModelCapabilities;
-  runAttempt(request: ModelRequest): Promise<ModelAttempt>;
 }
 
 const CONTEXT_OVERFLOW_PATTERN =
@@ -255,29 +251,15 @@ export function modelErrorKind(error: unknown): ModelErrorKind {
   return error instanceof ModelError ? error.kind : classifyModelError(error);
 }
 
-/** Strip provider-private fields so a message is portable across providers. */
-export function portableMessage(
-  message: Record<string, unknown>,
-): Record<string, unknown> {
-  const role = message["role"];
-  const portable: Record<string, unknown> = { role };
-  if ("content" in message) {
-    portable["content"] = message["content"];
+/** Strip adapter-private replay state so history is safe across model routes. */
+export function portableModelMessage(message: ModelMessage): ModelMessage {
+  if (message.role !== "assistant") {
+    return message;
   }
-  const toolCalls = message["tool_calls"];
-  if (role === "assistant" && Array.isArray(toolCalls) && toolCalls.length > 0) {
-    portable["tool_calls"] = toolCalls.map((call) => {
-      const record = call as Record<string, unknown>;
-      const fn = (record["function"] ?? {}) as Record<string, unknown>;
-      return {
-        id: record["id"],
-        type: record["type"] ?? "function",
-        function: { name: fn["name"], arguments: fn["arguments"] },
-      };
-    });
-  }
-  if (role === "tool") {
-    portable["tool_call_id"] = message["tool_call_id"];
-  }
-  return portable;
+  return {
+    role: "assistant",
+    provider: message.provider,
+    model: message.model,
+    content: message.content,
+  };
 }

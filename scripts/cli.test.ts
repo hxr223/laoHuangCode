@@ -22,10 +22,10 @@ import {
 } from "../apps/cli/src/repl.ts";
 import { ConfigManager, CredentialStore } from "@laohuang/local-config";
 import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
-import { ModelSelector } from "../apps/cli/src/model-selection.ts";
-import { createClient } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
+import {
+  ModelSelector,
+  type ProviderCatalog,
+} from "../apps/cli/src/model-selection.ts";
 import { AgentSession } from "@laohuang/session-runtime";
 import {
   MemoryTerminalDriver,
@@ -38,6 +38,26 @@ const textEncoder = new TextEncoder();
 
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI_PATH = fileURLToPath(new URL("../apps/cli/dist/bin.js", import.meta.url));
+
+const catalog: ProviderCatalog = {
+  names: () => ["deepseek", "openai"],
+  get(name) {
+    if (name === "deepseek") {
+      return {
+        id: "deepseek",
+        name: "DeepSeek",
+        baseUrl: "https://api.deepseek.com",
+      };
+    }
+    if (name === "openai") {
+      return { id: "openai", name: "OpenAI", baseUrl: null };
+    }
+    throw new Error(`Unknown provider: ${name}`);
+  },
+  listModelIds(provider) {
+    return provider === "deepseek" ? ["deepseek-v4-flash"] : ["gpt-5"];
+  },
+};
 
 async function withTempDir(run: (directory: string) => Promise<void>): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-cli-test-"));
@@ -473,18 +493,6 @@ test("tty wiring asks model selection through the running terminal ui", async ()
   ui.startLoop(() => {});
   const prompts = terminalUiPrompts(ui);
   const store = new Map<string, string>();
-  const createModelAdapter = (provider: string, client: unknown): ModelAdapter => ({
-    name: provider,
-    capabilities: {
-      streaming: true,
-      reasoningReplay: provider === "deepseek",
-      thinkingSettings: provider === "deepseek",
-    },
-    runAttempt(_request: ModelRequest): Promise<StreamResult> {
-      void client;
-      throw new Error("not used");
-    },
-  });
   const selector = new ModelSelector({
     credentials: {
       get: (provider) => store.get(provider) ?? null,
@@ -492,13 +500,10 @@ test("tty wiring asks model selection through the running terminal ui", async ()
         store.set(provider, apiKey);
       },
     },
-    registry: { get: getProvider, names: providerNames },
-    createClient,
-    createModelAdapter,
+    catalog,
     input: prompts.input,
     secretInput: prompts.secretInput,
     output: () => {},
-    clientFactory: () => ({}),
   });
 
   const pending = selector.select({ providerName: "deepseek" });
@@ -533,7 +538,7 @@ test("tty wiring asks model selection through the running terminal ui", async ()
     assert.equal(selection.config.apiKey, "tty-key");
     assert.equal(
       selection.config.model,
-      getProvider("deepseek").suggestedModels[0],
+      catalog.listModelIds("deepseek")[0],
     );
     assert.equal(store.get("deepseek"), "tty-key");
     // The key was typed into the masked UI prompt, never echoed back.

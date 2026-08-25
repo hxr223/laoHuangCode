@@ -11,8 +11,7 @@ import type {
   OutputFn,
   SelectionConfig,
 } from "./model-selection.ts";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter } from "@laohuang/llm";
+import { getProvider, providerNames } from "./model-catalog.ts";
 
 export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 
@@ -376,9 +375,9 @@ function* providerCompletions(
 /** Minimal view of CodingAgent (agent.ts) that session commands rely on. */
 export interface AgentLike {
   switchModel(options: {
-    modelAdapter: ModelAdapter;
     model: string;
     provider: string;
+    baseUrl: string | null;
   }): void;
   clearHistory?(): void;
   /** Conversation history, trimmed in place when no clearHistory exists. */
@@ -688,9 +687,9 @@ export class SessionCommands {
     const previousProvider = this.#currentConfig.provider;
     const previousModel = this.#currentConfig.model;
     this.#agent.switchModel({
-      modelAdapter: selection.modelAdapter,
       model: selection.config.model,
       provider: selection.config.provider,
+      baseUrl: selection.config.baseUrl,
     });
     this.#onModelSelected?.(selection);
     this.#currentConfig = selection.config;
@@ -747,9 +746,9 @@ export class SessionCommands {
         const previousProvider = this.#currentConfig.provider;
         const previousModel = this.#currentConfig.model;
         this.#agent.switchModel({
-          modelAdapter: selection.modelAdapter,
           model: selection.config.model,
           provider: selection.config.provider,
+          baseUrl: selection.config.baseUrl,
         });
         this.#onModelSelected?.(selection);
         this.#currentConfig = selection.config;

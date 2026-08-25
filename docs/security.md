@@ -24,7 +24,10 @@ laoHuangCode 不是完整沙箱。当前版本不提供工具执行确认，模�
 - 工具日志隐藏 `content`、`old_text`、`new_text` 的正文以及 `edits` 替换列表。
 - API key 在终端隐藏输入（不回显），不接受命令行参数，也不进入 Shell 历史。
 - API key 保存在独立的 `credentials.json`，文件权限为 `0600`；程序创建的默认父目录为 `0700`。
-- API key 只传给 SDK 客户端，不写入环境变量或 Agent 消息。
+- API key 只通过注入 resolver 传给 `@laohuang/llm-pi-ai`，不写入环境变量或 Agent 消息。
+- `llm-pi-ai` receives API keys through an injected resolver and does not read or write credential files.
+- Model errors and DSML protocol-leak diagnostics never include API keys, authorization headers, complete prompts, complete model output, or raw tool results.
+- Textual DSML is treated as untrusted assistant text and is never dispatched to Tool Runtime.
 
 ## 明确不保证的边界
 
