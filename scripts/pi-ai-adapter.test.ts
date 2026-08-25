@@ -59,6 +59,18 @@ test("PiAiAdapter passes baseUrl, api key, temperature, and cancel signal", asyn
   assert.equal(fake.streams[0]?.options.maxRetries, 0);
 });
 
+test("PiAiAdapter enables thinking for reasoning-capable models", async () => {
+  const fake = new FakeModels();
+  const adapter = new PiAiAdapter(
+    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
+    fake,
+  );
+
+  await adapter.runAttempt(request());
+
+  assert.equal(fake.streams[0]?.options.reasoning, "high");
+});
+
 test("PiAiAdapter honors cancellation preflight and request-open abort", async () => {
   const token = new CancelToken();
   token.cancel("stop");
