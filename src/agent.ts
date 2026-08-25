@@ -103,9 +103,7 @@ export type AgentToolRegistry = ToolRegistryLike;
  * Every member is optional; without a context the agent runs standalone and
  * manages its own history commits and cancellation checks.
  */
-export interface AgentContext
-  extends AgentRuntimeContext,
-    AgentStepRunnerContext {}
+export type AgentContext = AgentRuntimeContext & AgentStepRunnerContext;
 
 export interface RunOptions {
   cancelToken?: CancelToken | null;
@@ -179,7 +177,7 @@ export class CodingAgent {
   private baselineInstructionsLoaded = false;
   private instructionState: ProjectInstructionState | null = null;
   private turn = 0;
-  private activeContext: AgentContext | null = null;
+  private activeContext: AgentRuntimeContext | null = null;
   private activeRequestId: string | null = null;
 
   constructor(options: CodingAgentOptions) {
@@ -246,7 +244,7 @@ export class CodingAgent {
   /** Run one user turn, committing only fully validated model attempts. */
   async run(
     userInput: string,
-    context: AgentContext | null = null,
+    context: AgentRuntimeContext | null = null,
     options: RunOptions = {},
   ): Promise<string> {
     let cancelToken = options.cancelToken ?? null;
@@ -445,7 +443,7 @@ export class CodingAgent {
 // --- Module-level helpers ------------------------------------------------------
 
 function makeToolContext(
-  context: AgentContext | null,
+  context: AgentRuntimeContext | null,
   toolCallId: string,
   cancelToken: CancelToken | null,
 ): AgentToolContext {
