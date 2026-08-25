@@ -12,6 +12,7 @@
   "scripts": {
     "build": "tsc -b && npm run bundle --workspace laohuang",
     "test": "node --test \"scripts/**/*.test.ts\"",
+    "test:e2e:pi-ai": "LAOHUANG_RUN_PROVIDER_E2E=1 node --test scripts/pi-ai-deepseek.e2e.test.ts",
     "check:version": "node scripts/check-package-version.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",
     "smoke:tui": "bash scripts/tui-smoke.sh",
