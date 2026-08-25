@@ -13,7 +13,6 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import type { CredentialStore } from "./credentials.ts";
-import { getProvider } from "@laohuang/llm-openai-compatible";
 
 /** Runtime configuration resolved from a stored profile. */
 export interface Config {
@@ -34,10 +33,10 @@ export interface ProfileSummary {
 }
 
 export interface ConfigureOptions {
-  name: string;
-  provider: string;
-  model?: string | null;
-  baseUrl?: string | null;
+  readonly name: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly baseUrl: string | null;
 }
 
 export interface ResolveSettingsOptions {
@@ -102,9 +101,10 @@ export class ConfigManager {
   }
 
   configure(options: ConfigureOptions): void {
-    const preset = getProvider(options.provider);
-    const resolvedModel = options.model || preset.defaultModel;
-    if (!resolvedModel) {
+    if (!options.provider) {
+      throw new Error("A provider is required");
+    }
+    if (!options.model) {
       throw new Error(`A model is required for provider: ${options.provider}`);
     }
     const document = this.readDocument({ optional: true });
@@ -114,8 +114,8 @@ export class ConfigManager {
     const profiles = (document["profiles"] ??= {}) as Record<string, unknown>;
     profiles[options.name] = {
       provider: options.provider,
-      model: resolvedModel,
-      base_url: options.baseUrl ?? preset.baseUrl,
+      model: options.model,
+      base_url: options.baseUrl,
     } satisfies StoredProfile;
     document["active_profile"] = options.name;
     this.writeDocument(document);
@@ -146,7 +146,6 @@ export class ConfigManager {
     }
     const stored = profiles[profileName]!;
     const providerName = stored.provider;
-    getProvider(providerName);
     const resolvedModel =
       options.model || environment["LAOHUANG_MODEL"] || stored.model;
     const resolvedBaseUrl =
@@ -256,7 +255,6 @@ function validateDocument(document: Record<string, unknown>): void {
     if (typeof provider !== "string" || !provider) {
       throw new Error(`Configuration profile '${name}' needs a provider`);
     }
-    getProvider(provider);
     if (typeof model !== "string" || !model) {
       throw new Error(`Configuration profile '${name}' needs a model`);
     }

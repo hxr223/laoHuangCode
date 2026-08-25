@@ -44,7 +44,7 @@ import {
   renderAdditionalInstructions,
   scopeChain,
   ProjectInstructionState,
-} from "./project-instructions.ts";
+} from "@laohuang/project-instructions";
 import {
   AgentStepRunner,
   FORCED_FINAL_PROMPT,

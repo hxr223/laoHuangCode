@@ -16,7 +16,7 @@ import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   findProjectRoot,
   loadBaselineInstructions,
-} from "../src/project-instructions.ts";
+} from "../packages/context/project-instructions/src/index.ts";
 import { OpenAICompatibleAdapter } from "@laohuang/llm-openai-compatible";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 

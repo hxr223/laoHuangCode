@@ -11,16 +11,6 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import { providerNames } from "@laohuang/llm-openai-compatible";
-
-const KNOWN_PROVIDERS: ReadonlySet<string> = new Set(providerNames());
-
-function requireKnownProvider(name: string): void {
-  if (!KNOWN_PROVIDERS.has(name)) {
-    throw new Error(`Unknown provider: ${name}`);
-  }
-}
-
 interface StoredCredential {
   api_key: string;
 }
@@ -52,7 +42,9 @@ export class CredentialStore {
   }
 
   set(provider: string, apiKey: string): void {
-    requireKnownProvider(provider);
+    if (!provider) {
+      throw new Error("Provider cannot be empty");
+    }
     const key = apiKey.trim();
     if (!key) {
       throw new Error("API key cannot be empty");

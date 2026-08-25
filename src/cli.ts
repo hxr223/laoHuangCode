@@ -20,12 +20,12 @@ import {
   ConfigManager,
   defaultConfigPath,
   type Config,
-} from "./config.ts";
-import { CredentialStore } from "./credentials.ts";
+  CredentialStore,
+} from "@laohuang/local-config";
 import { EventProjector } from "@laohuang/runtime-protocol";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
 import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import { findProjectRoot } from "./project-instructions.ts";
+import { findProjectRoot } from "@laohuang/project-instructions";
 import { routeHumanIntent } from "./core/human-intent-router.ts";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import {
@@ -1250,6 +1250,13 @@ export async function main(
       writeStderr(`Configuration error: ${message}`);
       return 2;
     }
+  }
+
+  try {
+    getProvider(config.provider);
+  } catch (error) {
+    writeStderr(`Configuration error: ${errorMessage(error)}`);
+    return 2;
   }
 
   const client =

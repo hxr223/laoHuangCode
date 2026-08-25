@@ -13,7 +13,7 @@ import {
   type SessionLike,
 } from "../src/commands.ts";
 import { createClient } from "@laohuang/llm-openai-compatible";
-import { CredentialStore } from "../src/credentials.ts";
+import { CredentialStore } from "@laohuang/local-config";
 import {
   ModelSelector,
   type ProviderRegistry,

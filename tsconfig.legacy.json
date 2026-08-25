@@ -11,7 +11,9 @@
     { "path": "./packages/fs/tool-fs" },
     { "path": "./packages/shell/bash-local" },
     { "path": "./packages/shell/tool-bash" },
+    { "path": "./packages/context/project-instructions" },
     { "path": "./packages/llm/llm" },
-    { "path": "./packages/llm/llm-openai-compatible" }
+    { "path": "./packages/llm/llm-openai-compatible" },
+    { "path": "./packages/storage/local-config" }
   ]
 }
