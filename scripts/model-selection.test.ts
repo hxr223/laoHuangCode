@@ -3,32 +3,38 @@ import assert from "node:assert/strict";
 
 // NOTE: Node 22 type stripping cannot resolve ".js" specifiers to ".ts"
 // sources, so test files import the ".ts" path directly (tsc only covers src/).
-import { createClient } from "@laohuang/llm-openai-compatible";
 import {
   ModelSelector,
   type CredentialStoreLike,
-  type ProviderRegistry,
+  type ProviderCatalog,
 } from "../apps/cli/src/model-selection.ts";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 
 /** Registry wired exactly as production code would wire providers.ts. */
-const registry: ProviderRegistry = { get: getProvider, names: providerNames };
-
-function makeModelAdapter(provider: string, client: unknown): ModelAdapter {
-  return {
-    name: provider,
-    capabilities: {
-      streaming: true,
-      reasoningReplay: provider === "deepseek",
-      thinkingSettings: provider === "deepseek",
-    },
-    runAttempt(_request: ModelRequest): Promise<StreamResult> {
-      void client;
-      throw new Error("not used");
-    },
-  };
-}
+const catalog: ProviderCatalog = {
+  names: () => ["deepseek", "openai"],
+  get(name) {
+    if (name === "deepseek") {
+      return {
+        id: "deepseek",
+        name: "DeepSeek",
+        baseUrl: "https://api.deepseek.com",
+      };
+    }
+    if (name === "openai") {
+      return { id: "openai", name: "OpenAI", baseUrl: null };
+    }
+    throw new Error(`Unknown provider: ${name}`);
+  },
+  listModelIds(provider) {
+    if (provider === "deepseek") {
+      return ["deepseek-v4-flash", "deepseek-v4-pro"];
+    }
+    if (provider === "openai") {
+      return ["gpt-a", "gpt-z"];
+    }
+    return [];
+  },
+};
 
 /** In-memory stand-in for the CredentialStore owned by credentials.ts. */
 class MemoryCredentialStore implements CredentialStoreLike {
@@ -55,9 +61,7 @@ test("deepseek key and model are selected in the terminal", async () => {
   const outputs: string[] = [];
   const selector = new ModelSelector({
     credentials,
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: async (prompt) => {
       prompts.push(prompt);
       return "2";
@@ -69,7 +73,6 @@ test("deepseek key and model are selected in the terminal", async () => {
     output: (message) => {
       outputs.push(message);
     },
-    clientFactory: () => ({}),
   });
 
   const selection = await selector.select({ providerName: "deepseek" });
@@ -82,25 +85,17 @@ test("deepseek key and model are selected in the terminal", async () => {
   assert.ok(!outputs.join("\n").includes("deepseek-secret"));
 });
 
-test("openai models are loaded before the user selects one", async () => {
+test("openai models are loaded from the model catalog before selection", async () => {
   const credentials = new MemoryCredentialStore();
-  const fakeClient = {
-    models: {
-      list: () => [{ id: "gpt-z" }, { id: "gpt-a" }],
-    },
-  };
   const outputs: string[] = [];
   const selector = new ModelSelector({
     credentials,
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: async () => "2",
     secretInput: async () => "openai-secret",
     output: (message) => {
       outputs.push(message);
     },
-    clientFactory: () => fakeClient,
   });
 
   const selection = await selector.select({ providerName: "openai" });
@@ -118,9 +113,7 @@ test("user can choose a provider before choosing the model", async () => {
   const outputs: string[] = [];
   const selector = new ModelSelector({
     credentials,
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: async () => {
       const answer = answers.shift();
       assert.ok(answer !== undefined, "unexpected extra prompt");
@@ -130,7 +123,6 @@ test("user can choose a provider before choosing the model", async () => {
     output: (message) => {
       outputs.push(message);
     },
-    clientFactory: () => ({}),
   });
 
   const selection = await selector.select();
@@ -145,9 +137,7 @@ test("session model selection requires a prior login", async () => {
   const outputs: string[] = [];
   const selector = new ModelSelector({
     credentials: new MemoryCredentialStore(),
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: fail("no model input expected"),
     secretInput: fail("no key input expected"),
     output: (message) => {
@@ -180,13 +170,10 @@ test("prompt functions are awaited like the terminal UI's async prompts", async 
   };
   const selector = new ModelSelector({
     credentials,
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: () => deferredInput("1"),
     secretInput: () => deferredInput("ui-secret"),
     output: () => {},
-    clientFactory: () => ({}),
   });
 
   const pending = selector.select({ providerName: "deepseek" });

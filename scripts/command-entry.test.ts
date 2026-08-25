@@ -10,29 +10,29 @@ import {
 import { CredentialStore } from "@laohuang/local-config";
 import {
   ModelSelector,
-  type ProviderRegistry,
+  type ProviderCatalog,
 } from "../apps/cli/src/model-selection.ts";
-import { createClient } from "@laohuang/llm-openai-compatible";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 import { TerminalUI } from "../packages/terminal/tui/src/index.ts";
 
-const providers: ProviderRegistry = { get: getProvider, names: providerNames };
-
-function makeModelAdapter(provider: string, client: unknown): ModelAdapter {
-  return {
-    name: provider,
-    capabilities: {
-      streaming: true,
-      reasoningReplay: provider === "deepseek",
-      thinkingSettings: provider === "deepseek",
-    },
-    runAttempt(_request: ModelRequest): Promise<StreamResult> {
-      void client;
-      throw new Error("not used");
-    },
-  };
-}
+const catalog: ProviderCatalog = {
+  names: () => ["deepseek", "openai"],
+  get(name) {
+    if (name === "deepseek") {
+      return {
+        id: "deepseek",
+        name: "DeepSeek",
+        baseUrl: "https://api.deepseek.com",
+      };
+    }
+    if (name === "openai") {
+      return { id: "openai", name: "OpenAI", baseUrl: null };
+    }
+    throw new Error(`Unknown provider: ${name}`);
+  },
+  listModelIds(provider) {
+    return provider === "deepseek" ? ["deepseek-v4-flash"] : ["gpt-5"];
+  },
+};
 
 class FakeAgent implements AgentLike {
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
@@ -54,9 +54,7 @@ function makeCommands(options: { session?: SessionLike | null } = {}): {
     agent: new FakeAgent(),
     selector: new ModelSelector({
       credentials,
-      registry: providers,
-      createClient,
-      createModelAdapter: makeModelAdapter,
+      catalog,
       input: async () => "",
       secretInput: async () => "",
       output: () => {},

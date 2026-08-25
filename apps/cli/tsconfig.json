@@ -16,7 +16,7 @@
     { "path": "../../packages/shell/tool-bash" },
     { "path": "../../packages/context/project-instructions" },
     { "path": "../../packages/llm/llm" },
-    { "path": "../../packages/llm/llm-openai-compatible" },
+    { "path": "../../packages/llm/llm-pi-ai" },
     { "path": "../../packages/storage/local-config" }
   ]
 }

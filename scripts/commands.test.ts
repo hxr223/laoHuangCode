@@ -12,36 +12,38 @@ import {
   type AgentLike,
   type SessionLike,
 } from "../apps/cli/src/commands.ts";
-import { createClient } from "@laohuang/llm-openai-compatible";
 import { CredentialStore } from "@laohuang/local-config";
 import {
   ModelSelector,
-  type ProviderRegistry,
+  type ProviderCatalog,
 } from "../apps/cli/src/model-selection.ts";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
 
 /** Registry wired exactly as production code would wire providers.ts. */
-const registry: ProviderRegistry = { get: getProvider, names: providerNames };
-
-interface TestModelAdapter extends ModelAdapter {
-  readonly client: unknown;
-}
-
-function makeModelAdapter(provider: string, client: unknown): TestModelAdapter {
-  return {
-    name: provider,
-    capabilities: {
-      streaming: true,
-      reasoningReplay: provider === "deepseek",
-      thinkingSettings: provider === "deepseek",
-    },
-    client,
-    runAttempt(_request: ModelRequest): Promise<StreamResult> {
-      throw new Error("not used");
-    },
-  };
-}
+const catalog: ProviderCatalog = {
+  names: () => ["deepseek", "openai"],
+  get(name) {
+    if (name === "deepseek") {
+      return {
+        id: "deepseek",
+        name: "DeepSeek",
+        baseUrl: "https://api.deepseek.com",
+      };
+    }
+    if (name === "openai") {
+      return { id: "openai", name: "OpenAI", baseUrl: null };
+    }
+    throw new Error(`Unknown provider: ${name}`);
+  },
+  listModelIds(provider) {
+    if (provider === "deepseek") {
+      return ["deepseek-v4-flash", "deepseek-v4-pro"];
+    }
+    if (provider === "openai") {
+      return ["gpt-5"];
+    }
+    return [];
+  },
+};
 
 function fail(reason: string): (prompt: string) => Promise<string> {
   return async () => {
@@ -51,29 +53,25 @@ function fail(reason: string): (prompt: string) => Promise<string> {
 
 /** Minimal in-memory CodingAgent stand-in (agent.ts is owned elsewhere). */
 class FakeAgent implements AgentLike {
-  modelAdapter: ModelAdapter;
   model: string;
   provider: string;
+  baseUrl: string | null;
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
 
-  constructor(options: {
-    modelAdapter?: ModelAdapter;
-    model: string;
-    provider?: string;
-  }) {
-    this.modelAdapter = options.modelAdapter ?? makeModelAdapter("deepseek", {});
+  constructor(options: { model: string; provider?: string; baseUrl?: string | null }) {
     this.model = options.model;
     this.provider = options.provider ?? "deepseek";
+    this.baseUrl = options.baseUrl ?? "https://api.deepseek.com";
   }
 
   switchModel(options: {
-    modelAdapter: ModelAdapter;
     model: string;
     provider: string;
+    baseUrl: string | null;
   }): void {
-    this.modelAdapter = options.modelAdapter;
     this.model = options.model;
     this.provider = options.provider;
+    this.baseUrl = options.baseUrl;
   }
 
   clearHistory(): void {
@@ -93,7 +91,6 @@ function makeCommands(
   options: {
     session?: SessionLike | null;
     secretInput?: (prompt: string) => Promise<string>;
-    clientFactory?: () => unknown;
     agent?: FakeAgent;
   } = {},
 ): CommandFixture {
@@ -104,15 +101,12 @@ function makeCommands(
     new FakeAgent({ model: "deepseek-v4-flash", provider: "deepseek" });
   const selector = new ModelSelector({
     credentials,
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: fail("no selection expected"),
     secretInput: fail("no secret expected"),
     output: (message) => {
       outputs.push(message);
     },
-    clientFactory: options.clientFactory,
   });
   const commands = new SessionCommands({
     agent,
@@ -256,17 +250,13 @@ test("/model switches provider and model without chatting", async () => {
   const root = mkdtempSync(join(tmpdir(), "laohuang-commands-"));
   const credentials = new CredentialStore(join(root, "credentials.json"));
   credentials.set("deepseek", "saved-key");
-  const replacementClient = {};
   const agent = new FakeAgent({ model: "old-model" });
   const selector = new ModelSelector({
     credentials,
-    registry,
-    createClient,
-    createModelAdapter: makeModelAdapter,
+    catalog,
     input: fail("no choice should be needed"),
     secretInput: fail("key is already saved"),
     output: () => {},
-    clientFactory: () => replacementClient,
   });
   const commands = new SessionCommands({
     agent,
@@ -291,30 +281,23 @@ test("/model switches provider and model without chatting", async () => {
 
   assert.equal(handled.status, "handled");
   assert.equal(agent.model, "deepseek-v4-pro");
-  assert.equal(
-    (agent.modelAdapter as TestModelAdapter).client,
-    replacementClient,
-  );
+  assert.equal(agent.provider, "deepseek");
+  assert.equal(agent.baseUrl, "https://api.deepseek.com");
   assert.ok(outputs.some((line) => line.includes("deepseek-v4-pro")));
   rmSync(root, { recursive: true, force: true });
 });
 
 test("/login and /logout manage saved credentials", async () => {
   const outputs: string[] = [];
-  const replacementClient = {};
   const fixture = makeCommands(outputs, {
     secretInput: async () => "new-key",
-    clientFactory: () => replacementClient,
   });
 
   await fixture.commands.execute("/login deepseek");
   await fixture.commands.execute("/apikey");
   await fixture.commands.execute("/logout deepseek");
 
-  assert.equal(
-    (fixture.agent.modelAdapter as TestModelAdapter).client,
-    replacementClient,
-  );
+  assert.equal(fixture.agent.provider, "deepseek");
   assert.equal(fixture.credentials.get("deepseek"), null);
   assert.ok(outputs.some((line) => line === "deepseek: configured"));
   assert.ok(!outputs.some((line) => line.includes("new-key")));
@@ -325,7 +308,6 @@ test("/apikey commands remain compatible aliases", async () => {
   const outputs: string[] = [];
   const fixture = makeCommands(outputs, {
     secretInput: async () => "alias-key",
-    clientFactory: () => ({}),
   });
 
   await fixture.commands.execute("/apikey set deepseek");
@@ -362,7 +344,6 @@ test("/login awaits the injected async secret prompt", async () => {
       });
       return "async-key";
     },
-    clientFactory: () => ({}),
   });
 
   await fixture.commands.execute("/login deepseek");
