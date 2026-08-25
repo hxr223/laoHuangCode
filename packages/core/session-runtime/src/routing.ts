@@ -4,6 +4,12 @@ import {
   EventKind,
   EventSource,
   type AnyEventEnvelope,
+  type RouteDecision,
+  type RouteDestination,
+  type RoutedEvent,
+  type RouteStrategy,
+  type RouteTiming,
+  type SemanticClassifier,
 } from "@laohuang/runtime-protocol";
 import {
   TaskState,
@@ -12,44 +18,18 @@ import {
   type TaskRegistry,
 } from "./core/task-lifecycle.ts";
 
-// ---------------------------------------------------------------------------
-// Route decisions
-//
-// RouteStrategy/RouteDestination/RouteTiming/RouteDecision are the canonical
-// definitions; semantic-classifier.ts imports and re-exports them.
-// ---------------------------------------------------------------------------
-
-export type RouteStrategy =
-  | "execute"
-  | "steer"
-  | "follow_up"
-  | "cancel"
-  | "reject";
-
-export type RouteDestination =
-  | "new_task"
-  | "current_task"
-  | "pending"
-  | "held"
-  | "control"
-  | "drop";
-
-export type RouteTiming = "immediate" | "safe_point" | "after_cancel";
-
-export interface RouteDecision {
-  readonly taskId: string | null;
-  readonly destination: RouteDestination;
-  readonly timing: RouteTiming;
-  readonly strategy: RouteStrategy;
-  readonly confidence: number;
-  readonly reason: string;
-  readonly layer: number;
-}
-
-export interface RoutedEvent {
-  readonly event: AnyEventEnvelope;
-  readonly decision: RouteDecision;
-}
+export type {
+  RouteDecision,
+  RouteDestination,
+  RoutedEvent,
+  RouteStrategy,
+  RouteTiming,
+  SemanticClassifier,
+  SemanticClassifierFn,
+  SemanticClassifierObject,
+  SemanticClassifierTask,
+  SemanticClassifierVerdict,
+} from "@laohuang/runtime-protocol";
 
 // ---------------------------------------------------------------------------
 // Token estimates
@@ -120,29 +100,6 @@ export class DeadLetterQueue {
 // ---------------------------------------------------------------------------
 // Four-layer router
 // ---------------------------------------------------------------------------
-
-/** Verdict shapes accepted from a semantic classifier function. */
-export type SemanticClassifierVerdict =
-  | RouteDecision
-  | RouteStrategy
-  | (string & {})
-  | null
-  | undefined;
-
-export type SemanticClassifierFn = (
-  event: AnyEventEnvelope,
-  active: TaskRecord | null,
-) => SemanticClassifierVerdict | Promise<SemanticClassifierVerdict>;
-
-/** Object-shaped classifier, e.g. SmallModelSemanticClassifier. */
-export interface SemanticClassifierObject {
-  classify(
-    event: AnyEventEnvelope,
-    active: TaskRecord | null,
-  ): RouteDecision | null | Promise<RouteDecision | null>;
-}
-
-export type SemanticClassifier = SemanticClassifierFn | SemanticClassifierObject;
 
 export type SafetyPolicy = (
   event: AnyEventEnvelope,

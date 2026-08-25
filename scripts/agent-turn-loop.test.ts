@@ -5,15 +5,13 @@ import { EventBus } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   AgentTurnLoop,
   type AgentTurnContext,
-} from "../src/core/agent-turn-loop.ts";
+  TaskLifecycle,
+  TaskState,
+} from "../packages/core/session-runtime/src/index.ts";
 import type {
   QueueBridge,
   QueueInputBatch,
 } from "../packages/core/runtime-protocol/src/index.ts";
-import {
-  TaskLifecycle,
-  TaskState,
-} from "../src/core/task-lifecycle.ts";
 
 class TestContext implements AgentTurnContext {
   readonly cancelToken;

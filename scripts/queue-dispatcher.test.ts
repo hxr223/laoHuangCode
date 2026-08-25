@@ -11,14 +11,12 @@ import {
   DeadLetterQueue,
   EventRouter,
   PendingQueue,
-  type RoutedEvent,
-} from "../src/routing.ts";
-import { QueueDispatcher } from "../src/core/queue-dispatcher.ts";
-import {
+  QueueDispatcher,
   TaskRegistry,
   TaskState,
+  type RoutedEvent,
   type TaskState as TaskStateValue,
-} from "../src/core/task-lifecycle.ts";
+} from "../packages/core/session-runtime/src/index.ts";
 import type { SessionAction } from "../packages/core/runtime-protocol/src/index.ts";
 
 function action(
