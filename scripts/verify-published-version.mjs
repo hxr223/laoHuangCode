@@ -46,11 +46,7 @@ function npmView(packageName, version) {
 async function main() {
   const manifest = JSON.parse(readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"));
   const args = parseArgs(process.argv.slice(2));
-  const packageName =
-    args.packageName ||
-    (manifest.private === true && manifest.name === "@laohuang/workspace"
-      ? "laohuang"
-      : manifest.name);
+  const packageName = args.packageName || manifest.name;
   const version = args.version || manifest.version;
   if (!packageName || !version) {
     throw new Error("package name and version are required");
