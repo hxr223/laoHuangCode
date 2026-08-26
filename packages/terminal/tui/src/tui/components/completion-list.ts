@@ -37,7 +37,7 @@ export class CompletionList implements FocusableComponent {
       }
       if (selected) {
         return truncateToWidth(
-          `${this.#theme.sgr("selected_bg", { background: true })}${this.#theme.sgr("text")}${raw}\x1b[0m`,
+          `${this.#theme.sgr("accent")}${raw}\x1b[0m`,
           width,
         );
       }
@@ -45,7 +45,7 @@ export class CompletionList implements FocusableComponent {
         ? `${this.#theme.sgr("muted")}  ${description}\x1b[0m`
         : "";
       return truncateToWidth(
-        `${this.#theme.sgr("text")}${value}\x1b[0m${descriptionText}`,
+        `${value}${descriptionText}`,
         width,
       );
     });

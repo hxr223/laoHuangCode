@@ -1147,7 +1147,7 @@ export class TerminalUI {
   } {
     return {
       prompt: (text) => text ? `${this.theme.sgr("accent")}${text}\x1b[0m` : text,
-      text: (text) => text ? `${this.theme.sgr("text")}${text}\x1b[0m` : text,
+      text: (text) => text,
     };
   }
 
