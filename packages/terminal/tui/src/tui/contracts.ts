@@ -26,7 +26,14 @@ export interface EditorLike {
   setCompletions(values: readonly CompletionItemLike[]): void;
   renderLines(
     width: number,
-    options: { prompt?: string; mask?: boolean },
+    options: {
+      prompt?: string;
+      mask?: boolean;
+      styles?: {
+        readonly prompt?: (text: string) => string;
+        readonly text?: (text: string) => string;
+      };
+    },
   ): EditorRenderResult;
 }
 

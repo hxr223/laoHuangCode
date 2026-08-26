@@ -1134,10 +1134,21 @@ export class TerminalUI {
     const completion = this.#completionLines(contentWidth, editor);
     return this.#frameBuilder.build({
       ...options,
+      editorStyles: this.#editorStyles(),
       historyLines: history,
       activeStart,
       completionLines: completion,
     }).screen;
+  }
+
+  #editorStyles(): {
+    readonly prompt: (text: string) => string;
+    readonly text: (text: string) => string;
+  } {
+    return {
+      prompt: (text) => text ? `${this.theme.sgr("accent")}${text}\x1b[0m` : text,
+      text: (text) => text ? `${this.theme.sgr("text")}${text}\x1b[0m` : text,
+    };
   }
 
   #completionLines(width: number, editor: EditorLike): string[] {
@@ -1145,6 +1156,7 @@ export class TerminalUI {
       ...new CompletionList({
         items: editor.completions,
         selectedIndex: editor.selectedCompletion,
+        theme: this.theme,
       }).render(width),
     ];
   }
