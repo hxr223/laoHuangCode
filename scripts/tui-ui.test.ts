@@ -58,7 +58,7 @@ test("completion list is a focusable width-bounded component", () => {
   assert.equal(list.focused, true);
 });
 
-test("completion list uses pi segmented colors without changing width", () => {
+test("completion list leaves unselected command text default and accents selected items", () => {
   const list = new CompletionList({
     items: [
       { value: "/help", description: "Show help", start: -5 },
@@ -71,8 +71,10 @@ test("completion list uses pi segmented colors without changing width", () => {
   const lines = list.render(20);
 
   assert.match(lines[0]!, /\x1b\[/u);
+  assert.ok(!lines[0]!.includes(PI_DARK.sgr("text")));
   assert.ok(lines[0]!.includes(PI_DARK.sgr("muted")));
-  assert.ok(lines[1]!.includes(PI_DARK.sgr("selected_bg", { background: true })));
+  assert.ok(lines[1]!.includes(PI_DARK.sgr("accent")));
+  assert.ok(!lines[1]!.includes(PI_DARK.sgr("selected_bg", { background: true })));
   assert.deepEqual(lines.map(stripTerminalControls), [
     "  /help  Show help",
     "› /model  Switch mod",
@@ -80,7 +82,7 @@ test("completion list uses pi segmented colors without changing width", () => {
   assert.deepEqual(lines.map(visibleWidth), [18, 20]);
 });
 
-test("frame colors the pi input prompt and text without moving the cjk cursor", () => {
+test("frame colors the pi input prompt but leaves input text default without moving the cjk cursor", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const editor = new EditorState();
   editor.apply({ kind: "insert", text: "你好你" }, { runtimeActive: false });
@@ -94,7 +96,7 @@ test("frame colors the pi input prompt and text without moving the cjk cursor", 
   assert.notEqual(inputStart, -1);
   assert.equal(inputLines.length, 2);
   assert.ok(inputLines[0]!.includes(PI_DARK.sgr("accent")));
-  assert.ok(inputLines[0]!.includes(PI_DARK.sgr("text")));
+  assert.ok(!inputLines[0]!.includes(PI_DARK.sgr("text")));
   assert.deepEqual(inputLines.map(stripTerminalControls), ["│ ❯ 你好  │", "│   你    │"]);
   assert.equal(frame.cursorCol, 6);
   assert.ok(frame.lines.every((line) => visibleWidth(line) <= 11));
