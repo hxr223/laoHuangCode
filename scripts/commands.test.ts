@@ -6,6 +6,7 @@ import type {
   ModelCatalog,
   ModelInfo,
   ModelProviderInfo,
+  ReasoningEffort,
 } from "@laohuang/llm";
 import {
   CommandRegistry,
@@ -16,13 +17,21 @@ import {
 import { ModelSelector } from "../apps/cli/src/model-selection.ts";
 import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
 
-function model(provider: string, id: string): ModelInfo {
+function model(
+  provider: string,
+  id: string,
+  options: {
+    reasoning?: boolean;
+    supportedReasoningEfforts?: readonly ReasoningEffort[];
+  } = {},
+): ModelInfo {
   return {
     provider,
     id,
     name: id,
     api: "openai-completions",
-    reasoning: false,
+    reasoning: options.reasoning ?? false,
+    supportedReasoningEfforts: options.supportedReasoningEfforts ?? ["off"],
     input: ["text"],
     contextWindow: 8192,
     maxTokens: 2048,
@@ -50,8 +59,14 @@ class FakeCatalog implements ModelCatalog {
     this.providers = providers;
     this.models.set("anthropic", [model("anthropic", "claude-sonnet-4-5")]);
     this.models.set("deepseek", [
-      model("deepseek", "deepseek-v4-flash"),
-      model("deepseek", "deepseek-v4-pro"),
+      model("deepseek", "deepseek-v4-flash", {
+        reasoning: true,
+        supportedReasoningEfforts: ["off", "minimal", "low", "medium", "high"],
+      }),
+      model("deepseek", "deepseek-v4-pro", {
+        reasoning: true,
+        supportedReasoningEfforts: ["off", "minimal", "low", "medium", "high", "xhigh"],
+      }),
     ]);
   }
 
@@ -139,6 +154,7 @@ class FakeAgent implements AgentLike {
   baseUrl: string | null;
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
   readonly modelSwitches: Array<{ provider: string; model: string }> = [];
+  reasoningEffort: ReasoningEffort = "high";
 
   constructor(options: { model: string; provider?: string; baseUrl?: string | null }) {
     this.model = options.model;
@@ -163,6 +179,14 @@ class FakeAgent implements AgentLike {
   clearHistory(): void {
     this.messages.splice(1);
   }
+
+  setReasoningEffort(effort: ReasoningEffort): void {
+    this.reasoningEffort = effort;
+  }
+
+  getReasoningEffort(): ReasoningEffort {
+    return this.reasoningEffort;
+  }
 }
 
 interface CommandFixture {
@@ -177,6 +201,7 @@ function makeCommands(options: {
   configured?: Set<string>;
   ambientSources?: ReadonlyMap<string, string>;
   output?: (message: string) => void;
+  input?: (prompt: string) => Promise<string>;
   session?: SessionLike | null;
   agent?: FakeAgent;
 } = {}): CommandFixture {
@@ -194,7 +219,7 @@ function makeCommands(options: {
   const selector = new ModelSelector({
     catalog,
     providerAuth: auth,
-    input: async () => "deepseek",
+    input: options.input ?? (async () => "deepseek"),
     output: options.output ?? ((message) => outputs.push(message)),
   });
   const agent =
@@ -210,7 +235,7 @@ function makeCommands(options: {
       baseUrl: null,
       provider: "deepseek",
     },
-    input: async () => "1",
+    input: options.input ?? (async () => "1"),
     output: options.output ?? ((message) => outputs.push(message)),
     session: options.session ?? null,
   });
@@ -257,6 +282,9 @@ test("slash commands and model arguments are completed", () => {
   const modelItems = commands.registry.complete("/model anthropic ", {
     state: "IDLE",
   });
+  const effortItems = commands.registry.complete("/effort ", {
+    state: "RUNNING_MODEL",
+  });
   const plainFound = commands.registry.complete("please read files", {
     state: "IDLE",
   });
@@ -264,6 +292,8 @@ test("slash commands and model arguments are completed", () => {
   assert.ok(commandsFound.some((item) => item.value === "/model"));
   assert.ok(providerItems.some((item) => item.value === "anthropic"));
   assert.ok(modelItems.some((item) => item.value === "claude-sonnet-4-5"));
+  assert.ok(effortItems.some((item) => item.value === "low"));
+  assert.ok(effortItems.some((item) => item.value === "current"));
   assert.deepEqual(plainFound, []);
 });
 
@@ -280,6 +310,7 @@ test("running completion filters mutating commands", () => {
   const names = commandsFound.map((item) => item.value);
   assert.ok(!names.includes("/login"));
   assert.ok(names.includes("/cancel"));
+  assert.ok(names.includes("/effort"));
   assert.ok(names.includes("/model"));
   assert.deepEqual(
     modelArguments.map((item) => item.value),
@@ -350,6 +381,60 @@ test("/model current reports the active provider and model", async () => {
   assert.deepEqual(outputs, ["Current model: deepseek / deepseek-v4-flash"]);
 });
 
+test("/effort current reports the active reasoning effort", async () => {
+  const { commands, outputs } = makeCommands();
+
+  const handled = await commands.execute("/effort current");
+
+  assert.equal(handled.status, "handled");
+  assert.deepEqual(outputs, ["Current effort: high"]);
+});
+
+test("/effort sets a supported reasoning effort directly", async () => {
+  const { commands, outputs, agent } = makeCommands();
+
+  const handled = await commands.execute("/effort low");
+
+  assert.equal(handled.status, "handled");
+  assert.equal(agent.reasoningEffort, "low");
+  assert.deepEqual(outputs, [
+    "Effort set to low. Applies to the next model request.",
+  ]);
+});
+
+test("/effort rejects levels unsupported by the current model", async () => {
+  const { commands, outputs, agent } = makeCommands();
+
+  const handled = await commands.execute("/effort xhigh");
+
+  assert.equal(handled.status, "handled");
+  assert.equal(agent.reasoningEffort, "high");
+  assert.deepEqual(outputs, [
+    "Effort xhigh is not supported by deepseek / deepseek-v4-flash. Supported: off, minimal, low, medium, high",
+  ]);
+});
+
+test("/effort opens a numbered selector when no level is provided", async () => {
+  const answers = ["4"];
+  const { commands, outputs, agent } = makeCommands({
+    input: async () => answers.shift() ?? "",
+  });
+
+  const handled = await commands.execute("/effort");
+
+  assert.equal(handled.status, "handled");
+  assert.equal(agent.reasoningEffort, "medium");
+  assert.deepEqual(outputs, [
+    "Reasoning efforts for deepseek / deepseek-v4-flash:",
+    "  1. off",
+    "  2. minimal",
+    "  3. low",
+    "  4. medium",
+    "  5. high",
+    "Effort set to medium. Applies to the next model request.",
+  ]);
+});
+
 test("/model switches provider and model without chatting", async () => {
   const agent = new FakeAgent({ model: "old-model", provider: "openai" });
   const { commands, outputs } = makeCommands({ agent });
@@ -363,6 +448,26 @@ test("/model switches provider and model without chatting", async () => {
     { provider: "deepseek", model: "deepseek-v4-pro" },
   ]);
   assert.ok(outputs.some((line) => line.includes("deepseek-v4-pro")));
+});
+
+test("/model adjusts effort when the selected model does not support the current level", async () => {
+  const agent = new FakeAgent({ model: "deepseek-v4-pro", provider: "deepseek" });
+  agent.setReasoningEffort("high");
+  const { commands, outputs } = makeCommands({
+    agent,
+    configured: new Set(["deepseek", "anthropic"]),
+  });
+
+  const handled = await commands.execute("/model anthropic claude-sonnet-4-5");
+
+  assert.equal(handled.status, "handled");
+  assert.equal(agent.reasoningEffort, "off");
+  assert.ok(
+    outputs.some((line) =>
+      line ===
+      "Reasoning effort adjusted to off for anthropic / claude-sonnet-4-5.",
+    ),
+  );
 });
 
 test("login applies credentials without replacing the running adapter", async () => {

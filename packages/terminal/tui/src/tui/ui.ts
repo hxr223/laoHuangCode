@@ -806,6 +806,10 @@ export interface TerminalUIOptions {
   keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void;
 }
 
+type MutableRuntimeCapabilities = {
+  -readonly [K in keyof RuntimeCapabilities]: RuntimeCapabilities[K];
+};
+
 /**
  * Width used when the real terminal width cannot be determined — the same
  * default Rich's Console falls back to on an unknown-size terminal.
@@ -848,9 +852,11 @@ export class TerminalUI {
   #askFallback: ((message: string, secret: boolean) => Promise<string>) | null;
   #loop: InteractiveTerminalLoop | null = null;
   readonly #transcript: TranscriptStore;
-  readonly #displayPolicy = new DisplayPolicy({
+  #showReasoning = true;
+  #displayPolicy = new DisplayPolicy({
     audience: "terminal",
     foldToolOutput: false,
+    showReasoning: true,
   });
   readonly #frameBuilder: FrameBuilder;
   #pendingDisplayDrops = 0;
@@ -988,6 +994,10 @@ export class TerminalUI {
     this.runtimeRunningCallback = callback;
   }
 
+  setRuntimeCapabilities(capabilities: Partial<RuntimeCapabilities>): void {
+    Object.assign(this.capabilities as MutableRuntimeCapabilities, capabilities);
+  }
+
   setKeyActionCallback(
     callback: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void,
   ): void {
@@ -1006,6 +1016,13 @@ export class TerminalUI {
     this.applyDisplayAction({
       type: "toggle_tool_output",
       expanded: !this.#transcript.toolOutputExpanded(),
+    });
+  }
+
+  toggleReasoningFromKeybinding(): void {
+    this.applyDisplayAction({
+      type: "toggle_reasoning",
+      visible: !this.#showReasoning,
     });
   }
 
@@ -1189,10 +1206,18 @@ export class TerminalUI {
   }
 
   applyDisplayAction(action: DisplayAction): void {
-    if (action.type !== "toggle_tool_output") {
+    if (action.type === "toggle_tool_output") {
+      this.#transcript.setToolOutputExpanded(action.expanded);
+    } else if (action.type === "toggle_reasoning") {
+      this.#showReasoning = action.visible;
+      this.#displayPolicy = new DisplayPolicy({
+        audience: "terminal",
+        foldToolOutput: false,
+        showReasoning: this.#showReasoning,
+      });
+    } else {
       return;
     }
-    this.#transcript.setToolOutputExpanded(action.expanded);
     this.#loop?.requestRender();
   }
 

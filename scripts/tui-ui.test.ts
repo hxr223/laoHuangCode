@@ -355,7 +355,7 @@ test("alt enter submits a follow-up action from the live loop", () => {
   ]);
 });
 
-test("enhanced shift tab reaches the reasoning cycle action", () => {
+test("enhanced shift tab does not invoke a reasoning effort action", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const actions: string[] = [];
   const ui = new TerminalUI({
@@ -370,12 +370,7 @@ test("enhanced shift tab reaches the reasoning cycle action", () => {
   ui.feedInputBytes(bytes("\x1b[9;2u\x1b[27;2;9~\x1b[9;66u\x1b[9;2:1u\x1b[9;2:3u"));
   ui.drainLoop();
 
-  assert.deepEqual(actions, [
-    "cycle_thinking",
-    "cycle_thinking",
-    "cycle_thinking",
-    "cycle_thinking",
-  ]);
+  assert.deepEqual(actions, []);
 });
 
 test("ctrl l invokes the model selection key action", () => {

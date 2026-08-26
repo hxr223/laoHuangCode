@@ -8,6 +8,7 @@ import {
   modelErrorKind,
   type AssistantModelMessage,
   type ModelMessage,
+  type ReasoningEffort,
   type ModelUsage,
   type TextContentBlock,
   type ToolCallContentBlock,
@@ -53,6 +54,7 @@ export interface AgentStepRunnerOptions {
   cancelToken: CancelToken | null;
   requestId: string | null;
   isRequestActive: (requestId: string) => boolean;
+  getReasoningEffort(): ReasoningEffort;
   onRequestId(requestId: string): void;
   emit(eventType: string, payload: Record<string, unknown>): void;
   emitLegacy(eventType: string, payload: Record<string, unknown>): void;
@@ -150,6 +152,7 @@ export class AgentStepRunner {
           messages: requestMessages,
           tools: this.options.toolDefinitions,
           toolChoice: forceFinal ? "none" : "auto",
+          reasoningEffort: this.options.getReasoningEffort(),
           requestId,
           cancelToken,
           isRequestActive: this.options.isRequestActive,

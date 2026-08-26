@@ -8,9 +8,11 @@ import {
   type ModelInfo,
   type ModelPlatform,
   type ModelProviderInfo,
+  type ReasoningEffort,
 } from "@laohuang/llm";
 import {
   defaultProviderAuthContext,
+  getSupportedThinkingLevels,
   ModelsError,
   type Api,
   type AuthContext,
@@ -21,6 +23,7 @@ import {
   type Model as PiModel,
   type Models,
   type ModelsStore,
+  type ModelThinkingLevel,
   type ProviderModelsStore,
   type Provider,
 } from "@earendil-works/pi-ai";
@@ -381,10 +384,24 @@ function modelInfo(model: PiModel<Api>): ModelInfo {
     name: model.name,
     api: model.api,
     reasoning: model.reasoning,
+    supportedReasoningEfforts: getSupportedThinkingLevels(model).map(toReasoningEffort),
     input: model.input,
     contextWindow: model.contextWindow,
     maxTokens: model.maxTokens,
   };
+}
+
+function toReasoningEffort(level: ModelThinkingLevel): ReasoningEffort {
+  switch (level) {
+    case "off":
+    case "minimal":
+    case "low":
+    case "medium":
+    case "high":
+    case "xhigh":
+    case "max":
+      return level;
+  }
 }
 
 function normalizePiError(error: unknown): unknown {

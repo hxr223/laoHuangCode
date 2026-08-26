@@ -105,6 +105,53 @@ export interface ModelUsage {
   readonly reasoningTokens?: number;
 }
 
+export type ReasoningEffort =
+  | "off"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max";
+
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = [
+  "off",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+export function isReasoningEffort(value: string): value is ReasoningEffort {
+  return REASONING_EFFORTS.includes(value as ReasoningEffort);
+}
+
+export function clampReasoningEffort(
+  supported: readonly ReasoningEffort[],
+  requested: ReasoningEffort,
+): ReasoningEffort {
+  const available = supported.length === 0 ? ["off" as const] : supported;
+  if (available.includes(requested)) {
+    return requested;
+  }
+  const requestedIndex = REASONING_EFFORTS.indexOf(requested);
+  for (let index = requestedIndex; index < REASONING_EFFORTS.length; index += 1) {
+    const candidate = REASONING_EFFORTS[index]!;
+    if (available.includes(candidate)) {
+      return candidate;
+    }
+  }
+  for (let index = requestedIndex - 1; index >= 0; index -= 1) {
+    const candidate = REASONING_EFFORTS[index]!;
+    if (available.includes(candidate)) {
+      return candidate;
+    }
+  }
+  return "off";
+}
+
 export type ModelEvent =
   | { readonly type: "text-delta"; readonly text: string }
   | { readonly type: "reasoning-delta"; readonly text: string }
@@ -124,6 +171,7 @@ export interface ModelRequest {
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ToolSpec[];
   readonly toolChoice: "auto" | "none";
+  readonly reasoningEffort?: ReasoningEffort;
   readonly temperature?: number;
   readonly timeoutMs?: number;
   readonly requestId?: string;
@@ -154,6 +202,7 @@ export interface ModelInfo {
   readonly name: string;
   readonly api: string;
   readonly reasoning: boolean;
+  readonly supportedReasoningEfforts: readonly ReasoningEffort[];
   readonly input: readonly string[];
   readonly contextWindow: number;
   readonly maxTokens: number;

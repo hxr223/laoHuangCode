@@ -65,6 +65,8 @@ test("default session bindings expose model selection and follow-up submit", () 
   const manager = new KeybindingsManager(DEFAULT_KEYBINDINGS);
 
   assert.equal(manager.resolve(parseKey("ctrl+l"), ["terminal"]), "select_model");
+  assert.equal(manager.resolve(parseKey("ctrl+t"), ["terminal"]), "toggle_thinking");
+  assert.equal(manager.resolve(parseKey("shift+tab"), ["terminal"]), null);
   assert.equal(manager.resolve(parseKey("alt+enter"), ["editor"]), "submit_follow_up");
 });
 

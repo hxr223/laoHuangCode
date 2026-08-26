@@ -111,6 +111,22 @@ test("verified evidence decorates status but never enables a provider", () => {
   assert.equal(platform.catalog.getModel("deepseek", "deepseek-model"), undefined);
 });
 
+test("catalog exposes supported thinking levels for each model", () => {
+  const platform = makePlatformWithProviders([
+    fakeThinkingProvider(),
+    fakeProvider("plain", { apiKey: true }),
+  ]);
+
+  assert.deepEqual(
+    platform.catalog.getModel("think", "think-model")?.supportedReasoningEfforts,
+    ["off", "minimal", "low", "medium", "high", "xhigh"],
+  );
+  assert.deepEqual(
+    platform.catalog.getModel("plain", "plain-model")?.supportedReasoningEfforts,
+    ["off"],
+  );
+});
+
 test("api-key auth rejects an OAuth-only interaction event", async () => {
   const provider = fakeProvider("bad-api-key-provider", { apiKey: true });
   provider.auth.apiKey!.login = async (interaction) => {
@@ -280,6 +296,40 @@ function fakeProvider(
     id,
     name: id,
     auth: { ...(apiKey === undefined ? {} : { apiKey }), ...(oauth === undefined ? {} : { oauth }) },
+    getModels: () => [model],
+    stream: noEvents,
+    streamSimple: noEvents,
+  };
+}
+
+function fakeThinkingProvider(): Provider {
+  const model: Model<"openai-completions"> = {
+    id: "think-model",
+    name: "Think Model",
+    api: "openai-completions",
+    provider: "think",
+    baseUrl: "https://think.example/v1",
+    reasoning: true,
+    thinkingLevelMap: { xhigh: "xhigh", max: null },
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128000,
+    maxTokens: 8192,
+  };
+  const noEvents = async function* (): AsyncGenerator<AssistantMessageEvent> {};
+  return {
+    id: "think",
+    name: "Think",
+    auth: {
+      apiKey: {
+        name: "Think API key",
+        login: async (): Promise<ApiKeyCredential> => ({
+          type: "api_key",
+          key: "test-key",
+        }),
+        resolve: async (): Promise<AuthResult | undefined> => undefined,
+      },
+    },
     getModels: () => [model],
     stream: noEvents,
     streamSimple: noEvents,

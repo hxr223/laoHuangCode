@@ -9,6 +9,7 @@ import type {
   ModelProviderInfo,
   ModelRequest,
   ModelResult,
+  ReasoningEffort,
 } from "@laohuang/llm";
 import {
   AgentStepRunner,
@@ -91,6 +92,7 @@ function createRunner(options: {
   adapter: ModelAdapter;
   context?: AgentStepRunnerContext | null;
   executeTool?: () => Promise<ToolResult>;
+  getReasoningEffort?: () => ReasoningEffort;
 }): AgentStepRunner {
   const token = new TestCancelToken() as unknown as CancelToken;
   const context = options.context ?? null;
@@ -124,6 +126,7 @@ function createRunner(options: {
     cancelToken: token,
     requestId: null,
     isRequestActive: () => true,
+    getReasoningEffort: options.getReasoningEffort ?? (() => "high"),
     onRequestId: () => {},
     emit: () => {},
     emitLegacy: () => {},
@@ -189,6 +192,27 @@ test("rejects an unconfirmed final assistant commit after cancellation wins", as
   await assert.rejects(runner.run(), AgentCancelled);
   assert.deepEqual(messages.map((message) => message.role), ["system", "user"]);
   assert.ok(messages.every((message) => message.role !== "assistant"));
+});
+
+test("reads reasoning effort for each model request in a tool loop", async () => {
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
+  const adapter = new StubAdapter([toolCallResult("call-1"), finalResult("complete")]);
+  let effort: ReasoningEffort = "high";
+  const runner = createRunner({
+    messages,
+    adapter,
+    getReasoningEffort: () => effort,
+    executeTool: async () => {
+      effort = "low";
+      return { ok: true, content: "tool result" };
+    },
+  });
+
+  assert.equal(await runner.run(), "complete");
+  assert.deepEqual(
+    adapter.requests.map((request) => request.reasoningEffort),
+    ["high", "low"],
+  );
 });
 
 test("commits pending user input only after the tool-result safe point", async () => {

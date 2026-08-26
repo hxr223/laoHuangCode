@@ -9,8 +9,7 @@ export type ActionId =
   | "submit_follow_up"
   | "dismiss"
   | "cancel"
-  | "toggle_thinking"
-  | "cycle_thinking";
+  | "toggle_thinking";
 
 export interface Keybinding {
   readonly context: string;

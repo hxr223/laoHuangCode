@@ -15,6 +15,11 @@ import type {
   ModelCatalog,
   ModelProviderInfo,
   ModelAuthStatus,
+  ReasoningEffort,
+} from "@laohuang/llm";
+import {
+  clampReasoningEffort,
+  isReasoningEffort,
 } from "@laohuang/llm";
 import type { ProviderAuthController } from "./provider-auth.ts";
 
@@ -351,6 +356,8 @@ export interface AgentLike {
     provider: string;
     baseUrl: string | null;
   }): void;
+  setReasoningEffort?(effort: ReasoningEffort): void;
+  getReasoningEffort?(): ReasoningEffort;
   clearHistory?(): void;
   /** Conversation history, trimmed in place when no clearHistory exists. */
   messages?: unknown[] | undefined;
@@ -450,6 +457,14 @@ export class SessionCommands {
         argumentCompleter: (args) => this.modelCompletions(args),
       },
       {
+        name: "/effort",
+        description: "切换模型思考等级",
+        usage: "/effort [current|off|minimal|low|medium|high|xhigh|max]",
+        handler: (args) => this.handleEffort(args),
+        allowedStates: ALL_STATES,
+        argumentCompleter: (args) => this.effortCompletions(args),
+      },
+      {
         name: "/login",
         description: "输入或更新API Key",
         usage: "/login [provider]",
@@ -516,6 +531,7 @@ export class SessionCommands {
         allowedStates: ALL_STATES,
       },
     ]);
+    this.adjustReasoningEffortForCurrentModel({ emitNotice: false });
   }
 
   get currentConfig(): SelectionConfig {
@@ -671,10 +687,45 @@ export class SessionCommands {
     });
     this.#onModelSelected?.(selection);
     this.#currentConfig = selection.config;
+    this.adjustReasoningEffortForCurrentModel({ emitNotice: true });
     this.publishModelSwitched(previousProvider, previousModel);
     this.#output(
       `Switched to ${selection.config.provider} / ${selection.config.model}`,
     );
+    return true;
+  }
+
+  private async handleEffort(args: string[]): Promise<boolean> {
+    if (args.length > 1) {
+      this.#output("Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]");
+      return true;
+    }
+    const requested = args[0];
+    if (requested === "current") {
+      this.#output(`Current effort: ${this.currentReasoningEffort()}`);
+      return true;
+    }
+    if (requested === undefined) {
+      const selected = await this.chooseEffort();
+      if (selected !== null) {
+        this.setReasoningEffort(selected);
+      }
+      return true;
+    }
+    if (!isReasoningEffort(requested)) {
+      this.#output("Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]");
+      return true;
+    }
+    const supported = this.supportedReasoningEfforts();
+    if (!supported.includes(requested)) {
+      this.#output(
+        `Effort ${requested} is not supported by ` +
+          `${this.#currentConfig.provider} / ${this.#currentConfig.model}. ` +
+          `Supported: ${supported.join(", ")}`,
+      );
+      return true;
+    }
+    this.setReasoningEffort(requested);
     return true;
   }
 
@@ -839,6 +890,85 @@ export class SessionCommands {
         yield [model.id, `${provider.name} 模型`] as const;
       }
     }
+  }
+
+  private *effortCompletions(
+    args: readonly string[],
+  ): Iterable<readonly [string, string]> {
+    if (args.length > 0) {
+      return;
+    }
+    yield ["current", "当前思考等级"] as const;
+    for (const effort of this.supportedReasoningEfforts()) {
+      yield [effort, effort === "off" ? "关闭思考" : "设置思考等级"] as const;
+    }
+  }
+
+  private async chooseEffort(): Promise<ReasoningEffort | null> {
+    const supported = this.supportedReasoningEfforts();
+    this.#output(
+      `Reasoning efforts for ${this.#currentConfig.provider} / ` +
+        `${this.#currentConfig.model}:`,
+    );
+    supported.forEach((effort, index) => {
+      this.#output(`  ${index + 1}. ${effort}`);
+    });
+    const answer = await this.readInput("Select effort: ");
+    if (answer === null) {
+      return null;
+    }
+    const choice = Number(answer);
+    const selected = Number.isInteger(choice)
+      ? supported[choice - 1]
+      : undefined;
+    if (selected === undefined) {
+      this.#output("Effort selection cancelled: invalid choice.");
+      return null;
+    }
+    return selected;
+  }
+
+  private async readInput(prompt: string): Promise<string | null> {
+    try {
+      return (await this.#input(prompt)).trim();
+    } catch {
+      this.#output("Effort selection cancelled.");
+      return null;
+    }
+  }
+
+  private currentReasoningEffort(): ReasoningEffort {
+    return this.#agent.getReasoningEffort?.() ?? "high";
+  }
+
+  private setReasoningEffort(effort: ReasoningEffort): void {
+    this.#agent.setReasoningEffort?.(effort);
+    this.#output(`Effort set to ${effort}. Applies to the next model request.`);
+  }
+
+  private adjustReasoningEffortForCurrentModel(options: {
+    emitNotice: boolean;
+  }): void {
+    const current = this.currentReasoningEffort();
+    const adjusted = clampReasoningEffort(this.supportedReasoningEfforts(), current);
+    if (adjusted === current) {
+      return;
+    }
+    this.#agent.setReasoningEffort?.(adjusted);
+    if (options.emitNotice) {
+      this.#output(
+        `Reasoning effort adjusted to ${adjusted} for ` +
+          `${this.#currentConfig.provider} / ${this.#currentConfig.model}.`,
+      );
+    }
+  }
+
+  private supportedReasoningEfforts(): readonly ReasoningEffort[] {
+    const model = this.#catalog.getModel(
+      this.#currentConfig.provider,
+      this.#currentConfig.model,
+    );
+    return model?.supportedReasoningEfforts ?? ["off"];
   }
 
   private *providerCompletions(

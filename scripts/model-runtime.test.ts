@@ -105,6 +105,18 @@ test("forwards typed streamed content, reasoning, and tool-call deltas", async (
   assert.deepEqual(completion, result());
 });
 
+test("forwards reasoning effort to the adapter request", async () => {
+  const adapter = new StubAdapter(async () => result());
+  const runtime = new ModelRuntime(adapter);
+
+  await runtime.complete({
+    ...request(),
+    reasoningEffort: "low",
+  });
+
+  assert.equal(adapter.requests[0]?.reasoningEffort, "low");
+});
+
 test("does not invoke the adapter after model cancellation", async () => {
   const token = new CancelToken();
   token.cancel("user stopped");
