@@ -143,6 +143,7 @@ const RUNTIME_EVENT_KINDS: Record<string, EventKind> = {
   model_text_delta: EventKind.ModelTextDelta,
   model_reasoning_delta: EventKind.ModelReasoningDelta,
   model_tool_call_delta: EventKind.ModelToolCallDelta,
+  model_retry_scheduled: EventKind.ModelRetryScheduled,
   model_response_validating: EventKind.ModelResponseValidating,
   model_response_committed: EventKind.ModelResponseCommitted,
   model_response_aborted: EventKind.ModelResponseAborted,

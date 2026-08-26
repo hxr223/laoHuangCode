@@ -193,6 +193,9 @@ export class UIEventReducer {
         payload,
       });
     }
+    if (kind === "model.retry_scheduled") {
+      return createUpdate(kind, { correlationId, payload });
+    }
 
     if (kind === "tool.started") {
       const name = String(payload.name ?? "tool");

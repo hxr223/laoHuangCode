@@ -588,6 +588,37 @@ test("plain sink outputs one complete model response", () => {
   assert.deepEqual(output, ["hello world"]);
 });
 
+test("retry schedule events render as non-terminal notices", () => {
+  const output: string[] = [];
+  const sink = new PlainEventSink((text) => {
+    output.push(text);
+  });
+  const retry = event("model.retry_scheduled", "request-1", {
+    attempt: 2,
+    max_attempts: 3,
+    delay_ms: 250,
+    error_kind: "server",
+  });
+
+  sink.publishEvent({
+    ...retry,
+    source: "model",
+    session_id: "session-1",
+    task_id: "task-1",
+    sequence: 1,
+  });
+  sink.flush();
+  sink.stop();
+
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ theme: "dark", driver: terminal });
+  ui.applyProjectedEvent(retry);
+
+  const expected = "Model request retry 2/3 in 250ms (server).";
+  assert.deepEqual(output, [expected]);
+  assert.ok(stripTerminalControls(ui.buildHistoryLines(80).join("\n")).includes(expected));
+});
+
 test("raw loop owns transcript and editor together", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ theme: "light", driver: terminal });

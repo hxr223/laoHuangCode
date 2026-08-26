@@ -12,15 +12,12 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
-import type { CredentialStore } from "./credentials.ts";
-
 /** Runtime configuration resolved from a stored profile. */
 export interface Config {
   readonly model: string;
   readonly baseUrl: string | null;
   readonly provider: string;
   readonly profile: string | null;
-  readonly apiKey: string | null;
 }
 
 /** One entry of {@link ConfigManager.listProfiles}. */
@@ -44,10 +41,6 @@ export interface ResolveSettingsOptions {
   profile?: string | null;
   model?: string | null;
   baseUrl?: string | null;
-}
-
-export interface ResolveOptions extends ResolveSettingsOptions {
-  credentials: Pick<CredentialStore, "get">;
 }
 
 /** Profile as stored inside the JSON document (schema is snake_case). */
@@ -121,13 +114,8 @@ export class ConfigManager {
     this.writeDocument(document);
   }
 
-  resolve(options: ResolveOptions): Config {
-    const config = this.resolveSettings(options);
-    const apiKey = options.credentials.get(config.provider);
-    if (!apiKey) {
-      throw new Error(`No API key configured for provider: ${config.provider}`);
-    }
-    return { ...config, apiKey };
+  resolve(options: ResolveSettingsOptions = {}): Config {
+    return this.resolveSettings(options);
   }
 
   resolveSettings(options: ResolveSettingsOptions = {}): Config {
@@ -155,7 +143,6 @@ export class ConfigManager {
       baseUrl: resolvedBaseUrl,
       provider: providerName,
       profile: profileName,
-      apiKey: null,
     };
   }
 

@@ -69,6 +69,8 @@ test("uses one no-history request and accepts confident json", async () => {
   assert.equal(request.toolChoice, "none");
   assert.equal(request.tools.length, 0);
   assert.equal(request.temperature, 0);
+  assert.equal(request.timeoutMs, 3000);
+  assert.equal(request.maxAttempts, 1);
   const messages = request.messages;
   assert.equal(messages.length, 2);
 });

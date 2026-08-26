@@ -118,6 +118,25 @@ process.exit(2);
   });
 });
 
+test("provider e2e script uses the generic opt-in harness", () => {
+  const manifest = JSON.parse(
+    readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"),
+  ) as { scripts?: Record<string, string> };
+
+  assert.equal(
+    manifest.scripts?.["test:e2e:pi-ai"],
+    "LAOHUANG_RUN_PROVIDER_E2E=1 node --test scripts/pi-ai-provider.e2e.test.ts",
+  );
+  assert.equal(
+    existsSync(join(PROJECT_ROOT, "scripts", "pi-ai-provider.e2e.test.ts")),
+    true,
+  );
+  assert.equal(
+    existsSync(join(PROJECT_ROOT, "scripts", "pi-ai-deepseek.e2e.test.ts")),
+    false,
+  );
+});
+
 test("terminal-smoke opens and captures a controlled tmux session", () => {
   withTempDir((directory) => {
     const binDir = join(directory, "bin");
