@@ -319,6 +319,7 @@ export async function main(
   // provider/model are read-only in TS.
   let terminalUi: TerminalUI | null = null;
   let terminalDriver: StdTerminalDriver | null = null;
+  const selectedModel = modelPlatform.catalog.getModel(config.provider, config.model);
   if (interactive) {
     terminalDriver = new StdTerminalDriver();
     terminalUi = new TerminalUI({
@@ -327,6 +328,7 @@ export async function main(
       model: config.model,
       theme: args.theme,
       driver: terminalDriver,
+      capabilities: { reasoning: selectedModel?.reasoning ?? false },
     });
     terminalUi.state.provider = config.provider;
     terminalUi.state.model = config.model;
@@ -420,6 +422,15 @@ export async function main(
         model: selection.config.model,
         baseUrl: selection.config.baseUrl,
       });
+      if (terminalUi !== null) {
+        const model = modelPlatform.catalog.getModel(
+          selection.config.provider,
+          selection.config.model,
+        );
+        terminalUi.state.provider = selection.config.provider;
+        terminalUi.state.model = selection.config.model;
+        terminalUi.setRuntimeCapabilities({ reasoning: model?.reasoning ?? false });
+      }
     },
   });
 
@@ -446,6 +457,10 @@ export async function main(
       }
       if (action === "clear_screen") {
         void commandDispatcher?.("/clear");
+        return;
+      }
+      if (action === "toggle_thinking") {
+        terminalUi.toggleReasoningFromKeybinding();
         return;
       }
       runtime.publishNotice(`Key action is unavailable: ${action}.`);

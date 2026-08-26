@@ -30,6 +30,7 @@ import {
   portableModelMessage,
   type ModelAdapter,
   type ModelMessage,
+  type ReasoningEffort,
 } from "@laohuang/llm";
 import type {
   ToolExecutionContextLike,
@@ -120,6 +121,7 @@ export interface CodingAgentOptions {
   onAgentEvent?: AgentEventCallback | null;
   provider: string;
   baseUrl?: string | null;
+  reasoningEffort?: ReasoningEffort;
   toolExecution?: ToolExecutionMode;
   /**
    * Project root used only for project-instruction loading (both this and
@@ -162,6 +164,7 @@ export class CodingAgent {
   /** Provider-neutral model access; resolved from `provider`. */
   private adapter: ModelAdapter;
   private modelRuntime: ModelRuntime;
+  private reasoningEffort: ReasoningEffort;
   private readonly toolRuntime: ToolRuntime;
   readonly tools: AgentToolRegistry;
   readonly maxTotalTokens: number;
@@ -199,6 +202,7 @@ export class CodingAgent {
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.provider = options.provider;
     this.baseUrl = options.baseUrl ?? null;
+    this.reasoningEffort = options.reasoningEffort ?? "high";
     this.adapter = options.modelAdapter;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
@@ -218,6 +222,14 @@ export class CodingAgent {
   /** Bookkeeping for loaded project instructions (never model-visible). */
   get projectInstructionState(): ProjectInstructionState | null {
     return this.instructionState;
+  }
+
+  getReasoningEffort(): ReasoningEffort {
+    return this.reasoningEffort;
+  }
+
+  setReasoningEffort(effort: ReasoningEffort): void {
+    this.reasoningEffort = effort;
   }
 
   /** Swap the model client mid-conversation, keeping portable history. */
@@ -278,6 +290,7 @@ export class CodingAgent {
         requestId: options.requestId ?? null,
         isRequestActive: options.isRequestActive ??
           ((requestId: string) => this.activeRequestId === requestId),
+        getReasoningEffort: () => this.reasoningEffort,
         onRequestId: (requestId) => {
           this.activeRequestId = requestId;
         },
