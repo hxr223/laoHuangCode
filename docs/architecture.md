@@ -93,11 +93,22 @@ flowchart LR
 跨 package root 使用相对导入，也不 deep-import 其他 workspace 的 `src/` 或 `dist/`。
 `scripts/workspace-architecture.test.ts` 会持续检查这些约束和 workspace 依赖环。
 
-`@laohuang/llm` 拥有 provider-neutral 模型消息、事件、工具调用、工具结果、usage 和
-错误分类合同；只有 `@laohuang/llm-pi-ai` 允许导入 pi-ai 并执行 request/response、
-stream、replay 和错误转换。Agent Runtime 拥有模型—工具循环和 history 提交，Tool
-Runtime 拥有工具执行。当前产品支持的模型 route 只有 DeepSeek 和 OpenAI；pi-ai
-catalog 中出现的其他供应商或模型不代表 `laohuang` 已完成配置、认证或契约验证。
+`@laohuang/llm` 拥有 provider-neutral 模型消息、Catalog、API-key Auth、Platform、
+事件、工具调用、工具结果、usage 和错误分类合同；只有 `@laohuang/llm-pi-ai` 允许导入
+pi-ai，并把同一个 pi-ai `Models` 实例暴露为 Adapter、Catalog 和 Auth 三个视图。
+Agent Runtime 拥有模型—工具循环和 history 提交，Tool Runtime 拥有工具执行。
+
+Provider Platform 的产品合同把状态拆开：
+
+- `available`: pi-ai catalog 中存在 API-key login，且没有被产品 policy 排除。
+- `configured`: 本地 credential store 或 provider documented environment variables 可解析。
+- `verified`: 有显式授权的真实 native tool-call/tool-result E2E 证据。
+
+pi-ai 0.83.0 的 eligible-provider 快照为 35 个 provider IDs；`amazon-bedrock`、
+`google-vertex` 被 policy 排除，OAuth-only providers 自动排除，`openai-codex` 不作为
+API-key provider 暴露。`PROVIDER_VERIFICATIONS` 当前为空，因此 checked-in provider
+不会被标为 verified。动态 provider 的 model catalog 由 `@laohuang/local-config`
+持久化在 `models.json`，refresh 失败不会删除已有缓存。
 
 ## 并发模型：事件循环代替线程
 
@@ -171,7 +182,7 @@ Agent 会向模型追加每个调用对应的 provider-neutral tool-result，保
 
 所有用户输入先创建 `EventEnvelope`，再由四层 Router 依次执行：结构化元数据匹配、
 确定性语义规则、独立无历史的小模型分类，以及确定性安全裁决。分类器复用当前
-当前 provider route 和 API key，只发送活动任务的最小元数据与本条新消息；3 秒超时、非法 JSON 或
+当前 provider route，只发送活动任务的最小元数据与本条新消息；3 秒超时、非法 JSON 或
 低置信度都会回退为安全的 follow-up。接口保留独立 router model 的扩展点。内部模型
 和工具回调同样先经过 Router，但通常在第一层即可短路，不会调用语义分类器。
 

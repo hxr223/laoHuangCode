@@ -97,6 +97,8 @@ export class SmallModelSemanticClassifier {
       tools: [],
       toolChoice: "none",
       temperature: 0,
+      timeoutMs: Math.round(this.timeout * 1000),
+      maxAttempts: 1,
     };
     let parsed: unknown;
     try {

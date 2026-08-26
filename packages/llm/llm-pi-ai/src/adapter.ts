@@ -2,14 +2,13 @@ import {
   ModelError,
   ModelStreamCancelled,
   type ModelAdapter,
-  type ModelInfo,
-  type ModelProviderInfo,
   type ModelRequest,
   modelErrorKind,
 } from "@laohuang/llm";
 import {
   type Api,
   type Model as PiModel,
+  ModelsError,
   type Models,
   type ModelsSimpleStreamOptions,
 } from "@earendil-works/pi-ai";
@@ -18,24 +17,20 @@ import { toPiContext } from "./context.ts";
 import { consumePiEvents } from "./stream.ts";
 
 export interface PiAiAdapterOptions {
-  readonly enabledProviders: readonly string[];
-  readonly resolveApiKey: (
-    provider: string,
-  ) => string | null | Promise<string | null>;
+  readonly eligibleProviderIds: ReadonlySet<string>;
 }
 
-export function createPiAiAdapter(options: PiAiAdapterOptions): ModelAdapter {
+export function createPiAiAdapter(options: PiAiAdapterOptions): PiAiAdapter {
   return new PiAiAdapter(options, builtinModels());
 }
 
 export class PiAiAdapter implements ModelAdapter {
   readonly name = "pi-ai";
-  private readonly enabledProviders: readonly string[];
-  private readonly resolveApiKey: PiAiAdapterOptions["resolveApiKey"];
   private readonly models: Pick<
     Models,
     "getProviders" | "getProvider" | "getModels" | "getModel" | "streamSimple"
   >;
+  private readonly eligibleProviderIds: ReadonlySet<string>;
 
   constructor(
     options: PiAiAdapterOptions,
@@ -44,14 +39,13 @@ export class PiAiAdapter implements ModelAdapter {
       "getProviders" | "getProvider" | "getModels" | "getModel" | "streamSimple"
     >,
   ) {
-    this.enabledProviders = options.enabledProviders;
-    this.resolveApiKey = options.resolveApiKey;
+    this.eligibleProviderIds = options.eligibleProviderIds;
     this.models = models;
   }
 
   async runAttempt(request: ModelRequest) {
     this.checkActive(request);
-    if (!this.enabledProviders.includes(request.provider)) {
+    if (!this.eligibleProviderIds.has(request.provider)) {
       throw new ModelError(`unsupported model provider: ${request.provider}`, {
         kind: "protocol",
       });
@@ -63,7 +57,6 @@ export class PiAiAdapter implements ModelAdapter {
         { kind: "protocol" },
       );
     }
-    const apiKey = await this.resolvedApiKey(request.provider);
     this.checkActive(request);
     if (request.onRequestOpened?.() === false) {
       throw new ModelStreamCancelled("model request was cancelled before opening");
@@ -72,9 +65,9 @@ export class PiAiAdapter implements ModelAdapter {
       ? model
       : { ...model, baseUrl: request.baseUrl };
     const options: ModelsSimpleStreamOptions = {
-      ...(apiKey === null ? {} : { apiKey }),
       ...(request.cancelToken === undefined ? {} : { signal: request.cancelToken.signal }),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+      ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
       ...(model.reasoning ? { reasoning: "high" } : {}),
       maxRetries: 0,
     };
@@ -92,35 +85,10 @@ export class PiAiAdapter implements ModelAdapter {
         throw error;
       }
       throw new ModelError(errorMessage(error), {
-        kind: modelErrorKind(error),
+        kind: piModelErrorKind(error),
         cause: error,
       });
     }
-  }
-
-  listProviders(): readonly ModelProviderInfo[] {
-    return this.models
-      .getProviders()
-      .filter((provider) => this.enabledProviders.includes(provider.id))
-      .map((provider) => ({ id: provider.id, name: provider.name }));
-  }
-
-  listModels(provider: string): readonly ModelInfo[] {
-    if (!this.enabledProviders.includes(provider)) return [];
-    return this.models
-      .getModels(provider)
-      .map((model) => ({
-        provider: model.provider,
-        id: model.id,
-        name: model.name,
-      }));
-  }
-
-  private async resolvedApiKey(provider: string): Promise<string | null> {
-    const value = await this.resolveApiKey(provider);
-    if (value === null) return null;
-    const trimmed = value.trim();
-    return trimmed.length === 0 ? null : trimmed;
   }
 
   private checkActive(request: ModelRequest): void {
@@ -135,6 +103,22 @@ export class PiAiAdapter implements ModelAdapter {
       throw new ModelStreamCancelled("stale model request");
     }
   }
+}
+
+export function piModelErrorKind(error: unknown) {
+  if (error instanceof ModelsError) {
+    if (error.code === "auth" || error.code === "oauth") {
+      return "authentication";
+    }
+    if (
+      error.code === "provider" ||
+      error.code === "model_source" ||
+      error.code === "model_validation"
+    ) {
+      return "protocol";
+    }
+  }
+  return modelErrorKind(error);
 }
 
 function errorMessage(error: unknown): string {

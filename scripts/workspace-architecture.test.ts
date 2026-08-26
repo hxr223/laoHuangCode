@@ -230,3 +230,17 @@ test("workspace owns every production source through acyclic public packages", (
   assert.deepEqual(findDeepWorkspaceImports(), []);
   assert.deepEqual(findWorkspaceDependencyCycles(), []);
 });
+
+test("cli production source does not keep a hard-coded provider catalog", () => {
+  const cliSource = sourceFiles(join(repositoryRoot, "apps", "cli"))
+    .map((file) => readFileSync(file, "utf8"))
+    .join("\n");
+
+  assert.equal(
+    existsSync(join(repositoryRoot, "apps", "cli", "src", "model-catalog.ts")),
+    false,
+  );
+  assert.equal(cliSource.includes("BUILTIN_PROVIDERS"), false);
+  assert.equal(cliSource.includes("providerNames"), false);
+  assert.equal(cliSource.includes("./model-catalog"), false);
+});

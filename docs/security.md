@@ -23,11 +23,14 @@ laoHuangCode 不是完整沙箱。当前版本不提供工具执行确认，模�
 - 同一解析路径上的 `write`、`edit` 使用文件修改锁串行执行，避免并发丢失更新；不同文件仍可并发。
 - 工具日志隐藏 `content`、`old_text`、`new_text` 的正文以及 `edits` 替换列表。
 - API key 在终端隐藏输入（不回显），不接受命令行参数，也不进入 Shell 历史。
-- API key 保存在独立的 `credentials.json`，文件权限为 `0600`；程序创建的默认父目录为 `0700`。
-- API key 只通过注入 resolver 传给 `@laohuang/llm-pi-ai`，不写入环境变量或 Agent 消息。
-- `llm-pi-ai` receives API keys through an injected resolver and does not read or write credential files.
+- API key 和供应商 setup 字段保存在独立的 version 2 `credentials.json`，文件权限为 `0600`；程序创建的默认父目录为 `0700`。
+- `config.json` 只保存 profile、provider、model 和 base URL，不包含 runtime credential。
+- `@laohuang/llm-pi-ai` 通过 neutral credential bridge 读取 API-key credential；只有该包导入 pi-ai。
+- OAuth login、device code、callback server、access/refresh token storage 和 OAuth refresh 明确不实现。
+- `amazon-bedrock`、`google-vertex` 和 OAuth-only providers 不暴露为 available provider；直接 Google API provider `google` 单独存在。
 - Model errors and DSML protocol-leak diagnostics never include API keys, authorization headers, complete prompts, complete model output, or raw tool results.
 - Textual DSML is treated as untrusted assistant text and is never dispatched to Tool Runtime.
+- Model Runtime 拥有 retry：默认最多 3 次，延迟 250ms、1000ms；authentication、context-overflow、protocol、cancel、stale request 和 post-delta failure 不重试。
 
 ## 明确不保证的边界
 
@@ -35,6 +38,8 @@ laoHuangCode 不是完整沙箱。当前版本不提供工具执行确认，模�
 - 同一批工具默认并发执行；`bash` 可能与文件工具或其他 Bash 命令产生无法自动识别的副作用竞争。
 - Bash 可以读取其他环境变量和用户可访问的文件。
 - `credentials.json` 是权限受限的明文文件，不是操作系统 Keychain。
+- `verified` 只表示显式授权的真实 provider E2E 证据；available/configured 不等于 provider 契约已验证。
+- 通用 provider E2E 是联网/付费测试，普通 `npm test` 会跳过。
 - 项目内文件可能包含提示注入内容，诱导模型请求危险工具。
 - 工具执行前不会暂停并请求用户确认。
 - 目前没有命令 allowlist、Git 回滚、资源配额或审计持久化。

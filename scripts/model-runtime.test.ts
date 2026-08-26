@@ -7,8 +7,6 @@ import {
   ModelRuntime,
   ModelStreamCancelled,
   type ModelAdapter,
-  type ModelProviderInfo,
-  type ModelInfo,
   type ModelRequest,
   type ModelResult,
 } from "@laohuang/llm";
@@ -27,14 +25,6 @@ class StubAdapter implements ModelAdapter {
   runAttempt(request: ModelRequest): Promise<ModelResult> {
     this.requests.push(request);
     return this.completeFn(request);
-  }
-
-  listProviders(): readonly ModelProviderInfo[] {
-    return [{ id: "deepseek", name: "DeepSeek" }];
-  }
-
-  listModels(provider: string): readonly ModelInfo[] {
-    return [{ provider, id: "deepseek-v4-flash", name: "DeepSeek V4 Flash" }];
   }
 }
 
@@ -145,4 +135,90 @@ test("normalizes adapter failures with the model error taxonomy", async () => {
     assert.equal(error.message, "slow down");
     return true;
   });
+});
+
+test("retries transient pre-delta failures with deterministic delays", async () => {
+  let attempts = 0;
+  const delays: number[] = [];
+  const events: Array<{ kind: string; payload: Record<string, unknown> }> = [];
+  const adapter = new StubAdapter(async () => {
+    attempts += 1;
+    if (attempts < 3) {
+      throw new ModelError("overloaded", { kind: "server" });
+    }
+    return result();
+  });
+  const runtime = new ModelRuntime(adapter, {
+    sleep: async (delayMs) => {
+      delays.push(delayMs);
+    },
+  });
+
+  await runtime.complete({
+    ...request(),
+    onDelta: (kind, payload) => events.push({ kind, payload }),
+  });
+
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [250, 1000]);
+  assert.deepEqual(events, [
+    {
+      kind: "model_retry_scheduled",
+      payload: { attempt: 2, max_attempts: 3, delay_ms: 250, error_kind: "server" },
+    },
+    {
+      kind: "model_retry_scheduled",
+      payload: { attempt: 3, max_attempts: 3, delay_ms: 1000, error_kind: "server" },
+    },
+  ]);
+});
+
+test("does not retry protocol, authentication, or post-delta failures", async () => {
+  for (const error of [
+    new ModelError("bad route", { kind: "protocol" }),
+    new ModelError("bad key", { kind: "authentication" }),
+    new ModelError("partial", { kind: "server", hadDelta: true }),
+  ]) {
+    const adapter = new StubAdapter(async () => {
+      throw error;
+    });
+    const runtime = new ModelRuntime(adapter, { sleep: async () => {} });
+    await assert.rejects(runtime.complete(request()), error);
+    assert.equal(adapter.requests.length, 1);
+  }
+});
+
+test("maxAttempts one disables retries and forwards timeoutMs", async () => {
+  const adapter = new StubAdapter(async () => {
+    throw new ModelError("timed out", { kind: "timeout" });
+  });
+  const runtime = new ModelRuntime(adapter, { sleep: async () => {} });
+
+  await assert.rejects(
+    runtime.complete({ ...request(), timeoutMs: 3000, maxAttempts: 1 }),
+    (error: unknown) => error instanceof ModelError && error.kind === "timeout",
+  );
+  assert.equal(adapter.requests.length, 1);
+  assert.equal(adapter.requests[0]?.timeoutMs, 3000);
+});
+
+test("cancellation during retry delay prevents the next attempt", async () => {
+  const token = new CancelToken();
+  const adapter = new StubAdapter(async () => {
+    throw new ModelError("overloaded", { kind: "server" });
+  });
+  const runtime = new ModelRuntime(adapter, {
+    sleep: async (_delayMs, cancelToken) => {
+      cancelToken?.cancel("cancelled during retry delay");
+      if (cancelToken?.isCancelled()) {
+        throw new ModelStreamCancelled(cancelToken.reason);
+      }
+    },
+  });
+
+  await assert.rejects(
+    runtime.complete({ ...request(), cancelToken: token }),
+    ModelStreamCancelled,
+  );
+  assert.equal(adapter.requests.length, 1);
 });
