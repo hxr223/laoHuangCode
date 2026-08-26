@@ -1,7 +1,7 @@
 # laoHuangCode
 
-一个轻量级的 coding agent，基于 TypeScript/Node.js、官方 `openai` npm SDK 和
-Chat Completions 原生工具调用。
+一个轻量级的 coding agent，基于 TypeScript/Node.js、provider-neutral 模型运行时和
+`@earendil-works/pi-ai` 原生工具调用。
 
 当前提供四个工具：`read`、`write`、`edit`、`bash`。所有工具均直接执行，当前原型
 暂不提供权限确认。
@@ -19,7 +19,7 @@ Agent 会禁用工具并尝试基于已有信息完成一次最终回答。
 
 ## 快速开始
 
-需要 Node.js 18+。面向普通用户的安装方式：
+需要 Node.js >=22.19.0。面向普通用户的安装方式：
 
 ```bash
 npm install --global laohuang
@@ -41,10 +41,13 @@ node apps/cli/dist/bin.js
 
 ## 模型配置
 
-首次运行时，终端会提供两个供应商：
+首次运行时，终端会提供两个当前产品支持的供应商：
 
 - DeepSeek：内置 `deepseek-v4-flash` 和 `deepseek-v4-pro`。
-- OpenAI：使用输入的 API key 动态读取账户可用模型，也可手动输入模型名。
+- OpenAI：从已安装的 pi-ai catalog 读取可用模型，也可手动输入模型名。
+
+pi-ai 可能安装了更多供应商或模型；只有 DeepSeek 和 OpenAI 已接入配置、认证、
+模型切换和契约测试流程，其他 catalog 条目不代表产品支持。
 
 API key 使用隐藏输入，保存在独立的
 `~/.config/laohuang/credentials.json` 中。普通模型配置保存在同目录的
@@ -68,6 +71,7 @@ API key 使用隐藏输入，保存在独立的
 认证和模型选择相互独立：`/login`、`/logout` 管理凭据，`/model` 只切换模型。
 如果请求返回 401，Agent 会提示对应的 `/login <provider>` 命令。旧的
 `/apikey set`、`/apikey remove` 暂时保留为兼容别名。
+切换模型会保留可见对话历史，并移除供应商私有 replay 元数据。
 
 常用配置命令：
 

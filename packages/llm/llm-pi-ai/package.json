@@ -1,5 +1,5 @@
 {
-  "name": "@laohuang/llm-openai-compatible",
+  "name": "@laohuang/llm-pi-ai",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,9 +11,7 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@laohuang/llm": "0.0.0",
-    "@laohuang/runtime-protocol": "0.0.0",
-    "@laohuang/tools": "0.0.0",
-    "openai": "^6.49.0"
+    "@earendil-works/pi-ai": "^0.83.0",
+    "@laohuang/llm": "0.0.0"
   }
 }

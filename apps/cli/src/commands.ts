@@ -11,8 +11,12 @@ import type {
   OutputFn,
   SelectionConfig,
 } from "./model-selection.ts";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter } from "@laohuang/llm";
+import type {
+  ModelCatalog,
+  ModelProviderInfo,
+  ModelAuthStatus,
+} from "@laohuang/llm";
+import type { ProviderAuthController } from "./provider-auth.ts";
 
 export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 
@@ -329,29 +333,6 @@ export function createCommandCompleter(
   return (text) => registry.complete(text, { state: stateFn() });
 }
 
-function* modelCompletions(
-  args: readonly string[],
-): Iterable<readonly [string, string]> {
-  if (args.length === 0) {
-    yield ["current", "显示当前模型"] as const;
-    for (const name of providerNames()) {
-      yield [name, "模型供应商"] as const;
-    }
-    return;
-  }
-  if (args.length === 1) {
-    let provider;
-    try {
-      provider = getProvider(args[0]!);
-    } catch {
-      return;
-    }
-    for (const model of provider.suggestedModels) {
-      yield [model, `${provider.name} 模型`] as const;
-    }
-  }
-}
-
 function* queueCompletions(
   args: readonly string[],
 ): Iterable<readonly [string, string]> {
@@ -361,24 +342,14 @@ function* queueCompletions(
   }
 }
 
-function* providerCompletions(
-  args: readonly string[],
-): Iterable<readonly [string, string]> {
-  if (args.length === 0) {
-    for (const name of providerNames()) {
-      yield [name, "模型供应商"] as const;
-    }
-  }
-}
-
 // --- Structural views of modules owned by other workstreams ------------------
 
 /** Minimal view of CodingAgent (agent.ts) that session commands rely on. */
 export interface AgentLike {
   switchModel(options: {
-    modelAdapter: ModelAdapter;
     model: string;
     provider: string;
+    baseUrl: string | null;
   }): void;
   clearHistory?(): void;
   /** Conversation history, trimmed in place when no clearHistory exists. */
@@ -414,21 +385,16 @@ export interface SessionLike {
   queueStatus(): QueueStatus;
 }
 
-/** Minimal view of CredentialStore (credentials.ts). */
-export interface CredentialStoreLike {
-  get(provider: string): string | null;
-  set(provider: string, apiKey: string): void;
-  remove(provider: string): boolean;
-  providers(): string[];
-}
-
 export interface SessionCommandsOptions {
   readonly agent: AgentLike;
   readonly selector: ModelSelector;
-  readonly credentials: CredentialStoreLike;
+  readonly catalog: ModelCatalog;
+  readonly providerAuth: Pick<
+    ProviderAuthController,
+    "status" | "login" | "logout" | "ensureConfigured"
+  >;
   readonly currentConfig: SelectionConfig;
   readonly input: InputFn;
-  readonly secretInput: InputFn;
   readonly output?: OutputFn | undefined;
   readonly session?: SessionLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
@@ -453,9 +419,12 @@ export class SessionCommands {
 
   readonly #agent: AgentLike;
   readonly #selector: ModelSelector;
-  readonly #credentials: CredentialStoreLike;
+  readonly #catalog: ModelCatalog;
+  readonly #providerAuth: Pick<
+    ProviderAuthController,
+    "status" | "login" | "logout" | "ensureConfigured"
+  >;
   readonly #input: InputFn;
-  readonly #secretInput: InputFn;
   readonly #output: OutputFn;
   readonly #session: SessionLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
@@ -464,10 +433,10 @@ export class SessionCommands {
   constructor(options: SessionCommandsOptions) {
     this.#agent = options.agent;
     this.#selector = options.selector;
-    this.#credentials = options.credentials;
+    this.#catalog = options.catalog;
+    this.#providerAuth = options.providerAuth;
     this.#currentConfig = options.currentConfig;
     this.#input = options.input;
-    this.#secretInput = options.secretInput;
     this.#output = options.output ?? ((message) => console.log(message));
     this.#session = options.session ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
@@ -478,7 +447,7 @@ export class SessionCommands {
         usage: "/model [provider] [model]",
         handler: (args) => this.handleModel(args),
         allowedStates: IDLE_ONLY,
-        argumentCompleter: modelCompletions,
+        argumentCompleter: (args) => this.modelCompletions(args),
       },
       {
         name: "/login",
@@ -486,7 +455,7 @@ export class SessionCommands {
         usage: "/login [provider]",
         handler: (args) => this.handleLogin(args),
         allowedStates: IDLE_ONLY,
-        argumentCompleter: providerCompletions,
+        argumentCompleter: (args) => this.providerCompletions(args),
       },
       {
         name: "/logout",
@@ -494,7 +463,15 @@ export class SessionCommands {
         usage: "/logout [provider]",
         handler: (args) => this.handleLogout(args),
         allowedStates: IDLE_ONLY,
-        argumentCompleter: providerCompletions,
+        argumentCompleter: (args) => this.providerCompletions(args),
+      },
+      {
+        name: "/providers",
+        description: "查看模型供应商状态",
+        usage: "/providers [provider]",
+        handler: (args) => this.handleProviders(args),
+        allowedStates: ALL_STATES,
+        argumentCompleter: (args) => this.providerCompletions(args),
       },
       {
         name: "/apikey",
@@ -688,9 +665,9 @@ export class SessionCommands {
     const previousProvider = this.#currentConfig.provider;
     const previousModel = this.#currentConfig.model;
     this.#agent.switchModel({
-      modelAdapter: selection.modelAdapter,
       model: selection.config.model,
       provider: selection.config.provider,
+      baseUrl: selection.config.baseUrl,
     });
     this.#onModelSelected?.(selection);
     this.#currentConfig = selection.config;
@@ -710,55 +687,13 @@ export class SessionCommands {
     if (provider === null || provider === undefined) {
       return true;
     }
-    try {
-      getProvider(provider);
-    } catch (error) {
-      this.#output(errorMessage(error));
+    if (this.#catalog.getProvider(provider) === undefined) {
+      this.#output(`Unknown provider: ${provider}`);
       return true;
     }
-
-    let apiKey: string;
-    try {
-      apiKey = (await this.#secretInput(`Enter ${provider} API key: `)).trim();
-    } catch {
-      this.#output("Login cancelled; credentials were not changed.");
-      return true;
+    if (await this.#providerAuth.login(provider)) {
+      this.#output(`Logged in to ${provider}; use /model to select it.`);
     }
-    if (!apiKey) {
-      this.#output("Login cancelled; credentials were not changed.");
-      return true;
-    }
-    this.#credentials.set(provider, apiKey);
-    if (this.#currentConfig.provider === provider) {
-      let selection: ModelSelection | null;
-      try {
-        selection = await this.#selector.select({
-          providerName: provider,
-          modelName: this.#currentConfig.model,
-          promptForMissingKey: false,
-        });
-      } catch (error) {
-        this.#output(
-          `Credentials saved but could not be applied: ${errorMessage(error)}`,
-        );
-        return true;
-      }
-      if (selection !== null) {
-        const previousProvider = this.#currentConfig.provider;
-        const previousModel = this.#currentConfig.model;
-        this.#agent.switchModel({
-          modelAdapter: selection.modelAdapter,
-          model: selection.config.model,
-          provider: selection.config.provider,
-        });
-        this.#onModelSelected?.(selection);
-        this.#currentConfig = selection.config;
-        this.publishModelSwitched(previousProvider, previousModel);
-        this.#output(`Logged in to ${provider}; credentials applied.`);
-        return true;
-      }
-    }
-    this.#output(`Logged in to ${provider}; use /model to select it.`);
     return true;
   }
 
@@ -771,20 +706,26 @@ export class SessionCommands {
     if (provider === null || provider === undefined) {
       return true;
     }
-    try {
-      getProvider(provider);
-    } catch (error) {
-      this.#output(errorMessage(error));
+    if (this.#catalog.getProvider(provider) === undefined) {
+      this.#output(`Unknown provider: ${provider}`);
       return true;
     }
-    if (this.#credentials.remove(provider)) {
+    try {
+      await this.#providerAuth.logout(provider);
+      const status = await this.#providerAuth.status(provider);
+      if (status.configured) {
+        this.#output(
+          `Removed stored credentials for ${provider}, but it is still configured via ${status.source}.`,
+        );
+        return true;
+      }
       const suffix =
         this.#currentConfig.provider === provider
           ? " The current client remains active until you switch models or exit."
           : "";
       this.#output(`Logged out of ${provider}.${suffix}`);
-    } else {
-      this.#output(`No credentials stored for ${provider}.`);
+    } catch (error) {
+      this.#output(`Could not log out of ${provider}: ${errorMessage(error)}`);
     }
     return true;
   }
@@ -793,14 +734,8 @@ export class SessionCommands {
   private async handleApiKey(args: string[]): Promise<boolean> {
     const first = args[0];
     if (first === undefined) {
-      const configured = new Set(this.#credentials.providers());
-      for (const provider of providerNames()) {
-        const status = configured.has(provider)
-          ? "configured"
-          : "not configured";
-        this.#output(`${provider}: ${status}`);
-      }
       this.#output("Use /login or /logout to manage credentials.");
+      await this.handleProviders([]);
       return true;
     }
     if (first === "set") {
@@ -810,6 +745,34 @@ export class SessionCommands {
       return this.handleLogout(args.slice(1));
     }
     this.#output("Usage: /apikey [set|remove] [provider]");
+    return true;
+  }
+
+  private async handleProviders(args: string[]): Promise<boolean> {
+    if (args.length > 1) {
+      this.#output("Usage: /providers [provider]");
+      return true;
+    }
+    const providerId = args[0];
+    if (providerId !== undefined) {
+      const provider = this.#catalog.getProvider(providerId);
+      if (provider === undefined) {
+        this.#output(`Unknown provider: ${providerId}`);
+        return true;
+      }
+      await this.reportProviderDetail(provider);
+      return true;
+    }
+    const providers = this.#catalog.listProviders();
+    const statuses = await Promise.all(
+      providers.map((provider) => this.providerStatus(provider.id)),
+    );
+    providers.forEach((provider, index) => {
+      const status = statuses[index]!;
+      this.#output(
+        `${provider.id}: available, ${authState(status)}, ${verificationState(provider)}`,
+      );
+    });
     return true;
   }
 
@@ -835,9 +798,9 @@ export class SessionCommands {
   }
 
   private async chooseProvider(): Promise<string | null> {
-    const providers = providerNames();
+    const providers = this.#catalog.listProviders();
     providers.forEach((provider, index) => {
-      this.#output(`  ${index + 1}. ${provider}`);
+      this.#output(`  ${index + 1}. ${provider.id}`);
     });
     let answer: string;
     try {
@@ -847,11 +810,76 @@ export class SessionCommands {
       return null;
     }
     const choice = Number(answer);
-    const selected = Number.isInteger(choice) ? providers[choice - 1] : undefined;
+    const selected = Number.isInteger(choice)
+      ? providers[choice - 1]?.id
+      : undefined;
     if (selected === undefined) {
       this.#output("Invalid provider selection.");
       return null;
     }
     return selected;
   }
+
+  private *modelCompletions(
+    args: readonly string[],
+  ): Iterable<readonly [string, string]> {
+    if (args.length === 0) {
+      yield ["current", "显示当前模型"] as const;
+      for (const provider of this.#catalog.listProviders()) {
+        yield [provider.id, "模型供应商"] as const;
+      }
+      return;
+    }
+    if (args.length === 1) {
+      const provider = this.#catalog.getProvider(args[0]!);
+      if (provider === undefined) {
+        return;
+      }
+      for (const model of this.#catalog.listModels(provider.id)) {
+        yield [model.id, `${provider.name} 模型`] as const;
+      }
+    }
+  }
+
+  private *providerCompletions(
+    args: readonly string[],
+  ): Iterable<readonly [string, string]> {
+    if (args.length === 0) {
+      for (const provider of this.#catalog.listProviders()) {
+        yield [provider.id, "模型供应商"] as const;
+      }
+    }
+  }
+
+  private async reportProviderDetail(
+    provider: ModelProviderInfo,
+  ): Promise<void> {
+    const status = await this.providerStatus(provider.id);
+    this.#output(`Provider: ${provider.id}`);
+    this.#output(`Name: ${provider.name}`);
+    this.#output(
+      status.configured
+        ? `Authentication: configured (${status.source})`
+        : "Authentication: not configured",
+    );
+    this.#output(`Verified: ${provider.verified ? "yes" : "no"}`);
+    this.#output(`Dynamic models: ${provider.dynamicModels ? "yes" : "no"}`);
+    this.#output(`Models: ${this.#catalog.listModels(provider.id).length}`);
+  }
+
+  private async providerStatus(provider: string): Promise<ModelAuthStatus> {
+    try {
+      return await this.#providerAuth.status(provider);
+    } catch {
+      return { configured: false };
+    }
+  }
+}
+
+function authState(status: ModelAuthStatus): string {
+  return status.configured ? "configured" : "not configured";
+}
+
+function verificationState(provider: ModelProviderInfo): string {
+  return provider.verified ? "verified" : "unverified";
 }

@@ -1,7 +1,5 @@
 /** Argument parsing for the laohuang CLI. */
 
-import { providerNames } from "@laohuang/llm-openai-compatible";
-
 export class CliUsageError extends Error {}
 
 export const USAGE =
@@ -130,12 +128,8 @@ export function parseArgs(argv: readonly string[]): ParseResult {
           break;
         case "--provider": {
           const provider = takeValue(name, inline);
-          if (!providerNames().includes(provider)) {
-            throw new CliUsageError(
-              `argument --provider: invalid choice: '${provider}' (choose from ${providerNames()
-                .map((item) => `'${item}'`)
-                .join(", ")})`,
-            );
+          if (provider.length === 0) {
+            throw new CliUsageError("argument --provider: expected one argument");
           }
           args.provider = provider;
           break;

@@ -3,8 +3,13 @@ import assert from "node:assert/strict";
 
 import { AgentCancelled } from "../packages/core/agent-runtime/src/index.ts";
 import type { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
-import type { ModelAdapter } from "@laohuang/llm";
-import { StreamResult } from "@laohuang/llm";
+import type {
+  ModelAdapter,
+  ModelInfo,
+  ModelProviderInfo,
+  ModelRequest,
+  ModelResult,
+} from "@laohuang/llm";
 import {
   AgentStepRunner,
   type AgentStepRunnerContext,
@@ -25,60 +30,64 @@ class TestCancelToken {
 
 class StubAdapter implements ModelAdapter {
   readonly name = "stub";
-  readonly capabilities = {
-    streaming: true,
-    reasoningReplay: false,
-    thinkingSettings: false,
-  };
-  readonly requests: Array<Array<Record<string, unknown>>> = [];
-  private readonly responses: Iterator<StreamResult>;
+  readonly requests: ModelRequest[] = [];
+  private readonly responses: Iterator<ModelResult>;
 
-  constructor(responses: StreamResult[]) {
+  constructor(responses: ModelResult[]) {
     this.responses = responses[Symbol.iterator]();
   }
 
-  runAttempt(
-    request: {
-      messages: Array<Record<string, unknown>>;
-    },
-  ): Promise<StreamResult> {
-    this.requests.push(request.messages);
+  runAttempt(request: ModelRequest): Promise<ModelResult> {
+    this.requests.push(request);
     const result = this.responses.next().value;
     if (result === undefined) {
       throw new Error("unexpected model request");
     }
     return Promise.resolve(result);
   }
+
+  listProviders(): readonly ModelProviderInfo[] {
+    return [{ id: "openai", name: "OpenAI" }];
+  }
+
+  listModels(provider: string): readonly ModelInfo[] {
+    return [{ provider, id: "test-model", name: "Test Model" }];
+  }
 }
 
-function toolCallResult(callId: string): StreamResult {
-  return new StreamResult({
+function toolCallResult(callId: string): ModelResult {
+  return {
     requestId: "request-1",
-    content: null,
-    reasoningContent: null,
-    toolCalls: [
-      {
-        id: callId,
-        type: "function",
-        function: { name: "read", arguments: '{"path":"answer.txt"}' },
-      },
-    ],
-    finishReason: "tool_calls",
-  });
+    finishReason: "tool-calls",
+    usage: zeroUsage(),
+    message: {
+      role: "assistant",
+      provider: "openai",
+      model: "test-model",
+      content: [{
+        type: "tool-call",
+        call: { id: callId, name: "read", arguments: "{\"path\":\"answer.txt\"}" },
+      }],
+    },
+  };
 }
 
-function finalResult(content: string): StreamResult {
-  return new StreamResult({
+function finalResult(content: string): ModelResult {
+  return {
     requestId: "request-final",
-    content,
-    reasoningContent: null,
-    toolCalls: [],
     finishReason: "stop",
-  });
+    usage: zeroUsage(),
+    message: {
+      role: "assistant",
+      provider: "openai",
+      model: "test-model",
+      content: [{ type: "text", text: content }],
+    },
+  };
 }
 
 function createRunner(options: {
-  messages: Array<Record<string, unknown>>;
+  messages: ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   adapter: ModelAdapter;
   context?: AgentStepRunnerContext | null;
   executeTool?: () => Promise<ToolResult>;
@@ -93,7 +102,8 @@ function createRunner(options: {
   });
   return new AgentStepRunner({
     model: "test-model",
-    provider: null,
+    provider: "openai",
+    baseUrl: null,
     modelRuntime: new ModelRuntime(options.adapter),
     toolRuntime: new ToolRuntime({
       definitions: [],
@@ -126,7 +136,7 @@ function createRunner(options: {
 }
 
 test("commits the user message through the context before requesting the model", async () => {
-  const messages: Array<Record<string, unknown>> = [{ role: "system", content: "system" }];
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   const adapter = new StubAdapter([finalResult("complete")]);
   const context: AgentStepRunnerContext & { inputCommitted: boolean } = {
     inputCommitted: false,
@@ -140,30 +150,36 @@ test("commits the user message through the context before requesting the model",
 
   assert.equal(await runner.run(), "complete");
   assert.equal(context.inputCommitted, true);
-  assert.deepEqual(adapter.requests[0]?.map((message) => message["role"]), [
+  assert.deepEqual(adapter.requests[0]?.messages.map((message) => message.role), [
     "system",
     "user",
   ]);
 });
 
 test("commits the assistant tool call before its paired tool result", async () => {
-  const messages: Array<Record<string, unknown>> = [{ role: "system", content: "system" }];
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   const adapter = new StubAdapter([toolCallResult("call-1"), finalResult("complete")]);
   const runner = createRunner({ messages, adapter });
 
   assert.equal(await runner.run(), "complete");
-  assert.deepEqual(messages.map((message) => message["role"]), [
+  assert.deepEqual(messages.map((message) => message.role), [
     "system",
     "user",
     "assistant",
-    "tool",
+    "tool-result",
     "assistant",
   ]);
-  assert.equal(messages[3]?.["tool_call_id"], "call-1");
+  assert.deepEqual(messages[3], {
+    role: "tool-result",
+    toolCallId: "call-1",
+    toolName: "read",
+    content: JSON.stringify({ ok: true, content: "tool result" }),
+    isError: false,
+  });
 });
 
 test("rejects an unconfirmed final assistant commit after cancellation wins", async () => {
-  const messages: Array<Record<string, unknown>> = [{ role: "system", content: "system" }];
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   const adapter = new StubAdapter([finalResult("must not commit")]);
   const context: AgentStepRunnerContext = {
     commitIfActive: () => false,
@@ -171,12 +187,12 @@ test("rejects an unconfirmed final assistant commit after cancellation wins", as
   const runner = createRunner({ messages, adapter, context });
 
   await assert.rejects(runner.run(), AgentCancelled);
-  assert.deepEqual(messages.map((message) => message["role"]), ["system", "user"]);
-  assert.ok(messages.every((message) => message["content"] !== "must not commit"));
+  assert.deepEqual(messages.map((message) => message.role), ["system", "user"]);
+  assert.ok(messages.every((message) => message.role !== "assistant"));
 });
 
 test("commits pending user input only after the tool-result safe point", async () => {
-  const messages: Array<Record<string, unknown>> = [{ role: "system", content: "system" }];
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   const adapter = new StubAdapter([toolCallResult("call-1"), finalResult("complete")]);
   const order: string[] = [];
   let pendingTaken = false;
@@ -202,12 +218,16 @@ test("commits pending user input only after the tool-result safe point", async (
 
   assert.equal(await runner.run(), "complete");
   assert.deepEqual(order, ["tool-result", "safe-point"]);
-  assert.deepEqual(adapter.requests[1]?.map((message) => message["role"]), [
+  assert.deepEqual(adapter.requests[1]?.messages.map((message) => message.role), [
     "system",
     "user",
     "assistant",
-    "tool",
+    "tool-result",
     "user",
   ]);
-  assert.equal(adapter.requests[1]?.at(-1)?.["content"], "pending user message");
+  assert.equal(adapter.requests[1]?.messages.at(-1)?.content, "pending user message");
 });
+
+function zeroUsage(): ModelResult["usage"] {
+  return { inputTokens: 0, outputTokens: 0 };
+}

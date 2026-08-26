@@ -18,45 +18,52 @@ import {
   findProjectRoot,
   loadBaselineInstructions,
 } from "../packages/context/project-instructions/src/index.ts";
-import { OpenAICompatibleAdapter } from "@laohuang/llm-openai-compatible";
+import type {
+  ModelAdapter,
+  ModelInfo,
+  ModelProviderInfo,
+  ModelRequest,
+  ModelResult,
+} from "@laohuang/llm";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
 // --- Fakes (mirrors scripts/agent.test.ts FakeCompletions) -------------------
 
 class FakeToolCall {
   readonly id: string;
-  readonly type = "function";
-  readonly function: { name: string; arguments: string };
+  readonly name: string;
+  readonly arguments: string;
 
   constructor(id: string, name: string, args: string) {
     this.id = id;
-    this.function = { name, arguments: args };
+    this.name = name;
+    this.arguments = args;
   }
 }
 
 class FakeMessage {
   readonly content: string | null;
-  readonly tool_calls: FakeToolCall[] | null;
+  readonly toolCalls: FakeToolCall[] | null;
   readonly usage = null;
 
   constructor(content: string | null, toolCalls: FakeToolCall[] | null = null) {
     this.content = content;
-    this.tool_calls = toolCalls;
+    this.toolCalls = toolCalls;
   }
 }
 
 class FakeCompletions {
-  readonly requests: Array<Record<string, unknown>> = [];
+  readonly requests: ModelRequest[] = [];
   private readonly messages: Iterator<FakeMessage>;
 
   constructor(messages: FakeMessage[]) {
     this.messages = messages[Symbol.iterator]();
   }
 
-  create(request: Record<string, unknown>): Record<string, unknown> {
+  create(request: ModelRequest): ModelResult {
     this.requests.push(request);
     const message = this.messages.next().value as FakeMessage;
-    return { choices: [{ message }], usage: message.usage };
+    return resultFromFakeMessage(request, message);
   }
 }
 
@@ -65,25 +72,49 @@ function fakeClient(...messages: FakeMessage[]) {
   return { chat: { completions }, completions };
 }
 
-function fakeModelAdapter(client: ReturnType<typeof fakeClient>): OpenAICompatibleAdapter {
-  return new OpenAICompatibleAdapter({
-    provider: "openai",
-    capabilities: {
-      streaming: true,
-      reasoningReplay: false,
-      thinkingSettings: false,
+function fakeModelAdapter(client: ReturnType<typeof fakeClient>): ModelAdapter {
+  return {
+    name: "fake",
+    runAttempt(request: ModelRequest): Promise<ModelResult> {
+      return Promise.resolve(client.completions.create(request));
     },
-    client,
-  });
+    listProviders(): readonly ModelProviderInfo[] {
+      return [{ id: "openai", name: "OpenAI" }];
+    },
+    listModels(provider: string): readonly ModelInfo[] {
+      return [{ provider, id: "model", name: "Model" }];
+    },
+  };
 }
 
 function requestMessages(
   completions: FakeCompletions,
   index: number,
-): Array<Record<string, unknown>> {
-  return completions.requests[index]?.["messages"] as Array<
-    Record<string, unknown>
-  >;
+): ModelRequest["messages"] {
+  return completions.requests[index]?.messages ?? [];
+}
+
+function resultFromFakeMessage(
+  request: ModelRequest,
+  message: FakeMessage,
+): ModelResult {
+  return {
+    requestId: request.requestId ?? "request",
+    finishReason: message.toolCalls === null ? "stop" : "tool-calls",
+    usage: { inputTokens: 0, outputTokens: 0 },
+    message: {
+      role: "assistant",
+      provider: request.provider,
+      model: request.model,
+      content: [
+        ...(message.content === null ? [] : [{ type: "text" as const, text: message.content }]),
+        ...((message.toolCalls ?? []).map((call) => ({
+          type: "tool-call" as const,
+          call: { id: call.id, name: call.name, arguments: call.arguments },
+        }))),
+      ],
+    },
+  };
 }
 
 // --- Helpers -----------------------------------------------------------------
@@ -305,7 +336,7 @@ test("first request order is system, user, then baseline reminder", async (t) =>
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -335,7 +366,7 @@ test("baseline is injected once across two run turns", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -362,7 +393,7 @@ test("no instruction files means no injected message", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -384,7 +415,7 @@ test("agent without instruction options injects nothing", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
   });
 
@@ -423,7 +454,7 @@ test("successful read discovers descendant instructions after tool results", asy
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -434,7 +465,7 @@ test("successful read discovers descendant instructions after tool results", asy
   const second = requestMessages(client.completions, 1);
   assert.deepEqual(
     second.map((message) => message["role"]),
-    ["system", "user", "assistant", "tool", "user"],
+    ["system", "user", "assistant", "tool-result", "user"],
   );
   const reminder = String(second.at(-1)?.["content"]);
   assert.ok(reminder.startsWith("<system-reminder>"));
@@ -462,7 +493,7 @@ test("successful edit also discovers descendant instructions", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -473,7 +504,7 @@ test("successful edit also discovers descendant instructions", async (t) => {
   const second = requestMessages(client.completions, 1);
   assert.deepEqual(
     second.map((message) => message["role"]),
-    ["system", "user", "assistant", "tool", "user"],
+    ["system", "user", "assistant", "tool-result", "user"],
   );
   assert.ok(
     String(second.at(-1)?.["content"]).includes(
@@ -501,7 +532,7 @@ test("one reminder covers the root-to-dir chain broad to specific", async (t) =>
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -538,7 +569,7 @@ test("bash never triggers discovery", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -549,7 +580,7 @@ test("bash never triggers discovery", async (t) => {
   const second = requestMessages(client.completions, 1);
   assert.deepEqual(
     second.map((message) => message["role"]),
-    ["system", "user", "assistant", "tool"],
+    ["system", "user", "assistant", "tool-result"],
   );
   assert.equal(remindersIn(second).length, 0);
 });
@@ -569,7 +600,7 @@ test("failed and out-of-root file operations yield no discovery", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -580,7 +611,7 @@ test("failed and out-of-root file operations yield no discovery", async (t) => {
   const second = requestMessages(client.completions, 1);
   assert.deepEqual(
     second.map((message) => message["role"]),
-    ["system", "user", "assistant", "tool", "tool"],
+    ["system", "user", "assistant", "tool-result", "tool-result"],
   );
   assert.equal(remindersIn(second).length, 0);
 });
@@ -604,7 +635,7 @@ test("cancelled tool operations yield no discovery", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -628,7 +659,7 @@ test("scopes loaded by the baseline are not re-injected", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -639,7 +670,7 @@ test("scopes loaded by the baseline are not re-injected", async (t) => {
   const second = requestMessages(client.completions, 1);
   assert.deepEqual(
     second.map((message) => message["role"]),
-    ["system", "user", "user", "assistant", "tool"],
+    ["system", "user", "user", "assistant", "tool-result"],
   );
   assert.equal(remindersIn(second).length, 1); // the baseline only
   assert.ok(
@@ -669,7 +700,7 @@ test("a scope discovered once is not re-injected on later touches", async (t) =>
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -687,12 +718,12 @@ test("a scope discovered once is not re-injected on later touches", async (t) =>
       "system",
       "user",
       "assistant",
-      "tool",
+      "tool-result",
       "user",
       "assistant",
       "user",
       "assistant",
-      "tool",
+      "tool-result",
     ],
   );
 });
@@ -717,7 +748,7 @@ test("touched absolute path never appears in serialized history", async (t) => {
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
-    provider: null,
+    provider: "openai",
     tools: createTestToolRegistry(root),
     projectRoot: root,
     startupCwd: root,
@@ -726,7 +757,7 @@ test("touched absolute path never appears in serialized history", async (t) => {
   await agent.run("read and write");
 
   const toolMessages = agent.messages.filter(
-    (message) => message["role"] === "tool",
+    (message) => message["role"] === "tool-result",
   );
   assert.equal(toolMessages.length, 2);
   const serialized = toolMessages

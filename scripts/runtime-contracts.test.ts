@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   makePromptAction,
+  type ModelRuntimeEventType,
   type AgentRunner,
   type CommandResult,
   type QueueStatus,
@@ -26,9 +27,11 @@ const queueStatusContract: QueueStatus = {
   deadLetters: 5,
 };
 const runnerContract: AgentRunner | null = null;
+const retryEventContract: ModelRuntimeEventType = "model_retry_scheduled";
 void commandResultContract;
 void queueStatusContract;
 void runnerContract;
+void retryEventContract;
 
 test("session action factory preserves text and source", () => {
   const action = makePromptAction("hello", "composer");

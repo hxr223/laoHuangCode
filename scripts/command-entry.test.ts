@@ -7,32 +7,57 @@ import {
   type AgentLike,
   type SessionLike,
 } from "../apps/cli/src/commands.ts";
-import { CredentialStore } from "@laohuang/local-config";
-import {
-  ModelSelector,
-  type ProviderRegistry,
-} from "../apps/cli/src/model-selection.ts";
-import { createClient } from "@laohuang/llm-openai-compatible";
-import { getProvider, providerNames } from "@laohuang/llm-openai-compatible";
-import type { ModelAdapter, ModelRequest, StreamResult } from "@laohuang/llm";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
+import type {
+  ModelAuthStatus,
+  ModelCatalog,
+  ModelInfo,
+  ModelProviderInfo,
+} from "@laohuang/llm";
+import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
 import { TerminalUI } from "../packages/terminal/tui/src/index.ts";
 
-const providers: ProviderRegistry = { get: getProvider, names: providerNames };
-
-function makeModelAdapter(provider: string, client: unknown): ModelAdapter {
-  return {
-    name: provider,
-    capabilities: {
-      streaming: true,
-      reasoningReplay: provider === "deepseek",
-      thinkingSettings: provider === "deepseek",
-    },
-    runAttempt(_request: ModelRequest): Promise<StreamResult> {
-      void client;
-      throw new Error("not used");
-    },
-  };
-}
+const providers: readonly ModelProviderInfo[] = [{
+  id: "deepseek",
+  name: "DeepSeek",
+  authName: "DeepSeek API key",
+  dynamicModels: false,
+  verified: false,
+}];
+const models: readonly ModelInfo[] = [{
+  provider: "deepseek",
+  id: "deepseek-v4-flash",
+  name: "DeepSeek V4 Flash",
+  api: "openai-completions",
+  reasoning: false,
+  input: ["text"],
+  contextWindow: 8192,
+  maxTokens: 2048,
+}];
+const catalog: ModelCatalog = {
+  listProviders: () => providers,
+  getProvider: (provider) =>
+    providers.find((item) => item.id === provider),
+  listModels: (provider) =>
+    models.filter((item) => item.provider === provider),
+  listAvailableModels: async (provider) =>
+    models.filter((item) => item.provider === provider),
+  getModel: (provider, model) =>
+    models.find((item) => item.provider === provider && item.id === model),
+  refresh: async () => {},
+};
+const providerAuth = {
+  status: async (): Promise<ModelAuthStatus> => ({
+    configured: true,
+    source: "stored credential",
+  }),
+  login: async () => true,
+  logout: async () => {},
+  ensureConfigured: async () => true,
+} satisfies Pick<
+  ProviderAuthController,
+  "status" | "login" | "logout" | "ensureConfigured"
+>;
 
 class FakeAgent implements AgentLike {
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
@@ -49,27 +74,22 @@ function makeCommands(options: { session?: SessionLike | null } = {}): {
   outputs: string[];
 } {
   const outputs: string[] = [];
-  const credentials = new CredentialStore("/tmp/laohuang-command-entry-test.json");
   const commands = new SessionCommands({
     agent: new FakeAgent(),
     selector: new ModelSelector({
-      credentials,
-      registry: providers,
-      createClient,
-      createModelAdapter: makeModelAdapter,
+      catalog,
+      providerAuth,
       input: async () => "",
-      secretInput: async () => "",
       output: () => {},
     }),
-    credentials,
+    catalog,
+    providerAuth,
     currentConfig: {
-      apiKey: "test-key",
       baseUrl: null,
       model: "deepseek-v4-flash",
       provider: "deepseek",
     },
     input: async () => "",
-    secretInput: async () => "",
     output: (message) => {
       outputs.push(message);
     },
