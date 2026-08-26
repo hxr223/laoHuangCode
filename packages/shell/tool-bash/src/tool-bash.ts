@@ -42,7 +42,7 @@ export function createBashToolDefinition(
   return {
     spec: {
       name: "bash",
-      description: "Run a Bash command inside the project root.",
+      description: "Run a Bash command.",
       parameters: {
         type: "object",
         properties: {
@@ -54,7 +54,7 @@ export function createBashToolDefinition(
           workdir: {
             type: "string",
             description:
-              "Working directory for the command; must resolve inside the project root. Defaults to the project root.",
+              "Absolute working directory or path relative to the default working directory. Defaults to the default working directory.",
           },
           timeoutMs: {
             type: "integer",
@@ -115,11 +115,7 @@ async function defaultRunBash(
 }
 
 async function resolvePath(root: string, rawPath: string): Promise<string> {
-  const resolved = await resolveNonStrict(path.resolve(root, rawPath));
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-    throw new Error(`Path is outside the project root: ${rawPath}`);
-  }
-  return resolved;
+  return await resolveNonStrict(path.resolve(root, rawPath));
 }
 
 /** Non-strict realpath: resolves symlinks for the deepest existing ancestor. */
