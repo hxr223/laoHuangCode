@@ -100,6 +100,23 @@ test("default specs reject user forged internal events", () => {
   );
 });
 
+test("default specs accept model retry schedule events", () => {
+  const event = new EventFactory().create(EventKind.ModelRetryScheduled, {
+    source: EventSource.Model,
+    session_id: "session-1",
+    task_id: "task-1",
+    correlation_id: "request-1",
+    payload: {
+      attempt: 2,
+      max_attempts: 3,
+      delay_ms: 250,
+      error_kind: "server",
+    },
+  });
+
+  assert.equal(event.kind, "model.retry_scheduled");
+});
+
 test("projector recursively redacts secrets", () => {
   const event = new EventFactory().create(EventKind.InputUserMessage, {
     source: EventSource.User,

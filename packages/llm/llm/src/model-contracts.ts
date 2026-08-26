@@ -125,6 +125,7 @@ export interface ModelRequest {
   readonly tools: readonly ToolSpec[];
   readonly toolChoice: "auto" | "none";
   readonly temperature?: number;
+  readonly timeoutMs?: number;
   readonly requestId?: string;
   readonly cancelToken?: CancelToken;
   readonly isRequestActive?: (requestId: string) => boolean;
@@ -142,20 +143,80 @@ export interface ModelResult {
 export interface ModelProviderInfo {
   readonly id: string;
   readonly name: string;
+  readonly authName: string;
+  readonly dynamicModels: boolean;
+  readonly verified: boolean;
 }
 
 export interface ModelInfo {
   readonly provider: string;
   readonly id: string;
   readonly name: string;
+  readonly api: string;
+  readonly reasoning: boolean;
+  readonly input: readonly string[];
+  readonly contextWindow: number;
+  readonly maxTokens: number;
+}
+
+export type ModelAuthStatus =
+  | { readonly configured: false }
+  | { readonly configured: true; readonly source: string };
+
+export type ApiKeySetupPrompt =
+  | {
+      readonly type: "text";
+      readonly message: string;
+      readonly placeholder?: string;
+    }
+  | {
+      readonly type: "secret";
+      readonly message: string;
+      readonly placeholder?: string;
+    }
+  | {
+      readonly type: "select";
+      readonly message: string;
+      readonly options: readonly {
+        readonly id: string;
+        readonly label: string;
+        readonly description?: string;
+      }[];
+    };
+
+export interface ApiKeySetupInteraction {
+  prompt(prompt: ApiKeySetupPrompt): Promise<string>;
+  notify(message: string): void;
+}
+
+export interface ModelCatalog {
+  listProviders(): readonly ModelProviderInfo[];
+  getProvider(provider: string): ModelProviderInfo | undefined;
+  listModels(provider: string): readonly ModelInfo[];
+  listAvailableModels(provider: string): Promise<readonly ModelInfo[]>;
+  getModel(provider: string, model: string): ModelInfo | undefined;
+  refresh(provider: string, signal?: AbortSignal): Promise<void>;
+}
+
+export interface ModelAuthService {
+  status(provider: string): Promise<ModelAuthStatus>;
+  loginApiKey(
+    provider: string,
+    interaction: ApiKeySetupInteraction,
+  ): Promise<ModelAuthStatus>;
+  logout(provider: string): Promise<void>;
+}
+
+export interface ModelPlatform {
+  readonly adapter: ModelAdapter;
+  readonly catalog: ModelCatalog;
+  readonly auth: ModelAuthService;
 }
 
 /** Translates LaoHuang model requests to one provider implementation. */
 export interface ModelAdapter {
   readonly name: string;
   runAttempt(request: ModelRequest): Promise<ModelResult>;
-  listProviders(): readonly ModelProviderInfo[];
-  listModels(provider: string): readonly ModelInfo[];
 }
 
 /**
@@ -164,6 +225,7 @@ export interface ModelAdapter {
  */
 export type ModelErrorKind =
   | "authentication"
+  | "timeout"
   | "rate_limited"
   | "context_overflow"
   | "server"
@@ -229,6 +291,14 @@ export function classifyModelError(error: unknown): ModelErrorKind {
     }
     const message =
       typeof record["message"] === "string" ? record["message"] : "";
+    if (
+      status === 408 ||
+      status === 504 ||
+      record["name"] === "TimeoutError" ||
+      /\btimeout\b|\btimed out\b/i.test(message)
+    ) {
+      return "timeout";
+    }
     if (CONTEXT_OVERFLOW_PATTERN.test(message)) {
       return "context_overflow";
     }

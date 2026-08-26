@@ -8,6 +8,8 @@ import {
   modelErrorKind,
   portableModelMessage,
   type AssistantModelMessage,
+  type ModelAuthService,
+  type ModelCatalog,
   type ModelMessage,
 } from "@laohuang/llm";
 
@@ -100,3 +102,30 @@ test("ModelError exposes protocol failures as a stable taxonomy kind", () => {
   assert.equal(error.hadDelta, true);
   assert.equal(modelErrorKind(error), "protocol");
 });
+
+test("error taxonomy distinguishes timeouts", () => {
+  assert.equal(classifyModelError(statusError(408, "request timeout")), "timeout");
+  assert.equal(classifyModelError(statusError(504, "gateway timeout")), "timeout");
+  assert.equal(
+    classifyModelError(Object.assign(new Error("operation timed out"), {
+      name: "TimeoutError",
+    })),
+    "timeout",
+  );
+});
+
+const catalogShape: ModelCatalog = {
+  listProviders: () => [],
+  getProvider: () => undefined,
+  listModels: () => [],
+  listAvailableModels: async () => [],
+  getModel: () => undefined,
+  refresh: async () => {},
+};
+const authShape: ModelAuthService = {
+  status: async () => ({ configured: false }),
+  loginApiKey: async () => ({ configured: true, source: "stored credential" }),
+  logout: async () => {},
+};
+assert.equal(catalogShape.getProvider("missing"), undefined);
+assert.deepEqual(await authShape.status("missing"), { configured: false });

@@ -12,6 +12,7 @@ import {
   VERSION,
   main as cliMain,
 } from "../apps/cli/src/main.ts";
+import { parseArgs } from "../apps/cli/src/args.ts";
 import {
   runPlainSessionRepl,
   runRepl,
@@ -24,8 +25,9 @@ import { ConfigManager, CredentialStore } from "@laohuang/local-config";
 import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src/index.ts";
 import {
   ModelSelector,
-  type ProviderCatalog,
 } from "../apps/cli/src/model-selection.ts";
+import type { ModelCatalog, ModelInfo, ModelProviderInfo } from "@laohuang/llm";
+import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
 import { AgentSession } from "@laohuang/session-runtime";
 import {
   MemoryTerminalDriver,
@@ -39,25 +41,40 @@ const textEncoder = new TextEncoder();
 const PROJECT_ROOT = fileURLToPath(new URL("..", import.meta.url));
 const CLI_PATH = fileURLToPath(new URL("../apps/cli/dist/bin.js", import.meta.url));
 
-const catalog: ProviderCatalog = {
-  names: () => ["deepseek", "openai"],
-  get(name) {
-    if (name === "deepseek") {
-      return {
-        id: "deepseek",
-        name: "DeepSeek",
-        baseUrl: "https://api.deepseek.com",
-      };
-    }
-    if (name === "openai") {
-      return { id: "openai", name: "OpenAI", baseUrl: null };
-    }
-    throw new Error(`Unknown provider: ${name}`);
+const providerInfos: readonly ModelProviderInfo[] = [
+  {
+    id: "deepseek",
+    name: "DeepSeek",
+    authName: "DeepSeek API key",
+    dynamicModels: false,
+    verified: false,
   },
-  listModelIds(provider) {
-    return provider === "deepseek" ? ["deepseek-v4-flash"] : ["gpt-5"];
-  },
+];
+const modelInfos: readonly ModelInfo[] = [{
+  provider: "deepseek",
+  id: "deepseek-v4-flash",
+  name: "DeepSeek V4 Flash",
+  api: "openai-completions",
+  reasoning: false,
+  input: ["text"],
+  contextWindow: 8192,
+  maxTokens: 2048,
+}];
+const catalog: ModelCatalog = {
+  listProviders: () => providerInfos,
+  getProvider: (provider) =>
+    providerInfos.find((item) => item.id === provider),
+  listModels: (provider) =>
+    modelInfos.filter((item) => item.provider === provider),
+  listAvailableModels: async (provider) =>
+    modelInfos.filter((item) => item.provider === provider),
+  getModel: (provider, model) =>
+    modelInfos.find((item) => item.provider === provider && item.id === model),
+  refresh: async () => {},
 };
+const providerAuth = {
+  ensureConfigured: async () => true,
+} satisfies Pick<ProviderAuthController, "ensureConfigured">;
 
 async function withTempDir(run: (directory: string) => Promise<void>): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-cli-test-"));
@@ -484,6 +501,21 @@ test("terminal ui is only enabled for the real interactive streams", () => {
   assert.equal(supportsTerminalUI({ stdin: pipe, stdout: tty }), false);
 });
 
+test("parseArgs accepts provider identifiers without a built-in catalog", () => {
+  const parsed = parseArgs([
+    "config",
+    "--provider",
+    "missing",
+    "--model",
+    "model-1",
+  ]);
+
+  assert.equal(parsed.kind, "run");
+  if (parsed.kind === "run") {
+    assert.equal(parsed.args.provider, "missing");
+  }
+});
+
 test("tty wiring asks model selection through the running terminal ui", async () => {
   // Regression: inside a running TUI session the selector's questions must
   // come from the injected TerminalUI prompts (which coordinate with the
@@ -492,35 +524,27 @@ test("tty wiring asks model selection through the running terminal ui", async ()
   const ui = new TerminalUI({ driver: terminal });
   ui.startLoop(() => {});
   const prompts = terminalUiPrompts(ui);
-  const store = new Map<string, string>();
   const selector = new ModelSelector({
-    credentials: {
-      get: (provider) => store.get(provider) ?? null,
-      set: (provider, apiKey) => {
-        store.set(provider, apiKey);
-      },
-    },
     catalog,
+    providerAuth,
     input: prompts.input,
-    secretInput: prompts.secretInput,
     output: () => {},
   });
 
   const pending = selector.select({ providerName: "deepseek" });
   try {
-    // The secret question is rendered by the terminal UI itself.
+    // The model search question is rendered by the terminal UI itself.
     for (let index = 0; index < 20; index += 1) {
       ui.drainLoop();
-      if (terminal.writes().includes("Enter deepseek API key:")) {
+      if (terminal.writes().includes("Search models:")) {
         break;
       }
       await delay(1);
     }
-    assert.ok(terminal.writes().includes("Enter deepseek API key:"));
+    assert.ok(terminal.writes().includes("Search models:"));
 
-    ui.feedInputBytes(textEncoder.encode("tty-key\r"));
+    ui.feedInputBytes(textEncoder.encode("deepseek\r"));
     ui.drainLoop();
-    // Wait until the selector advances to the model question.
     for (let index = 0; index < 20; index += 1) {
       await delay(1);
       ui.drainLoop();
@@ -535,14 +559,10 @@ test("tty wiring asks model selection through the running terminal ui", async ()
 
     const selection = await pending;
     assert.ok(selection);
-    assert.equal(selection.config.apiKey, "tty-key");
     assert.equal(
       selection.config.model,
-      catalog.listModelIds("deepseek")[0],
+      modelInfos[0]?.id,
     );
-    assert.equal(store.get("deepseek"), "tty-key");
-    // The key was typed into the masked UI prompt, never echoed back.
-    assert.ok(!terminal.writes().includes("tty-key"));
   } finally {
     ui.close();
   }
@@ -606,7 +626,7 @@ test("first start collects provider key and model in the terminal", async () => 
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const credentialsPath = join(directory, "credentials.json");
-    const answers = ["1", "1", "/exit"];
+    const answers = ["7", "deepseek-v4-flash", "1", "/exit"];
     const outputs: string[] = [];
 
     const status = await cliMain([], {
@@ -618,14 +638,13 @@ test("first start collects provider key and model in the terminal", async () => 
       outputFn: (message) => {
         outputs.push(message);
       },
-      clientFactory: () => ({}),
     });
 
     assert.equal(status, 0);
-    assert.equal(
-      new CredentialStore(credentialsPath).get("deepseek"),
-      "terminal-secret",
-    );
+    assert.deepEqual(await new CredentialStore(credentialsPath).read("deepseek"), {
+      type: "api_key",
+      key: "terminal-secret",
+    });
     assert.ok(!outputs.join("\n").includes("terminal-secret"));
     assert.equal(
       new ConfigManager(configPath).listProfiles()[0]!.model,
@@ -638,6 +657,7 @@ test("config command saves a provider profile without starting agent", async () 
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const credentialsPath = join(directory, "credentials.json");
+    const answers = ["deepseek-v4-flash", "1"];
     const outputs: string[] = [];
 
     const status = await cliMain(
@@ -646,21 +666,20 @@ test("config command saves a provider profile without starting agent", async () 
         environ: {},
         configPath,
         credentialsPath,
-        inputFn: () => "1",
+        inputFn: () => answers.shift()!,
         secretInputFn: () => "terminal-key",
         outputFn: (message) => {
           outputs.push(message);
         },
-        clientFactory: () => ({}),
       },
     );
 
     assert.equal(status, 0);
     assert.ok(existsSync(configPath));
-    assert.equal(
-      new CredentialStore(credentialsPath).get("deepseek"),
-      "terminal-key",
-    );
+    assert.deepEqual(await new CredentialStore(credentialsPath).read("deepseek"), {
+      type: "api_key",
+      key: "terminal-key",
+    });
     assert.ok(outputs.some((output) => output.includes("work")));
   });
 });
@@ -706,14 +725,13 @@ test("configured deepseek profile starts interactive cli", async () => {
       outputFn: (message) => {
         outputs.push(message);
       },
-      clientFactory: () => ({}),
     });
 
     assert.equal(status, 0);
-    assert.equal(
-      new CredentialStore(credentialsPath).get("deepseek"),
-      "terminal-key",
-    );
+    assert.deepEqual(await new CredentialStore(credentialsPath).read("deepseek"), {
+      type: "api_key",
+      key: "terminal-key",
+    });
     assert.ok(
       outputs.some((output) => output.includes("laoHuangCode is ready")),
     );
@@ -768,7 +786,10 @@ test("doctor reports resolved runtime configuration", async () => {
       model: "deepseek-v4-flash",
       baseUrl: "https://api.deepseek.com",
     });
-    new CredentialStore(credentialsPath).set("deepseek", "secret");
+    await new CredentialStore(credentialsPath).modify("deepseek", async () => ({
+      type: "api_key",
+      key: "secret",
+    }));
     const outputs: string[] = [];
 
     const status = await cliMain(["doctor"], {

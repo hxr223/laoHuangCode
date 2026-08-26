@@ -21,7 +21,7 @@ import type {
 test("PiAiAdapter rejects unknown providers and models before streaming", async () => {
   const fake = new FakeModels();
   const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
+    { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 
@@ -36,25 +36,27 @@ test("PiAiAdapter rejects unknown providers and models before streaming", async 
   assert.equal(fake.streams.length, 0);
 });
 
-test("PiAiAdapter passes baseUrl, api key, temperature, and cancel signal", async () => {
+test("PiAiAdapter passes baseUrl, timeout, temperature, and cancel signal", async () => {
   const token = new CancelToken();
   const fake = new FakeModels();
   const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "  secret  " },
+    { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 
   await adapter.runAttempt(request({
     baseUrl: "https://api.deepseek.example",
     temperature: 0.2,
+    timeoutMs: 3000,
     cancelToken: token,
   }));
 
   assert.equal(fake.streams.length, 1);
   assert.equal(fake.streams[0]?.model.baseUrl, "https://api.deepseek.example");
   assert.equal(fake.baseModel.baseUrl, "https://api.deepseek.com");
-  assert.equal(fake.streams[0]?.options.apiKey, "secret");
+  assert.equal("apiKey" in fake.streams[0]!.options, false);
   assert.equal(fake.streams[0]?.options.temperature, 0.2);
+  assert.equal(fake.streams[0]?.options.timeoutMs, 3000);
   assert.equal(fake.streams[0]?.options.signal, token.signal);
   assert.equal(fake.streams[0]?.options.maxRetries, 0);
 });
@@ -62,7 +64,7 @@ test("PiAiAdapter passes baseUrl, api key, temperature, and cancel signal", asyn
 test("PiAiAdapter enables thinking for reasoning-capable models", async () => {
   const fake = new FakeModels();
   const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
+    { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 
@@ -76,7 +78,7 @@ test("PiAiAdapter honors cancellation preflight and request-open abort", async (
   token.cancel("stop");
   const fake = new FakeModels();
   const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
+    { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 
@@ -91,28 +93,13 @@ test("PiAiAdapter honors cancellation preflight and request-open abort", async (
   assert.equal(fake.streams.length, 0);
 });
 
-test("PiAiAdapter lists only enabled providers and their models", () => {
-  const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
-    new FakeModels(),
-  );
-
-  assert.deepEqual(adapter.listProviders(), [{ id: "deepseek", name: "DeepSeek" }]);
-  assert.deepEqual(adapter.listModels("deepseek"), [{
-    provider: "deepseek",
-    id: "deepseek-v4-flash",
-    name: "DeepSeek V4 Flash",
-  }]);
-  assert.deepEqual(adapter.listModels("openai"), []);
-});
-
 test("PiAiAdapter rejects DSML protocol leakage without dispatching tools", async () => {
   const dsml = "<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"bash\">" +
     "<｜｜DSML｜｜parameter name=\"command\">pwd</｜｜DSML｜｜parameter>" +
     "</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>";
   const fake = new FakeModels(doneWithText(dsml));
   const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
+    { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 
@@ -126,7 +113,7 @@ test("PiAiAdapter rejects DSML protocol leakage without dispatching tools", asyn
 test("PiAiAdapter keeps ordinary DSML prose as text", async () => {
   const fake = new FakeModels(doneWithText("The string DSML is documented here."));
   const adapter = new PiAiAdapter(
-    { enabledProviders: ["deepseek"], resolveApiKey: () => "secret" },
+    { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 

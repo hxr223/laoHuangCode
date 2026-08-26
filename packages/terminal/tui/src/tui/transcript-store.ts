@@ -97,6 +97,17 @@ export class TranscriptStore {
       }));
       return;
     }
+    if (kind === "model.retry_scheduled") {
+      this.append(createTranscriptBlock("notice", this.newBlockId(), {
+        text:
+          `Model request retry ${String(update.payload.attempt)}/` +
+          `${String(update.payload.max_attempts)} in ` +
+          `${String(update.payload.delay_ms)}ms ` +
+          `(${String(update.payload.error_kind)}).`,
+        style: "yellow",
+      }));
+      return;
+    }
     if (kind === "model.text_delta") {
       this.freezeThinking();
       const item = this.#getOrCreate("assistant", correlationId, { mutable: true });

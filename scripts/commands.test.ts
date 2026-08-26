@@ -1,67 +1,149 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
-// Test files import ".ts" paths directly: Node 22 type stripping cannot
-// resolve ".js" specifiers to ".ts" sources (tsc only covers src/).
+import type {
+  ModelAuthStatus,
+  ModelCatalog,
+  ModelInfo,
+  ModelProviderInfo,
+} from "@laohuang/llm";
 import {
   CommandRegistry,
   SessionCommands,
   type AgentLike,
   type SessionLike,
 } from "../apps/cli/src/commands.ts";
-import { CredentialStore } from "@laohuang/local-config";
-import {
-  ModelSelector,
-  type ProviderCatalog,
-} from "../apps/cli/src/model-selection.ts";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
+import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
 
-/** Registry wired exactly as production code would wire providers.ts. */
-const catalog: ProviderCatalog = {
-  names: () => ["deepseek", "openai"],
-  get(name) {
-    if (name === "deepseek") {
-      return {
-        id: "deepseek",
-        name: "DeepSeek",
-        baseUrl: "https://api.deepseek.com",
-      };
-    }
-    if (name === "openai") {
-      return { id: "openai", name: "OpenAI", baseUrl: null };
-    }
-    throw new Error(`Unknown provider: ${name}`);
-  },
-  listModelIds(provider) {
-    if (provider === "deepseek") {
-      return ["deepseek-v4-flash", "deepseek-v4-pro"];
-    }
-    if (provider === "openai") {
-      return ["gpt-5"];
-    }
-    return [];
-  },
-};
-
-function fail(reason: string): (prompt: string) => Promise<string> {
-  return async () => {
-    throw new Error(reason);
+function model(provider: string, id: string): ModelInfo {
+  return {
+    provider,
+    id,
+    name: id,
+    api: "openai-completions",
+    reasoning: false,
+    input: ["text"],
+    contextWindow: 8192,
+    maxTokens: 2048,
   };
 }
 
-/** Minimal in-memory CodingAgent stand-in (agent.ts is owned elsewhere). */
+function providerInfo(
+  id: string,
+  options: { verified: boolean },
+): ModelProviderInfo {
+  return {
+    id,
+    name: id,
+    authName: `${id} API key`,
+    dynamicModels: false,
+    verified: options.verified,
+  };
+}
+
+class FakeCatalog implements ModelCatalog {
+  providers: readonly ModelProviderInfo[];
+  models = new Map<string, readonly ModelInfo[]>();
+
+  constructor(providers: readonly ModelProviderInfo[]) {
+    this.providers = providers;
+    this.models.set("anthropic", [model("anthropic", "claude-sonnet-4-5")]);
+    this.models.set("deepseek", [
+      model("deepseek", "deepseek-v4-flash"),
+      model("deepseek", "deepseek-v4-pro"),
+    ]);
+  }
+
+  listProviders(): readonly ModelProviderInfo[] {
+    return this.providers;
+  }
+
+  getProvider(provider: string): ModelProviderInfo | undefined {
+    return this.providers.find((item) => item.id === provider);
+  }
+
+  listModels(provider: string): readonly ModelInfo[] {
+    return this.models.get(provider) ?? [];
+  }
+
+  async listAvailableModels(provider: string): Promise<readonly ModelInfo[]> {
+    return this.listModels(provider);
+  }
+
+  getModel(provider: string, id: string): ModelInfo | undefined {
+    return this.listModels(provider).find((item) => item.id === id);
+  }
+
+  async refresh(): Promise<void> {}
+}
+
+class FakeAuth
+  implements
+    Pick<
+      ProviderAuthController,
+      "status" | "login" | "logout" | "ensureConfigured"
+    >
+{
+  readonly loginCalls: string[] = [];
+  readonly logoutCalls: string[] = [];
+  configured: Set<string>;
+  ambientSources: ReadonlyMap<string, string>;
+
+  constructor(
+    configured: Set<string>,
+    ambientSources: ReadonlyMap<string, string> = new Map(),
+  ) {
+    this.configured = configured;
+    this.ambientSources = ambientSources;
+  }
+
+  async status(provider: string): Promise<ModelAuthStatus> {
+    const ambientSource = this.ambientSources.get(provider);
+    if (ambientSource !== undefined) {
+      return { configured: true, source: ambientSource };
+    }
+    return this.configured.has(provider)
+      ? { configured: true, source: "stored credential" }
+      : { configured: false };
+  }
+
+  async ensureConfigured(
+    provider: string,
+    options: { promptIfMissing: boolean },
+  ): Promise<boolean> {
+    if (this.configured.has(provider)) {
+      return true;
+    }
+    if (!options.promptIfMissing) {
+      return false;
+    }
+    return this.login(provider);
+  }
+
+  async login(provider: string): Promise<boolean> {
+    this.loginCalls.push(provider);
+    this.configured.add(provider);
+    return true;
+  }
+
+  async logout(provider: string): Promise<void> {
+    this.logoutCalls.push(provider);
+    this.configured.delete(provider);
+  }
+}
+
 class FakeAgent implements AgentLike {
   model: string;
   provider: string;
   baseUrl: string | null;
   messages: unknown[] = [{ role: "system", content: "system prompt" }];
+  readonly modelSwitches: Array<{ provider: string; model: string }> = [];
 
   constructor(options: { model: string; provider?: string; baseUrl?: string | null }) {
     this.model = options.model;
     this.provider = options.provider ?? "deepseek";
-    this.baseUrl = options.baseUrl ?? "https://api.deepseek.com";
+    this.baseUrl = options.baseUrl ?? null;
   }
 
   switchModel(options: {
@@ -72,6 +154,10 @@ class FakeAgent implements AgentLike {
     this.model = options.model;
     this.provider = options.provider;
     this.baseUrl = options.baseUrl;
+    this.modelSwitches.push({
+      provider: options.provider,
+      model: options.model,
+    });
   }
 
   clearHistory(): void {
@@ -81,58 +167,54 @@ class FakeAgent implements AgentLike {
 
 interface CommandFixture {
   readonly commands: SessionCommands;
-  readonly credentials: CredentialStore;
+  readonly auth: FakeAuth;
   readonly agent: FakeAgent;
-  readonly cleanup: () => void;
+  readonly outputs: string[];
 }
 
-function makeCommands(
-  outputs: string[],
-  options: {
-    session?: SessionLike | null;
-    secretInput?: (prompt: string) => Promise<string>;
-    agent?: FakeAgent;
-  } = {},
-): CommandFixture {
-  const root = mkdtempSync(join(tmpdir(), "laohuang-commands-"));
-  const credentials = new CredentialStore(join(root, "credentials.json"));
+function makeCommands(options: {
+  providers?: readonly ModelProviderInfo[];
+  configured?: Set<string>;
+  ambientSources?: ReadonlyMap<string, string>;
+  output?: (message: string) => void;
+  session?: SessionLike | null;
+  agent?: FakeAgent;
+} = {}): CommandFixture {
+  const outputs: string[] = [];
+  const catalog = new FakeCatalog(
+    options.providers ?? [
+      providerInfo("deepseek", { verified: false }),
+      providerInfo("anthropic", { verified: false }),
+    ],
+  );
+  const auth = new FakeAuth(
+    options.configured ?? new Set(["deepseek"]),
+    options.ambientSources,
+  );
+  const selector = new ModelSelector({
+    catalog,
+    providerAuth: auth,
+    input: async () => "deepseek",
+    output: options.output ?? ((message) => outputs.push(message)),
+  });
   const agent =
     options.agent ??
     new FakeAgent({ model: "deepseek-v4-flash", provider: "deepseek" });
-  const selector = new ModelSelector({
-    credentials,
-    catalog,
-    input: fail("no selection expected"),
-    secretInput: fail("no secret expected"),
-    output: (message) => {
-      outputs.push(message);
-    },
-  });
   const commands = new SessionCommands({
     agent,
     selector,
-    credentials,
+    catalog,
+    providerAuth: auth,
     currentConfig: {
-      apiKey: "hidden",
       model: "deepseek-v4-flash",
       baseUrl: null,
       provider: "deepseek",
     },
-    input: fail("no provider menu expected"),
-    secretInput: options.secretInput ?? (async () => "unused"),
-    output: (message) => {
-      outputs.push(message);
-    },
+    input: async () => "1",
+    output: options.output ?? ((message) => outputs.push(message)),
     session: options.session ?? null,
   });
-  return {
-    commands,
-    credentials,
-    agent,
-    cleanup: () => {
-      rmSync(root, { recursive: true, force: true });
-    },
-  };
+  return { commands, auth, agent, outputs };
 }
 
 test("registry completion has a replacement start and respects state", () => {
@@ -166,31 +248,32 @@ test("registry completion has a replacement start and respects state", () => {
 });
 
 test("slash commands and model arguments are completed", () => {
-  const fixture = makeCommands([]);
+  const { commands } = makeCommands();
 
-  const commandsFound = fixture.commands.registry.complete("/mo", {
+  const commandsFound = commands.registry.complete("/mo", { state: "IDLE" });
+  const providerItems = commands.registry.complete("/model ", {
     state: "IDLE",
   });
-  const modelsFound = fixture.commands.registry.complete("/model deepseek ", {
+  const modelItems = commands.registry.complete("/model anthropic ", {
     state: "IDLE",
   });
-  const plainFound = fixture.commands.registry.complete("please read files", {
+  const plainFound = commands.registry.complete("please read files", {
     state: "IDLE",
   });
 
   assert.ok(commandsFound.some((item) => item.value === "/model"));
-  assert.ok(modelsFound.some((item) => item.value === "deepseek-v4-flash"));
+  assert.ok(providerItems.some((item) => item.value === "anthropic"));
+  assert.ok(modelItems.some((item) => item.value === "claude-sonnet-4-5"));
   assert.deepEqual(plainFound, []);
-  fixture.cleanup();
 });
 
 test("running completion filters mutating commands", () => {
-  const fixture = makeCommands([]);
+  const { commands } = makeCommands();
 
-  const commandsFound = fixture.commands.registry.complete("/", {
+  const commandsFound = commands.registry.complete("/", {
     state: "RUNNING_MODEL",
   });
-  const modelArguments = fixture.commands.registry.complete("/model ", {
+  const modelArguments = commands.registry.complete("/model ", {
     state: "RUNNING_MODEL",
   });
 
@@ -202,7 +285,29 @@ test("running completion filters mutating commands", () => {
     modelArguments.map((item) => item.value),
     ["current"],
   );
-  fixture.cleanup();
+});
+
+test("providers command reports available configured and verified independently", async () => {
+  const outputs: string[] = [];
+  const { commands } = makeCommands({
+    providers: [
+      providerInfo("anthropic", { verified: false }),
+      providerInfo("deepseek", { verified: true }),
+    ],
+    configured: new Set(["anthropic"]),
+    output: (message) => outputs.push(message),
+  });
+
+  const result = await commands.execute("/providers");
+
+  assert.equal(result.status, "handled");
+  assert.deepEqual(outputs, [
+    "anthropic: available, configured, unverified",
+    "deepseek: available, not configured, verified",
+  ]);
+
+  await commands.execute("/providers anthropic");
+  assert.ok(outputs.some((line) => line.includes("Authentication: configured")));
 });
 
 test("queue commands delegate to the agent session", async () => {
@@ -220,136 +325,114 @@ test("queue commands delegate to the agent session", async () => {
     submitAction: () => false,
   };
   const outputs: string[] = [];
-  const fixture = makeCommands(outputs, { session });
+  const { commands } = makeCommands({
+    session,
+    output: (message) => outputs.push(message),
+  });
 
-  await fixture.commands.execute("/queue");
-  await fixture.commands.execute("/queue resume");
-  await fixture.commands.execute("/queue clear");
+  await commands.execute("/queue");
+  await commands.execute("/queue resume");
+  await commands.execute("/queue clear");
 
   assert.deepEqual(outputs, [
     "Pending: 2 (20 est. tokens) · Held: 1 (10 est. tokens) · Dead letters: 1",
     "Resumed 1 held message(s).",
     "Cleared 3 queued message(s).",
   ]);
-  fixture.cleanup();
 });
 
 test("/model current reports the active provider and model", async () => {
-  const outputs: string[] = [];
-  const fixture = makeCommands(outputs);
+  const { commands, outputs } = makeCommands();
 
-  const handled = await fixture.commands.execute("/model current");
+  const handled = await commands.execute("/model current");
 
   assert.equal(handled.status, "handled");
   assert.deepEqual(outputs, ["Current model: deepseek / deepseek-v4-flash"]);
-  fixture.cleanup();
 });
 
 test("/model switches provider and model without chatting", async () => {
-  const outputs: string[] = [];
-  const root = mkdtempSync(join(tmpdir(), "laohuang-commands-"));
-  const credentials = new CredentialStore(join(root, "credentials.json"));
-  credentials.set("deepseek", "saved-key");
-  const agent = new FakeAgent({ model: "old-model" });
-  const selector = new ModelSelector({
-    credentials,
-    catalog,
-    input: fail("no choice should be needed"),
-    secretInput: fail("key is already saved"),
-    output: () => {},
-  });
-  const commands = new SessionCommands({
-    agent,
-    selector,
-    credentials,
-    currentConfig: {
-      apiKey: "old-key",
-      model: "old-model",
-      baseUrl: null,
-      provider: "openai",
-    },
-    input: fail("no provider menu expected"),
-    secretInput: async () => "unused",
-    output: (message) => {
-      outputs.push(message);
-    },
-  });
+  const agent = new FakeAgent({ model: "old-model", provider: "openai" });
+  const { commands, outputs } = makeCommands({ agent });
 
-  // The Python original drove this through run_repl with an /exit follow-up;
-  // cli.ts is owned by another workstream, so dispatch directly here.
   const handled = await commands.execute("/model deepseek deepseek-v4-pro");
 
   assert.equal(handled.status, "handled");
   assert.equal(agent.model, "deepseek-v4-pro");
   assert.equal(agent.provider, "deepseek");
-  assert.equal(agent.baseUrl, "https://api.deepseek.com");
+  assert.deepEqual(agent.modelSwitches, [
+    { provider: "deepseek", model: "deepseek-v4-pro" },
+  ]);
   assert.ok(outputs.some((line) => line.includes("deepseek-v4-pro")));
-  rmSync(root, { recursive: true, force: true });
 });
 
-test("/login and /logout manage saved credentials", async () => {
-  const outputs: string[] = [];
-  const fixture = makeCommands(outputs, {
-    secretInput: async () => "new-key",
+test("login applies credentials without replacing the running adapter", async () => {
+  const { commands, auth, agent } = makeCommands({
+    configured: new Set(),
   });
 
-  await fixture.commands.execute("/login deepseek");
-  await fixture.commands.execute("/apikey");
-  await fixture.commands.execute("/logout deepseek");
+  await commands.execute("/login anthropic");
 
-  assert.equal(fixture.agent.provider, "deepseek");
-  assert.equal(fixture.credentials.get("deepseek"), null);
-  assert.ok(outputs.some((line) => line === "deepseek: configured"));
-  assert.ok(!outputs.some((line) => line.includes("new-key")));
-  fixture.cleanup();
+  assert.deepEqual(auth.loginCalls, ["anthropic"]);
+  assert.deepEqual(agent.modelSwitches, []);
+});
+
+test("/login and /logout manage credentials through auth service", async () => {
+  const { commands, auth, outputs } = makeCommands();
+
+  await commands.execute("/login deepseek");
+  await commands.execute("/apikey");
+  await commands.execute("/logout anthropic");
+
+  assert.deepEqual(auth.loginCalls, ["deepseek"]);
+  assert.deepEqual(auth.logoutCalls, ["anthropic"]);
+  assert.ok(outputs.some((line) => line === "deepseek: available, configured, unverified"));
+});
+
+test("/logout reports ambient credentials that remain configured", async () => {
+  const { commands, auth, outputs } = makeCommands({
+    ambientSources: new Map([["deepseek", "DEEPSEEK_API_KEY"]]),
+  });
+
+  await commands.execute("/logout deepseek");
+
+  assert.deepEqual(auth.logoutCalls, ["deepseek"]);
+  assert.ok(
+    outputs.some((line) =>
+      line ===
+      "Removed stored credentials for deepseek, but it is still configured via DEEPSEEK_API_KEY.",
+    ),
+  );
+  assert.equal(outputs.some((line) => line === "Logged out of deepseek."), false);
 });
 
 test("/apikey commands remain compatible aliases", async () => {
-  const outputs: string[] = [];
-  const fixture = makeCommands(outputs, {
-    secretInput: async () => "alias-key",
-  });
+  const { commands, auth } = makeCommands();
 
-  await fixture.commands.execute("/apikey set deepseek");
-  assert.equal(fixture.credentials.get("deepseek"), "alias-key");
+  await commands.execute("/apikey set anthropic");
+  await commands.execute("/apikey remove anthropic");
 
-  await fixture.commands.execute("/apikey remove deepseek");
-  assert.equal(fixture.credentials.get("deepseek"), null);
-  fixture.cleanup();
+  assert.deepEqual(auth.loginCalls, ["anthropic"]);
+  assert.deepEqual(auth.logoutCalls, ["anthropic"]);
 });
 
 test("/model does not prompt for missing credentials", async () => {
-  const outputs: string[] = [];
-  const fixture = makeCommands(outputs, {
-    secretInput: fail("/model must not log in"),
+  const { commands, outputs } = makeCommands({
+    configured: new Set(),
   });
 
-  await fixture.commands.execute("/model openai gpt-test");
+  await commands.execute("/model anthropic claude-sonnet-4-5");
 
-  assert.ok(outputs.some((line) => line.includes("/login openai")));
-  fixture.cleanup();
+  assert.equal(
+    outputs.some((line) => line.includes("Switched to anthropic")),
+    false,
+  );
 });
 
-test("/login awaits the injected async secret prompt", async () => {
-  const outputs: string[] = [];
-  const prompts: string[] = [];
-  const fixture = makeCommands(outputs, {
-    // TerminalUI.promptSecret resolves only once the interactive loop
-    // processes the answer; /login must await it instead of treating the
-    // pending promise as the key.
-    secretInput: async (prompt) => {
-      prompts.push(prompt);
-      await new Promise((resolve) => {
-        setTimeout(resolve, 1);
-      });
-      return "async-key";
-    },
-  });
+test("/model reports unknown providers without switching", async () => {
+  const { commands, outputs, agent } = makeCommands();
 
-  await fixture.commands.execute("/login deepseek");
+  await commands.execute("/model missing missing-model");
 
-  assert.deepEqual(prompts, ["Enter deepseek API key: "]);
-  assert.equal(fixture.credentials.get("deepseek"), "async-key");
-  assert.ok(!outputs.join("\n").includes("async-key"));
-  fixture.cleanup();
+  assert.ok(outputs.some((line) => line.includes("Unknown provider: missing")));
+  assert.equal(agent.modelSwitches.length, 0);
 });
