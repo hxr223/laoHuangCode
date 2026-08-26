@@ -1,6 +1,7 @@
 import {
   ModelError,
   ModelStreamCancelled,
+  modelErrorKind,
   type AssistantContentBlock,
   type ModelEvent,
   type ModelFinishReason,
@@ -59,7 +60,7 @@ export async function consumePiEvents(
         );
       }
       throw new ModelError(event.error.errorMessage ?? "pi-ai model request failed", {
-        kind: "retryable",
+        kind: modelErrorKind(new Error(event.error.errorMessage ?? "")),
         hadDelta,
       });
     }

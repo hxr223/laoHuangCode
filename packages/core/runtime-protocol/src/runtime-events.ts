@@ -20,6 +20,7 @@ export type ModelRuntimeEventType =
   | "model_text_delta"
   | "model_reasoning_delta"
   | "model_tool_call_delta"
+  | "model_retry_scheduled"
   | "model_response_validating";
 
 export type ModelRuntimeEventHandler = (

@@ -1,27 +1,16 @@
-/** Interactive provider, credential, and model selection. */
+/** Interactive provider and model selection. */
 
-import type { ProviderCatalog } from "./model-catalog.ts";
-
-export type { ProviderCatalog } from "./model-catalog.ts";
+import type { ModelCatalog, ModelInfo } from "@laohuang/llm";
+import type { ProviderAuthController } from "./provider-auth.ts";
 
 /**
  * Minimal structural view of the runtime configuration produced here.
  * The full `Config` type is owned by config.ts.
  */
 export interface SelectionConfig {
-  readonly apiKey: string | null;
   readonly model: string;
   readonly baseUrl: string | null;
   readonly provider: string;
-}
-
-/**
- * Minimal structural view of the credential store owned by credentials.ts:
- * only the two methods model selection relies on.
- */
-export interface CredentialStoreLike {
-  get(provider: string): string | null;
-  set(provider: string, apiKey: string): void;
 }
 
 /**
@@ -37,10 +26,9 @@ export interface ModelSelection {
 }
 
 export interface ModelSelectorOptions {
-  readonly credentials: CredentialStoreLike;
-  readonly catalog: ProviderCatalog;
+  readonly catalog: ModelCatalog;
+  readonly providerAuth: Pick<ProviderAuthController, "ensureConfigured">;
   readonly input: InputFn;
-  readonly secretInput: InputFn;
   readonly output?: OutputFn | undefined;
 }
 
@@ -50,24 +38,17 @@ export interface SelectOptions {
   readonly promptForMissingKey?: boolean | undefined;
 }
 
-const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
-  deepseek: "DeepSeek",
-  openai: "OpenAI",
-};
-
 /** Build a runtime model selection without exposing API keys. */
 export class ModelSelector {
-  readonly #credentials: CredentialStoreLike;
-  readonly #catalog: ProviderCatalog;
+  readonly #catalog: ModelCatalog;
+  readonly #providerAuth: Pick<ProviderAuthController, "ensureConfigured">;
   readonly #input: InputFn;
-  readonly #secretInput: InputFn;
   readonly #output: OutputFn;
 
   constructor(options: ModelSelectorOptions) {
-    this.#credentials = options.credentials;
     this.#catalog = options.catalog;
+    this.#providerAuth = options.providerAuth;
     this.#input = options.input;
-    this.#secretInput = options.secretInput;
     this.#output = options.output ?? ((message) => console.log(message));
   }
 
@@ -81,63 +62,65 @@ export class ModelSelector {
         return null;
       }
     }
-    const provider = this.#catalog.get(providerName);
-
-    let apiKey = this.#credentials.get(providerName);
-    const newApiKey = apiKey === null;
-    if (apiKey === null) {
-      if (!promptForMissingKey) {
-        this.#output(
-          `No credentials configured for ${providerName}. ` +
-            `Run /login ${providerName} first.`,
-        );
-        return null;
-      }
-      apiKey = await this.#readSecret(`Enter ${providerName} API key: `);
-      if (!apiKey) {
-        this.#output("Model selection cancelled: API key is empty.");
-        return null;
-      }
+    const provider = this.#catalog.getProvider(providerName);
+    if (provider === undefined) {
+      throw new Error(`Unknown provider: ${providerName}`);
     }
+
+    if (
+      !(await this.#providerAuth.ensureConfigured(providerName, {
+        promptIfMissing: promptForMissingKey,
+      }))
+    ) {
+      return null;
+    }
+
+    await this.#catalog.refresh(providerName);
+    const models = await this.#catalog.listAvailableModels(providerName);
 
     let modelName = options.modelName;
 
     if (modelName === undefined) {
-      const models = this.#catalog.listModelIds(providerName);
-      modelName =
-        models.length > 0
-          ? (await this.#chooseModel(models)) ?? undefined
-          : (await this.#readInput("Model name: ")) || undefined;
+      if (models.length === 0) {
+        throw new Error(`No models available for provider: ${providerName}`);
+      }
+      modelName = (await this.#chooseModel(models))?.id;
       if (modelName === undefined) {
         this.#output("Model selection cancelled: model name is empty.");
         return null;
       }
     }
 
+    const selected =
+      models.find((model) => model.id === modelName) ??
+      this.#catalog.getModel(providerName, modelName);
+    if (selected === undefined) {
+      throw new Error(`Unknown model: ${providerName}/${modelName}`);
+    }
+
     const config: SelectionConfig = {
-      apiKey,
-      model: modelName,
-      baseUrl: provider.baseUrl,
+      model: selected.id,
+      baseUrl: null,
       provider: providerName,
     };
-    if (newApiKey) {
-      this.#credentials.set(providerName, apiKey);
-    }
     return { config };
   }
 
   async #chooseProvider(): Promise<string | null> {
-    const names = this.#catalog.names();
+    const providers = this.#catalog.listProviders();
     this.#output("Model providers:");
-    names.forEach((name, index) => {
-      this.#output(`  ${index + 1}. ${PROVIDER_DISPLAY_NAMES[name] ?? name}`);
+    providers.forEach((provider, index) => {
+      const status = provider.verified ? "verified" : "unverified";
+      this.#output(`  ${index + 1}. ${provider.name} (${provider.id}, ${status})`);
     });
     const answer = await this.#readInput("Select provider: ");
     if (answer === null) {
       return null;
     }
     const choice = Number(answer);
-    const selected = Number.isInteger(choice) ? names[choice - 1] : undefined;
+    const selected = Number.isInteger(choice)
+      ? providers[choice - 1]?.id
+      : undefined;
     if (selected === undefined) {
       this.#output("Model selection cancelled: invalid provider.");
       return null;
@@ -145,27 +128,41 @@ export class ModelSelector {
     return selected;
   }
 
-  async #chooseModel(models: readonly string[]): Promise<string | null> {
-    this.#output("Available models:");
-    models.forEach((model, index) => {
-      this.#output(`  ${index + 1}. ${model}`);
-    });
-    this.#output("  m. Enter a model name manually");
-    const answer = await this.#readInput("Select model: ");
-    if (answer === null) {
-      return null;
+  async #chooseModel(models: readonly ModelInfo[]): Promise<ModelInfo | null> {
+    for (;;) {
+      const query = await this.#readInput("Search models: ");
+      if (query === null) {
+        return null;
+      }
+      const allMatches = filterModels(models, query, Number.MAX_SAFE_INTEGER);
+      const matches = allMatches.slice(0, 20);
+      if (matches.length === 0) {
+        this.#output("No models matched. Try another search.");
+        continue;
+      }
+      this.#output("Available models:");
+      matches.forEach((model, index) => {
+        this.#output(`  ${index + 1}. ${model.id} - ${model.name}`);
+      });
+      if (matches.length < allMatches.length) {
+        this.#output(`Showing ${matches.length} of ${allMatches.length}`);
+      }
+      const answer = await this.#readInput("Select model: ");
+      if (answer === null) {
+        return null;
+      }
+      const choice = Number(answer);
+      const selected = Number.isInteger(choice)
+        ? matches[choice - 1]
+        : undefined;
+      if (selected !== undefined) {
+        return selected;
+      }
+      if (answer.length > 0) {
+        this.#output("Model selection cancelled: invalid choice.");
+        return null;
+      }
     }
-    if (answer.toLowerCase() === "m") {
-      const manual = await this.#readInput("Model name: ");
-      return manual || null;
-    }
-    const choice = Number(answer);
-    const selected = Number.isInteger(choice) ? models[choice - 1] : undefined;
-    if (selected === undefined) {
-      this.#output("Model selection cancelled: invalid choice.");
-      return null;
-    }
-    return selected;
   }
 
   async #readInput(prompt: string): Promise<string | null> {
@@ -177,12 +174,37 @@ export class ModelSelector {
     }
   }
 
-  async #readSecret(prompt: string): Promise<string | null> {
-    try {
-      return (await this.#secretInput(prompt)).trim();
-    } catch {
-      this.#output("Model selection cancelled.");
-      return null;
+}
+
+export function filterModels(
+  models: readonly ModelInfo[],
+  query: string,
+  limit = 20,
+): readonly ModelInfo[] {
+  const normalized = query.toLowerCase().trim();
+  const terms = normalized.split(/\s+/).filter((term) => term.length > 0);
+  const matched = models.filter((model) => {
+    if (terms.length === 0) {
+      return true;
     }
-  }
+    const id = model.id.toLowerCase();
+    const name = model.name.toLowerCase();
+    return terms.every((term) => id.includes(term) || name.includes(term));
+  });
+  matched.sort((left, right) => {
+    const leftId = left.id.toLowerCase();
+    const rightId = right.id.toLowerCase();
+    const leftExact = leftId === normalized;
+    const rightExact = rightId === normalized;
+    if (leftExact !== rightExact) {
+      return leftExact ? -1 : 1;
+    }
+    const leftPrefix = normalized.length > 0 && leftId.startsWith(normalized);
+    const rightPrefix = normalized.length > 0 && rightId.startsWith(normalized);
+    if (leftPrefix !== rightPrefix) {
+      return leftPrefix ? -1 : 1;
+    }
+    return left.id.localeCompare(right.id);
+  });
+  return matched.slice(0, limit);
 }

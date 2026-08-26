@@ -22,6 +22,7 @@ export const EventKind = {
   ModelTextDelta: "model.text_delta",
   ModelReasoningDelta: "model.reasoning_delta",
   ModelToolCallDelta: "model.tool_call_delta",
+  ModelRetryScheduled: "model.retry_scheduled",
   ModelResponseValidating: "model.response_validating",
   ModelResponseCommitted: "model.response_committed",
   ModelResponseAborted: "model.response_aborted",
@@ -120,6 +121,13 @@ export interface ModelToolCallDeltaPayload extends EventPayloadBase {
   coalesced_from_sequence?: number;
 }
 
+export interface ModelRetryScheduledPayload extends EventPayloadBase {
+  attempt: number;
+  max_attempts: number;
+  delay_ms: number;
+  error_kind: string;
+}
+
 export interface AgentGuardPayload extends EventPayloadBase {
   reason: string;
   tool_rounds?: number;
@@ -172,6 +180,7 @@ export interface EventPayloadMap {
   "model.text_delta": ModelDeltaPayload;
   "model.reasoning_delta": ModelDeltaPayload;
   "model.tool_call_delta": ModelToolCallDeltaPayload;
+  "model.retry_scheduled": ModelRetryScheduledPayload;
   "model.response_validating": EventPayloadBase;
   "model.response_committed": EventPayloadBase;
   "model.response_aborted": EventPayloadBase;
@@ -468,6 +477,19 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
       sources: [EventSource.Model],
       required_payload: ["index"],
       payload_types: { index: "integer", request_id: "string" },
+      require_task_id: true,
+      require_correlation_id: true,
+      max_payload_chars: 16_384,
+    }),
+    spec(EventKind.ModelRetryScheduled, {
+      sources: [EventSource.Model],
+      required_payload: ["attempt", "max_attempts", "delay_ms", "error_kind"],
+      payload_types: {
+        attempt: "integer",
+        max_attempts: "integer",
+        delay_ms: "integer",
+        error_kind: "string",
+      },
       require_task_id: true,
       require_correlation_id: true,
       max_payload_chars: 16_384,

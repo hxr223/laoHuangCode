@@ -8,7 +8,6 @@ import test from "node:test";
 // real ".ts" extension (".js" specifiers do not resolve to ".ts" files).
 import {
   ConfigManager,
-  CredentialStore,
   defaultConfigPath,
 } from "../packages/storage/local-config/src/index.ts";
 
@@ -21,23 +20,25 @@ function withTempDir(run: (directory: string) => void): void {
   }
 }
 
-test("missing provider api key has an actionable error", () => {
+test("resolved profiles contain no runtime credential field", () => {
   withTempDir((directory) => {
     const manager = new ConfigManager(join(directory, "config.json"));
     manager.configure({
-      name: "default",
-      provider: "deepseek",
-      model: "deepseek-v4-flash",
-      baseUrl: "https://api.deepseek.com",
+      name: "anthropic",
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      baseUrl: null,
     });
 
-    assert.throws(
-      () =>
-        manager.resolve({
-          credentials: new CredentialStore(join(directory, "credentials.json")),
-        }),
-      /No API key configured/,
-    );
+    const config = manager.resolve();
+
+    assert.deepEqual(config, {
+      provider: "anthropic",
+      model: "claude-sonnet-4-5",
+      baseUrl: null,
+      profile: "anthropic",
+    });
+    assert.equal("apiKey" in config, false);
   });
 });
 
@@ -62,7 +63,6 @@ test("user can save and resolve a deepseek profile without storing key", () => {
   withTempDir((directory) => {
     const configPath = join(directory, "config.json");
     const manager = new ConfigManager(configPath);
-    const credentials = new CredentialStore(join(directory, "credentials.json"));
 
     manager.configure({
       name: "deepseek",
@@ -70,31 +70,26 @@ test("user can save and resolve a deepseek profile without storing key", () => {
       model: "deepseek-v4-flash",
       baseUrl: "https://api.deepseek.com",
     });
-    credentials.set("deepseek", "deepseek-secret");
-    const config = manager.resolve({ credentials });
+    const config = manager.resolve();
 
     assert.equal(config.provider, "deepseek");
     assert.equal(config.model, "deepseek-v4-flash");
     assert.equal(config.baseUrl, "https://api.deepseek.com");
-    assert.equal(config.apiKey, "deepseek-secret");
     const persisted = readFileSync(configPath, "utf8");
-    assert.equal(persisted.includes("deepseek-secret"), false);
+    assert.equal(persisted.includes("apiKey"), false);
   });
 });
 
 test("runtime overrides take priority over saved profile", () => {
   withTempDir((directory) => {
     const manager = new ConfigManager(join(directory, "config.json"));
-    const credentials = new CredentialStore(join(directory, "credentials.json"));
     manager.configure({
       name: "customized",
       provider: "deepseek",
       model: "file-model",
       baseUrl: "https://file.example/v1",
     });
-    credentials.set("deepseek", "secret");
     const fromCli = manager.resolve({
-      credentials,
       model: "cli-model",
       baseUrl: "https://cli.example/v1",
     });
@@ -109,7 +104,6 @@ test("environment overrides profile, model, base url, and config path", () => {
     const configPath = join(directory, "chosen.json");
     const xdgRoot = join(directory, "xdg");
     const manager = new ConfigManager(configPath);
-    const credentials = new CredentialStore(join(directory, "credentials.json"));
     manager.configure({
       name: "default",
       provider: "deepseek",
@@ -122,10 +116,8 @@ test("environment overrides profile, model, base url, and config path", () => {
       model: "stored-openai",
       baseUrl: null,
     });
-    credentials.set("openai", "secret");
 
     const config = manager.resolve({
-      credentials,
       environ: {
         LAOHUANG_PROFILE: "alternate",
         LAOHUANG_MODEL: "env-model",
