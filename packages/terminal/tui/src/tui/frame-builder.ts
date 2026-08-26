@@ -20,6 +20,10 @@ export interface BuildFrameOptions {
   editor: EditorLike;
   prompt?: string;
   secret?: boolean;
+  editorStyles?: {
+    readonly prompt?: (text: string) => string;
+    readonly text?: (text: string) => string;
+  };
   historyLines?: readonly string[];
   activeStart?: number | null;
   completionLines?: readonly string[];
@@ -84,6 +88,7 @@ export class FrameBuilder {
     const editorResult = options.editor.renderLines(contentWidth, {
       prompt: options.prompt ?? "❯ ",
       mask: options.secret ?? false,
+      styles: options.editorStyles,
     });
     const history = options.historyLines ?? this.#fallbackHistory();
     const completion = options.completionLines ?? [];
