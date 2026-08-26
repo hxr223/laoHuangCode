@@ -3,40 +3,57 @@ import assert from "node:assert/strict";
 
 import {
   SmallModelSemanticClassifier,
-  type ChatCompletionRequest,
-  type ChatCompletionsClient,
 } from "../apps/cli/src/semantic-classifier.ts";
+import type { ModelResult, ModelRuntimeRequest } from "@laohuang/llm";
 
 interface CapturedCall {
-  request: ChatCompletionRequest;
-  options?: { timeout?: number };
+  request: ModelRuntimeRequest;
 }
 
-function fakeClient(body: unknown): {
-  client: ChatCompletionsClient;
+function fakeRuntime(body: unknown): {
+  modelRuntime: { complete(request: ModelRuntimeRequest): Promise<ModelResult> };
   calls: CapturedCall[];
 } {
   const calls: CapturedCall[] = [];
-  const client: ChatCompletionsClient = {
-    chat: {
-      completions: {
-        create(request, options) {
-          calls.push({ request, options });
-          return Promise.resolve({
-            choices: [{ message: { content: JSON.stringify(body) } }],
-          });
+  const modelRuntime = {
+    async complete(request: ModelRuntimeRequest): Promise<ModelResult> {
+      calls.push({ request });
+      return {
+        requestId: "router-request",
+        finishReason: "stop",
+        usage: { inputTokens: 0, outputTokens: 0 },
+        message: {
+          role: "assistant",
+          provider: request.provider,
+          model: request.model,
+          content: [{ type: "text", text: JSON.stringify(body) }],
         },
+      };
+    },
+  };
+  return { modelRuntime, calls };
+}
+
+function fakeFailingRuntime(): {
+  modelRuntime: { complete(request: ModelRuntimeRequest): Promise<ModelResult> };
+} {
+  return {
+    modelRuntime: {
+      async complete(): Promise<ModelResult> {
+        throw new Error("timeout");
       },
     },
   };
-  return { client, calls };
 }
 
 test("uses one no-history request and accepts confident json", async () => {
-  const { client, calls } = fakeClient({ strategy: "steer", confidence: 0.91 });
+  const { modelRuntime, calls } = fakeRuntime({
+    strategy: "steer",
+    confidence: 0.91,
+  });
   const classifier = new SmallModelSemanticClassifier({
-    client,
-    model: "router-model",
+    modelRuntime,
+    route: { provider: "deepseek", model: "router-model", baseUrl: null },
   });
   const active = { taskId: "task-1", state: "running_model" };
   const event = { payload: { content: "改成另一种实现" } };
@@ -46,19 +63,42 @@ test("uses one no-history request and accepts confident json", async () => {
   assert.ok(decision);
   assert.equal(decision.strategy, "steer");
   assert.equal(calls.length, 1);
-  const messages = calls[0]?.request.messages ?? [];
+  const request = calls[0]!.request;
+  assert.equal(request.provider, "deepseek");
+  assert.equal(request.model, "router-model");
+  assert.equal(request.toolChoice, "none");
+  assert.equal(request.tools.length, 0);
+  assert.equal(request.temperature, 0);
+  assert.equal(request.timeoutMs, 3000);
+  assert.equal(request.maxAttempts, 1);
+  const messages = request.messages;
   assert.equal(messages.length, 2);
-  assert.equal(calls[0]?.options?.timeout, 3000);
 });
 
 test("low confidence or invalid output falls back", async () => {
-  const { client } = fakeClient({ strategy: "follow_up", confidence: 0.2 });
+  const { modelRuntime } = fakeRuntime({ strategy: "follow_up", confidence: 0.2 });
   const classifier = new SmallModelSemanticClassifier({
-    client,
-    model: "router-model",
+    modelRuntime,
+    route: { provider: "deepseek", model: "router-model", baseUrl: null },
   });
   const active = { taskId: "task-1", state: "running_model" };
   const event = { payload: { content: "还有一个想法" } };
 
   assert.equal(await classifier.classify(event, active), null);
+});
+
+test("runtime failures fall back without routing", async () => {
+  const { modelRuntime } = fakeFailingRuntime();
+  const classifier = new SmallModelSemanticClassifier({
+    modelRuntime,
+    route: { provider: "deepseek", model: "router-model", baseUrl: null },
+  });
+
+  assert.equal(
+    await classifier.classify(
+      { payload: { content: "还有一个想法" } },
+      { taskId: "task-1", state: "running_model" },
+    ),
+    null,
+  );
 });

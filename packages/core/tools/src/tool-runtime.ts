@@ -70,13 +70,13 @@ export class ToolRuntime {
       let args: Record<string, unknown>;
       let result: ToolResult | undefined;
       try {
-        const decoded: unknown = JSON.parse(toolCall.function.arguments);
+        const decoded: unknown = JSON.parse(toolCall.arguments);
         if (typeof decoded !== "object" || decoded === null || Array.isArray(decoded)) {
           throw new Error("Tool arguments must be a JSON object");
         }
         args = decoded as Record<string, unknown>;
       } catch (error) {
-        args = { _raw: toolCall.function.arguments };
+        args = { _raw: toolCall.arguments };
         result = { ok: false, error: errorMessage(error) };
       }
       const event: ToolRuntimeToolEvent = {
@@ -96,10 +96,10 @@ export class ToolRuntime {
 
     const sequentialBatch = request.executionMode === "sequential" ||
       request.toolCalls.some(
-        (toolCall) => this.tools.executionMode(toolCall.function.name) === "sequential",
+        (toolCall) => this.tools.executionMode(toolCall.name) === "sequential",
       ) ||
       request.toolCalls.some(
-        (toolCall) => toolCall.function.name === "write" || toolCall.function.name === "edit",
+        (toolCall) => toolCall.name === "write" || toolCall.name === "edit",
       );
     const runOne = async (event: Prepared): Promise<void> => {
       let result: ToolResult;
@@ -108,7 +108,7 @@ export class ToolRuntime {
       } else {
         try {
           result = await this.tools.execute(
-            event.toolCall.function.name,
+            event.toolCall.name,
             event.args,
             this.createExecutionContext(event.toolCall.id, request.cancelToken),
           );

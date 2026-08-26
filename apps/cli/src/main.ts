@@ -5,17 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CodingAgent } from "@laohuang/agent-runtime";
-import {
-  createClient,
-  defaultAdapterRegistry,
-  getProvider,
-  providerNames,
-  type ChatClientLike,
-  type ClientConnectionSettings,
-} from "@laohuang/llm-openai-compatible";
+import { ModelRuntime, type ModelCatalog } from "@laohuang/llm";
+import { createPiAiPlatform } from "@laohuang/llm-pi-ai";
 import {
   ConfigManager,
   CredentialStore,
+  ModelCatalogStore,
   defaultConfigPath,
   type Config,
 } from "@laohuang/local-config";
@@ -36,10 +31,12 @@ import {
   type QueueStatus,
 } from "./commands.ts";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
+import { ProviderAuthController } from "./provider-auth.ts";
 import {
-  SmallModelSemanticClassifier,
-  type ChatCompletionsClient,
-} from "./semantic-classifier.ts";
+  EXCLUDED_PROVIDER_IDS,
+  VERIFIED_PROVIDER_IDS,
+} from "./provider-policy.ts";
+import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
 import {
   CliUsageError,
   HELP,
@@ -90,10 +87,10 @@ export interface MainOptions {
   environ?: Record<string, string | undefined> | undefined;
   configPath?: string | undefined;
   credentialsPath?: string | undefined;
+  modelsPath?: string | undefined;
   inputFn?: InputFn | undefined;
   secretInputFn?: InputFn | undefined;
   outputFn?: OutputFn | undefined;
-  clientFactory?: ((settings: ClientConnectionSettings) => unknown) | undefined;
   stdin?: { isTTY?: boolean | undefined } | undefined;
   stdout?: { isTTY?: boolean | undefined } | undefined;
 }
@@ -142,6 +139,16 @@ export async function main(
   const credentials = new CredentialStore(
     options.credentialsPath ?? join(dirname(configPath), "credentials.json"),
   );
+  const modelCatalogStore = new ModelCatalogStore(
+    options.modelsPath ?? join(dirname(configPath), "models.json"),
+  );
+  const modelPlatform = await createPiAiPlatform({
+    credentials,
+    modelCatalogStore,
+    excludedProviderIds: EXCLUDED_PROVIDER_IDS,
+    verifiedProviderIds: VERIFIED_PROVIDER_IDS,
+  });
+  const modelRuntime = new ModelRuntime(modelPlatform.adapter);
   // The selector's input/output targets are rewired once the session exists,
   // mirroring the Python original which mutated selector.input_fn/output_fn.
   // Like the Python original, the selector's own secret prompts (first-run
@@ -149,19 +156,23 @@ export async function main(
   // the session commands switch to the terminal UI's secret prompt.
   let selectorInput: PromptFn = async (prompt) => inputFn(prompt);
   const selectorSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
+  let authSecretInput: PromptFn = selectorSecretInput;
   let selectorOutput: OutputFn = outputFn;
-  const selector = new ModelSelector({
-    credentials,
-    registry: { get: getProvider, names: providerNames },
-    createClient,
-    createModelAdapter: (provider, selectedClient) =>
-      defaultAdapterRegistry.resolve(provider, selectedClient as ChatClientLike),
+  const providerAuth = new ProviderAuthController({
+    auth: modelPlatform.auth,
     input: (prompt) => selectorInput(prompt),
-    secretInput: (prompt) => selectorSecretInput(prompt),
+    secretInput: (prompt) => authSecretInput(prompt),
     output: (message) => {
       selectorOutput(message);
     },
-    clientFactory: options.clientFactory,
+  });
+  const selector = new ModelSelector({
+    catalog: modelPlatform.catalog,
+    providerAuth,
+    input: (prompt) => selectorInput(prompt),
+    output: (message) => {
+      selectorOutput(message);
+    },
   });
 
   if (args.command === "config") {
@@ -232,34 +243,54 @@ export async function main(
       writeStderr(`Configuration error: ${errorMessage(error)}`);
       return 2;
     }
-    try {
-      getProvider(settings.provider);
-    } catch (error) {
-      writeStderr(`Configuration error: ${errorMessage(error)}`);
-      return 2;
+    const provider = modelPlatform.catalog.getProvider(settings.provider);
+    if (provider === undefined) {
+      writeStderr(`Configuration error: Unknown provider: ${settings.provider}`);
+      return 1;
     }
-    const keyConfigured = credentials.get(settings.provider) !== null;
+    const auth = await modelPlatform.auth.status(settings.provider);
+    let refreshOk = true;
+    try {
+      await modelPlatform.catalog.refresh(settings.provider);
+    } catch (error) {
+      refreshOk = false;
+      outputFn(`Catalog refresh: ${errorMessage(error)}`);
+    }
+    const model = modelPlatform.catalog.getModel(
+      settings.provider,
+      settings.model,
+    );
     outputFn(`Provider: ${settings.provider}`);
     outputFn(`Model: ${settings.model}`);
     outputFn(`Base URL: ${settings.baseUrl ?? "SDK default"}`);
-    outputFn(`API key: ${keyConfigured ? "configured" : "not configured"}`);
+    outputFn(`API key: ${auth.configured ? "configured" : "not configured"}`);
+    outputFn(`Verified: ${provider.verified ? "yes" : "no"}`);
     outputFn(`Configuration: ${configPath}`);
     outputFn(`Node: ${process.version}`);
     outputFn(`Bash: ${existsSync("/bin/bash") ? "available" : "missing"}`);
-    return keyConfigured ? 0 : 1;
+    return provider !== undefined && auth.configured && refreshOk && model !== undefined
+      ? 0
+      : 1;
   }
 
   let config: Config;
-  let runtimeClient: unknown = null;
   try {
     if (existsSync(configPath)) {
       config = manager.resolve({
-        credentials,
         environ,
         profile: args.profile,
         model: args.model,
         baseUrl: args.baseUrl,
       });
+      if (
+        !(await validateConfiguredSelection({
+          config,
+          catalog: modelPlatform.catalog,
+          providerAuth,
+        }))
+      ) {
+        return 2;
+      }
     } else {
       const selection = await selector.select();
       if (selection === null) {
@@ -270,9 +301,7 @@ export async function main(
         baseUrl: selection.config.baseUrl,
         provider: selection.config.provider,
         profile: null,
-        apiKey: selection.config.apiKey,
       };
-      runtimeClient = selection.client;
       manager.configure({
         name: "default",
         provider: config.provider,
@@ -282,53 +311,9 @@ export async function main(
       outputFn(`Configured ${config.provider} / ${config.model} as default.`);
     }
   } catch (error) {
-    const message = errorMessage(error);
-    if (existsSync(configPath) && message.startsWith("No API key configured")) {
-      // A stored profile without its API key re-runs interactive selection
-      // for the resolved provider/model (first-run setup flow).
-      let selection;
-      try {
-        const settings = manager.resolveSettings({
-          environ,
-          profile: args.profile,
-          model: args.model,
-          baseUrl: args.baseUrl,
-        });
-        selection = await selector.select({
-          providerName: settings.provider,
-          modelName: settings.model,
-        });
-      } catch (selectionError) {
-        writeStderr(`Configuration error: ${errorMessage(selectionError)}`);
-        return 2;
-      }
-      if (selection === null) {
-        return 2;
-      }
-      config = {
-        model: selection.config.model,
-        baseUrl: selection.config.baseUrl,
-        provider: selection.config.provider,
-        profile: null,
-        apiKey: selection.config.apiKey,
-      };
-      runtimeClient = selection.client;
-    } else {
-      writeStderr(`Configuration error: ${message}`);
-      return 2;
-    }
-  }
-
-  try {
-    getProvider(config.provider);
-  } catch (error) {
     writeStderr(`Configuration error: ${errorMessage(error)}`);
     return 2;
   }
-
-  const client =
-    runtimeClient ??
-    createClient(config, { clientFactory: options.clientFactory });
 
   // The interactive UI is constructed only once configuration is known; its
   // provider/model are read-only in TS.
@@ -348,22 +333,24 @@ export async function main(
   }
 
   const agent = new CodingAgent({
-    modelAdapter: defaultAdapterRegistry.resolve(
-      config.provider,
-      client as ChatClientLike,
-    ),
+    modelAdapter: modelPlatform.adapter,
     model: config.model,
     tools: new ToolRegistry([
       ...createFileToolDefinitions({ projectRoot }),
       createBashToolDefinition({ projectRoot }),
     ]),
     provider: config.provider,
+    baseUrl: config.baseUrl,
     projectRoot: instructionRoot,
     startupCwd: process.cwd(),
   });
   const semanticClassifier = new SmallModelSemanticClassifier({
-    client: client as unknown as ChatCompletionsClient,
-    model: config.model,
+    modelRuntime,
+    route: {
+      provider: config.provider,
+      model: config.model,
+      baseUrl: config.baseUrl,
+    },
   });
   // agent-runtime satisfies session-runtime's AgentRunnerLike contract, so
   // the app can hand the worker to the session directly.
@@ -377,7 +364,6 @@ export async function main(
   const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
 
   let replInputFn: InputFn = inputFn;
-  let commandsSecretInput: PromptFn = selectorSecretInput;
   if (plainSink !== null) {
     const underlyingInput = inputFn;
     const underlyingSecretInput = secretInputFn;
@@ -399,14 +385,14 @@ export async function main(
     };
     replInputFn = plainInput;
     selectorInput = plainInput;
-    commandsSecretInput = plainSecretInput;
+    authSecretInput = plainSecretInput;
   } else if (terminalUi !== null) {
     // /login and interactive /model run while the terminal loop owns stdin in
     // raw mode: their questions must be asked through the UI loop, not read
     // from fd 0 directly.
     const prompts = terminalUiPrompts(terminalUi);
     selectorInput = prompts.input;
-    commandsSecretInput = prompts.secretInput;
+    authSecretInput = prompts.secretInput;
   }
   selectorOutput = (message) => {
     runtime.publishNotice(message);
@@ -418,21 +404,21 @@ export async function main(
   const commands = new SessionCommands({
     agent,
     selector,
-    credentials,
     currentConfig: {
-      apiKey: config.apiKey,
       model: config.model,
       baseUrl: config.baseUrl,
       provider: config.provider,
     },
     input: (prompt) => selectorInput(prompt),
-    secretInput: (prompt) => commandsSecretInput(prompt),
+    catalog: modelPlatform.catalog,
+    providerAuth,
     output: sessionOutput,
     session: runtime,
     onModelSelected: (selection) => {
       semanticClassifier.configure({
-        client: selection.client as unknown as ChatCompletionsClient,
+        provider: selection.config.provider,
         model: selection.config.model,
+        baseUrl: selection.config.baseUrl,
       });
     },
   });
@@ -496,4 +482,29 @@ export async function main(
     }
   }
   return cleanShutdown ? 0 : 1;
+}
+
+async function validateConfiguredSelection(options: {
+  readonly config: Config;
+  readonly catalog: ModelCatalog;
+  readonly providerAuth: ProviderAuthController;
+}): Promise<boolean> {
+  const provider = options.catalog.getProvider(options.config.provider);
+  if (provider === undefined) {
+    throw new Error(`Unknown provider: ${options.config.provider}`);
+  }
+  if (
+    !(await options.providerAuth.ensureConfigured(options.config.provider, {
+      promptIfMissing: true,
+    }))
+  ) {
+    return false;
+  }
+  await options.catalog.refresh(options.config.provider);
+  if (options.catalog.getModel(options.config.provider, options.config.model) === undefined) {
+    throw new Error(
+      `Unknown model: ${options.config.provider}/${options.config.model}`,
+    );
+  }
+  return true;
 }

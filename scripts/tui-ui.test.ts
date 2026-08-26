@@ -16,6 +16,7 @@ import { ToolCard } from "../packages/terminal/tui/src/tui/components/tool-card.
 import { Transcript } from "../packages/terminal/tui/src/tui/components/transcript.ts";
 import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
+import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
 import {
   MemoryTerminalDriver,
@@ -55,6 +56,48 @@ test("completion list is a focusable width-bounded component", () => {
   assert.equal(list.focused, false);
   list.focused = true;
   assert.equal(list.focused, true);
+});
+
+test("completion list uses pi segmented colors without changing width", () => {
+  const list = new CompletionList({
+    items: [
+      { value: "/help", description: "Show help", start: -5 },
+      { value: "/model", description: "Switch model", start: -6 },
+    ],
+    selectedIndex: 1,
+    theme: PI_DARK,
+  });
+
+  const lines = list.render(20);
+
+  assert.match(lines[0]!, /\x1b\[/u);
+  assert.ok(lines[0]!.includes(PI_DARK.sgr("muted")));
+  assert.ok(lines[1]!.includes(PI_DARK.sgr("selected_bg", { background: true })));
+  assert.deepEqual(lines.map(stripTerminalControls), [
+    "  /help  Show help",
+    "› /model  Switch mod",
+  ]);
+  assert.deepEqual(lines.map(visibleWidth), [18, 20]);
+});
+
+test("frame colors the pi input prompt and text without moving the cjk cursor", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const editor = new EditorState();
+  editor.apply({ kind: "insert", text: "你好你" }, { runtimeActive: false });
+  const frame = ui.buildFrame({ width: 11, editor });
+
+  const inputStart = frame.lines.findIndex((line) =>
+    stripTerminalControls(line).includes("❯"),
+  );
+  const inputLines = frame.lines.slice(inputStart, inputStart + 2);
+
+  assert.notEqual(inputStart, -1);
+  assert.equal(inputLines.length, 2);
+  assert.ok(inputLines[0]!.includes(PI_DARK.sgr("accent")));
+  assert.ok(inputLines[0]!.includes(PI_DARK.sgr("text")));
+  assert.deepEqual(inputLines.map(stripTerminalControls), ["│ ❯ 你好  │", "│   你    │"]);
+  assert.equal(frame.cursorCol, 6);
+  assert.ok(frame.lines.every((line) => visibleWidth(line) <= 11));
 });
 
 test("tool card renders status metadata and expanded output inside width", () => {
@@ -451,11 +494,12 @@ test("typing updates editor line without appending prompt history", () => {
   ui.feedInputBytes(bytes("s"));
   ui.drainLoop();
 
+  const plainWrites = stripTerminalControls(terminal.writes());
   assert.equal(terminal.writeChunks().length, 1);
-  assert.ok(terminal.writes().includes("\r\x1b[2K│ ❯ as"));
+  assert.ok(plainWrites.includes("\r│ ❯ as"));
   assert.equal(terminal.writes().split("\x1b[2K").length - 1, 1);
   assert.ok(!terminal.writes().includes("\r\n"));
-  assert.ok(!terminal.writes().includes("\r\n│ ❯ a"));
+  assert.ok(!plainWrites.includes("\r\n│ ❯ a"));
 });
 
 test("typing updates editor line semantically in four rows", () => {
@@ -586,6 +630,37 @@ test("plain sink outputs one complete model response", () => {
   sink.stop();
 
   assert.deepEqual(output, ["hello world"]);
+});
+
+test("retry schedule events render as non-terminal notices", () => {
+  const output: string[] = [];
+  const sink = new PlainEventSink((text) => {
+    output.push(text);
+  });
+  const retry = event("model.retry_scheduled", "request-1", {
+    attempt: 2,
+    max_attempts: 3,
+    delay_ms: 250,
+    error_kind: "server",
+  });
+
+  sink.publishEvent({
+    ...retry,
+    source: "model",
+    session_id: "session-1",
+    task_id: "task-1",
+    sequence: 1,
+  });
+  sink.flush();
+  sink.stop();
+
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ theme: "dark", driver: terminal });
+  ui.applyProjectedEvent(retry);
+
+  const expected = "Model request retry 2/3 in 250ms (server).";
+  assert.deepEqual(output, [expected]);
+  assert.ok(stripTerminalControls(ui.buildHistoryLines(80).join("\n")).includes(expected));
 });
 
 test("raw loop owns transcript and editor together", () => {
@@ -890,11 +965,13 @@ test("frame grows only for actual multiline input", () => {
   );
   const frame = ui.buildFrame({ width: 80, editor });
 
-  assert.ok(frame.lines.some((line) => line.includes("❯ first line")));
-  assert.ok(frame.lines.some((line) => line.includes("  second line")));
+  assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("❯ first line")));
+  assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("  second line")));
   assert.equal(
     frame.lines.filter(
-      (line) => line.includes("first line") || line.includes("second line"),
+      (line) =>
+        stripTerminalControls(line).includes("first line") ||
+        stripTerminalControls(line).includes("second line"),
     ).length,
     2,
   );

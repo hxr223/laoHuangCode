@@ -27,8 +27,9 @@ import type {
   PendingInputBatchLike,
 } from "@laohuang/runtime-protocol";
 import {
-  portableMessage,
+  portableModelMessage,
   type ModelAdapter,
+  type ModelMessage,
 } from "@laohuang/llm";
 import type {
   ToolExecutionContextLike,
@@ -117,7 +118,8 @@ export interface CodingAgentOptions {
   repeatedToolCallLimit?: number;
   onToolEvent?: ToolEventCallback | null;
   onAgentEvent?: AgentEventCallback | null;
-  provider: string | null;
+  provider: string;
+  baseUrl?: string | null;
   toolExecution?: ToolExecutionMode;
   /**
    * Project root used only for project-instruction loading (both this and
@@ -141,6 +143,7 @@ const RUNTIME_EVENT_KINDS: Record<string, EventKind> = {
   model_text_delta: EventKind.ModelTextDelta,
   model_reasoning_delta: EventKind.ModelReasoningDelta,
   model_tool_call_delta: EventKind.ModelToolCallDelta,
+  model_retry_scheduled: EventKind.ModelRetryScheduled,
   model_response_validating: EventKind.ModelResponseValidating,
   model_response_committed: EventKind.ModelResponseCommitted,
   model_response_aborted: EventKind.ModelResponseAborted,
@@ -154,7 +157,8 @@ const RUNTIME_EVENT_KINDS: Record<string, EventKind> = {
 
 export class CodingAgent {
   model: string;
-  provider: string | null;
+  provider: string;
+  baseUrl: string | null;
   /** Provider-neutral model access; resolved from `provider`. */
   private adapter: ModelAdapter;
   private modelRuntime: ModelRuntime;
@@ -164,8 +168,8 @@ export class CodingAgent {
   readonly maxElapsedSeconds: number;
   readonly repeatedToolCallLimit: number;
   readonly toolExecution: ToolExecutionMode;
-  /** Conversation history in Chat Completions wire shape. */
-  messages: Array<Record<string, unknown>>;
+  /** Conversation history in LaoHuang model-message shape. */
+  messages: ModelMessage[];
   private readonly onToolEvent: ToolEventCallback | null;
   private readonly onAgentEvent: AgentEventCallback | null;
   private readonly instructionRoot: string | null;
@@ -193,7 +197,8 @@ export class CodingAgent {
     this.tools = options.tools;
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
-    this.provider = options.provider ?? null;
+    this.provider = options.provider;
+    this.baseUrl = options.baseUrl ?? null;
     this.adapter = options.modelAdapter;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
@@ -217,17 +222,16 @@ export class CodingAgent {
 
   /** Swap the model client mid-conversation, keeping portable history. */
   switchModel(options: {
-    modelAdapter: ModelAdapter;
-    model: string;
     provider: string;
+    model: string;
+    baseUrl: string | null;
   }): void {
     const previousModel = this.model;
     const previousProvider = this.provider;
-    this.messages = this.messages.map((message) => portableMessage(message));
-    this.model = options.model;
+    this.messages = this.messages.map(portableModelMessage);
     this.provider = options.provider;
-    this.adapter = options.modelAdapter;
-    this.modelRuntime = new ModelRuntime(this.adapter);
+    this.model = options.model;
+    this.baseUrl = options.baseUrl;
     this.emit("model_switched", {
       provider: options.provider,
       model: options.model,
@@ -252,9 +256,10 @@ export class CodingAgent {
       const runner = new AgentStepRunner({
         model: this.model,
         provider: this.provider,
+        baseUrl: this.baseUrl,
         modelRuntime: this.modelRuntime,
         toolRuntime: this.toolRuntime,
-        toolDefinitions: this.tools.definitions as unknown as Array<Record<string, unknown>>,
+        toolDefinitions: this.tools.definitions,
         toolExecution: this.toolExecution,
         history: new HistoryCommitter({
           messages: this.messages,
@@ -409,7 +414,7 @@ export class CodingAgent {
         ? EventSource.System
         : EventSource.Model;
     const correlationId = isToolEvent
-      ? ((payload["tool_call_id"] as string | undefined) ?? null)
+      ? ((payload["toolCallId"] as string | undefined) ?? null)
       : isGuardEvent
         ? null
         : ((payload["request_id"] as string | undefined) ?? null);

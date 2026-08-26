@@ -1084,6 +1084,10 @@ export interface RenderedEditor {
 export interface RenderOptions {
   readonly prompt?: string;
   readonly mask?: boolean;
+  readonly styles?: {
+    readonly prompt?: (text: string) => string;
+    readonly text?: (text: string) => string;
+  };
 }
 
 /** Text, history, and command-completion state for the active editor. */
@@ -1159,9 +1163,13 @@ export class EditorState {
     ) {
       rows.push("");
     }
-    const lines = rows.map(
-      (row, index) => (index === 0 ? prompt : " ".repeat(promptWidth)) + row,
-    );
+    const promptStyle = options.styles?.prompt ?? ((text: string) => text);
+    const textStyle = options.styles?.text ?? ((text: string) => text);
+    const lines = rows.map((row, index) => {
+      const promptText = index === 0 ? prompt : " ".repeat(promptWidth);
+      const renderedPrompt = index === 0 ? promptStyle(promptText) : promptText;
+      return renderedPrompt + textStyle(row);
+    });
     const before = displayText.slice(0, this.cursor);
     const beforeLines = before.split("\n");
     let priorRows = 0;
