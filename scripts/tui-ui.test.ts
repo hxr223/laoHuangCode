@@ -29,6 +29,7 @@ import {
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
 import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
+import { ToolOutputRedactor } from "../packages/terminal/tui/src/tui/display-policy.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
@@ -552,6 +553,27 @@ test("terminal transcript redacts bearer values split across output chunks", () 
   const rendered = ui.buildHistoryLines(80).join("\n");
   assert.ok(rendered.includes("[REDACTED]"));
   assert.ok(!rendered.includes(bearerValue));
+});
+
+test("pending bearer redaction emits a marker for chunks without whitespace", () => {
+  const redactor = new ToolOutputRedactor();
+
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "Authorization: Bearer "),
+    "Authorization: Bearer [REDACTED]",
+  );
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "task3-bearer-"),
+    "[REDACTED]",
+  );
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "without-whitespace"),
+    "[REDACTED]",
+  );
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "\nordinary stderr\n"),
+    "\nordinary stderr\n",
+  );
 });
 
 test("trailing empty credential assignments preserve following tool output", () => {
