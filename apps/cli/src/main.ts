@@ -65,7 +65,6 @@ import {
   runSessionRepl,
   runTerminalUi,
   supportsTerminalUI,
-  terminalUiPrompts,
   type CommandHandler,
   type InputFn,
   type OutputFn,
@@ -162,21 +161,9 @@ export async function main(
     verifiedProviderIds: VERIFIED_PROVIDER_IDS,
   });
   const modelRuntime = new ModelRuntime(modelPlatform.adapter);
-  // Authentication and the remaining Task 10 commands still use prompt
-  // callbacks. Model selection itself is UI-neutral and receives a presenter
-  // only in the startup/session flow that owns the interaction.
-  let selectorInput: PromptFn = async (prompt) => inputFn(prompt);
-  const selectorSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
-  let authSecretInput: PromptFn = selectorSecretInput;
-  let selectorOutput: OutputFn = outputFn;
-  const providerAuth = new ProviderAuthController({
-    auth: modelPlatform.auth,
-    input: (prompt) => selectorInput(prompt),
-    secretInput: (prompt) => authSecretInput(prompt),
-    output: (message) => {
-      selectorOutput(message);
-    },
-  });
+  let presenterInput: PromptFn = async (prompt) => inputFn(prompt);
+  let presenterSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
+  const providerAuth = new ProviderAuthController({ auth: modelPlatform.auth });
   const selector = new ModelSelector({
     catalog: modelPlatform.catalog,
     providerAuth,
@@ -302,6 +289,7 @@ export async function main(
           config,
           catalog: modelPlatform.catalog,
           providerAuth,
+          presenter: startupPresenter,
         }))
       ) {
         return 2;
@@ -405,26 +393,16 @@ export async function main(
       return underlyingSecretInput("");
     };
     replInputFn = plainInput;
-    selectorInput = plainInput;
-    authSecretInput = plainSecretInput;
-  } else if (terminalUi !== null) {
-    // /login and interactive /model run while the terminal loop owns stdin in
-    // raw mode: their questions must be asked through the UI loop, not read
-    // from fd 0 directly.
-    const prompts = terminalUiPrompts(terminalUi);
-    selectorInput = prompts.input;
-    authSecretInput = prompts.secretInput;
+    presenterInput = plainInput;
+    presenterSecretInput = plainSecretInput;
   }
   const commandPresenter: CommandPresenter = terminalUi === null
-    ? new PlainCommandPresenter({ output: outputFn, input: selectorInput, secretInput: authSecretInput })
+    ? new PlainCommandPresenter({
+        output: outputFn,
+        input: presenterInput,
+        secretInput: presenterSecretInput,
+      })
     : new TerminalCommandPresenter(terminalUi);
-  providerAuth.setPresenter(commandPresenter);
-  selectorOutput = (message) => {
-    commandPresenter.notice({ text: message, tone: "info" });
-  };
-  const sessionOutput = (message: string): void => {
-    commandPresenter.notice({ text: message, tone: "info" });
-  };
 
   const commands = new SessionCommands({
     agent,
@@ -434,11 +412,9 @@ export async function main(
       baseUrl: config.baseUrl,
       provider: config.provider,
     },
-    input: (prompt) => selectorInput(prompt),
     catalog: modelPlatform.catalog,
     providerAuth,
     presenter: commandPresenter,
-    output: sessionOutput,
     session: runtime,
     onModelSelected: (selection) => {
       semanticClassifier.configure({
@@ -505,6 +481,7 @@ export async function main(
       const driver = terminalDriver;
       cleanShutdown = await runSessionRepl(runtime, {
         commandHandler: handleCommand,
+        presenter: commandPresenter,
         ui,
         runUi: (enqueue) => runTerminalUi(ui, driver, enqueue),
       });
@@ -512,6 +489,7 @@ export async function main(
       cleanShutdown = await runPlainSessionRepl(runtime, {
         commandHandler: handleCommand,
         inputFn: replInputFn,
+        presenter: commandPresenter,
         sink: plainSink!,
       });
     }
@@ -546,28 +524,7 @@ export async function runInitialModelSelection(options: {
     }
   }
 
-  const authPrompts: AuthPromptHandler = {
-    prompt: (request) => options.presenter.prompt(
-      request.kind === "select"
-        ? {
-            id: `auth-${providerName}`,
-            kind: "select",
-            message: request.message,
-            items: (request.options ?? []).map((item) => ({
-              value: item.id,
-              label: item.label,
-              ...(item.description === undefined
-                ? {}
-                : { description: item.description }),
-            })),
-          }
-        : {
-            id: `auth-${providerName}`,
-            kind: request.kind,
-            message: request.message,
-          } as PromptPresentation,
-    ),
-  };
+  const authPrompts = presenterAuthPrompts(options.presenter, providerName);
 
   let modelName = options.modelName;
   if (modelName === undefined) {
@@ -612,6 +569,7 @@ async function validateConfiguredSelection(options: {
   readonly config: Config;
   readonly catalog: ModelCatalog;
   readonly providerAuth: ProviderAuthController;
+  readonly presenter: PlainCommandPresenter;
 }): Promise<boolean> {
   const provider = options.catalog.getProvider(options.config.provider);
   if (provider === undefined) {
@@ -620,6 +578,10 @@ async function validateConfiguredSelection(options: {
   if (
     !(await options.providerAuth.ensureConfigured(options.config.provider, {
       promptIfMissing: true,
+      prompts: presenterAuthPrompts(
+        options.presenter,
+        options.config.provider,
+      ),
     }))
   ) {
     return false;
@@ -631,4 +593,32 @@ async function validateConfiguredSelection(options: {
     );
   }
   return true;
+}
+
+function presenterAuthPrompts(
+  presenter: CommandPresenter,
+  provider: string,
+): AuthPromptHandler {
+  return {
+    prompt: (request) => presenter.prompt(
+      request.kind === "select"
+        ? {
+            id: `auth-${provider}`,
+            kind: request.kind,
+            message: request.message,
+            items: (request.options ?? []).map((item) => ({
+              value: item.id,
+              label: item.label,
+              ...(item.description === undefined
+                ? {}
+                : { description: item.description }),
+            })),
+          }
+        : {
+            id: `auth-${provider}`,
+            kind: request.kind,
+            message: request.message,
+          } as PromptPresentation,
+    ),
+  };
 }

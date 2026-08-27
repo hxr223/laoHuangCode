@@ -22,7 +22,10 @@ import {
   clampReasoningEffort,
   isReasoningEffort,
 } from "@laohuang/llm";
-import type { ProviderAuthController } from "./provider-auth.ts";
+import type {
+  AuthPromptHandler,
+  ProviderAuthController,
+} from "./provider-auth.ts";
 
 export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 
@@ -402,7 +405,7 @@ export interface SessionCommandsOptions {
     "status" | "login" | "logout" | "ensureConfigured"
   >;
   readonly currentConfig: SelectionConfig;
-  readonly input: InputFn;
+  readonly input?: InputFn | undefined;
   readonly output?: OutputFn | undefined;
   readonly presenter?: CommandPresenter | undefined;
   readonly session?: SessionLike | null | undefined;
@@ -417,6 +420,15 @@ const ALL_STATES: ReadonlySet<string> = new Set([
   "FAILED",
 ]);
 const IDLE_ONLY: ReadonlySet<string> = new Set(["IDLE", "FAILED"]);
+
+const tones = {
+  blocked: "warning",
+  cancelled: "warning",
+  cleared: "success",
+  switched: "success",
+  invalid: "error",
+  unknown: "info",
+} as const;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -433,9 +445,7 @@ export class SessionCommands {
     ProviderAuthController,
     "status" | "login" | "logout" | "ensureConfigured"
   >;
-  readonly #input: InputFn;
-  readonly #output: OutputFn;
-  readonly #presenter: CommandPresenter | null;
+  readonly #presenter: CommandPresenter;
   readonly #session: SessionLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
   #currentConfig: SelectionConfig;
@@ -446,9 +456,15 @@ export class SessionCommands {
     this.#catalog = options.catalog;
     this.#providerAuth = options.providerAuth;
     this.#currentConfig = options.currentConfig;
-    this.#input = options.input;
-    this.#output = options.output ?? ((message) => console.log(message));
-    this.#presenter = options.presenter ?? null;
+    this.#presenter = options.presenter ?? {
+      notice: ({ text }) => options.output?.(text),
+      help: () => {},
+      providers: () => {},
+      providerDetail: () => {},
+      queue: () => {},
+      select: async () => null,
+      prompt: async () => null,
+    };
     this.#session = options.session ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
     this.registry = new CommandRegistry([
@@ -542,7 +558,7 @@ export class SessionCommands {
     return this.#currentConfig;
   }
 
-  get presenter(): CommandPresenter | null {
+  get presenter(): CommandPresenter {
     return this.#presenter;
   }
 
@@ -551,8 +567,9 @@ export class SessionCommands {
       state: this.runtimeState(),
     });
     if (result.status === "blocked") {
-      this.#output(
+      this.notice(
         `${result.command} is unavailable while the task is ${this.runtimeState().toLowerCase()}.`,
+        tones.blocked,
       );
     }
     return result;
@@ -579,32 +596,36 @@ export class SessionCommands {
 
   private handleHelp(args: string[]): boolean {
     if (args.length > 0) {
-      this.#output("Usage: /help");
+      this.notice("Usage: /help", tones.invalid);
       return true;
     }
-    this.#output("Commands:");
-    for (const spec of this.registry.all()) {
-      this.#output(`  ${spec.usage.padEnd(32)} ${spec.description}`);
-    }
+    this.#presenter.help({
+      commands: this.registry.all().map((spec) => ({
+        name: spec.name,
+        usage: spec.usage,
+        description: spec.description,
+      })),
+    });
     return true;
   }
 
   private async handleCancel(args: string[]): Promise<boolean> {
     if (args.length > 0) {
-      this.#output("Usage: /cancel");
+      this.notice("Usage: /cancel", tones.invalid);
       return true;
     }
     if (this.#session === null) {
-      this.#output("No active task to cancel.");
+      this.notice("No active task to cancel.", tones.cancelled);
       return true;
     }
     const cancelled = await this.#session.submitAction(
       makeCancelAction("command", "command"),
     );
-    this.#output(
+    this.notice(
       cancelled === true
         ? "Cancelling current task…"
         : "No active task to cancel.",
+      tones.cancelled,
     );
     return true;
   }
@@ -614,37 +635,47 @@ export class SessionCommands {
       args.length > 1 ||
       (args.length > 0 && args[0] !== "resume" && args[0] !== "clear")
     ) {
-      this.#output("Usage: /queue [resume|clear]");
+      this.notice("Usage: /queue [resume|clear]", tones.invalid);
       return true;
     }
     if (this.#session === null) {
-      this.#output("Pending: 0 · Held: 0 · Dead letters: 0");
+      this.#presenter.queue({
+        queue: {
+          pending: 0,
+          pendingTokens: 0,
+          held: 0,
+          heldTokens: 0,
+          deadLetters: 0,
+        },
+      });
       return true;
     }
     if (args[0] === "clear") {
       const cleared = this.#session.clearQueues();
-      this.#output(`Cleared ${cleared} queued message(s).`);
+      this.notice(`Cleared ${cleared} queued message(s).`, tones.cleared);
       return true;
     }
     if (args[0] === "resume") {
       const resumed = this.#session.resumeHeld();
-      this.#output(`Resumed ${resumed} held message(s).`);
+      this.notice(`Resumed ${resumed} held message(s).`, tones.switched);
       return true;
     }
     const status = this.#session.queueStatus();
-    this.#output(
-      `Pending: ${status.pending ?? 0}` +
-        ` (${status.pendingTokens ?? 0} est. tokens)` +
-        ` · Held: ${status.held ?? 0}` +
-        ` (${status.heldTokens ?? 0} est. tokens)` +
-        ` · Dead letters: ${status.deadLetters ?? 0}`,
-    );
+    this.#presenter.queue({
+      queue: {
+        pending: status.pending ?? 0,
+        pendingTokens: status.pendingTokens ?? 0,
+        held: status.held ?? 0,
+        heldTokens: status.heldTokens ?? 0,
+        deadLetters: status.deadLetters ?? 0,
+      },
+    });
     return true;
   }
 
   private handleClear(args: string[]): boolean {
     if (args.length > 0) {
-      this.#output("Usage: /clear");
+      this.notice("Usage: /clear", tones.invalid);
       return true;
     }
     const clear = this.#agent.clearHistory;
@@ -653,7 +684,7 @@ export class SessionCommands {
     } else if (this.#agent.messages !== undefined && this.#agent.messages.length > 0) {
       this.#agent.messages.splice(1);
     }
-    this.#output("Conversation cleared.");
+    this.notice("Conversation cleared.", tones.cleared);
     return true;
   }
 
@@ -830,7 +861,7 @@ export class SessionCommands {
 
   private async handleLogin(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /login [provider]");
+      this.notice("Usage: /login [provider]", tones.invalid);
       return true;
     }
     const provider = args[0] ?? (await this.chooseProvider());
@@ -838,18 +869,39 @@ export class SessionCommands {
       return true;
     }
     if (this.#catalog.getProvider(provider) === undefined) {
-      this.#output(`Unknown provider: ${provider}`);
+      this.notice(`Unknown provider: ${provider}`, tones.invalid);
       return true;
     }
-    if (await this.#providerAuth.login(provider)) {
-      this.#output(`Logged in to ${provider}; use /model to select it.`);
+    try {
+      const status = await this.#providerAuth.login(
+        provider,
+        this.authPrompts(provider),
+      );
+      if (status === null) {
+        this.notice(
+          "Login cancelled; credentials were not changed.",
+          tones.cancelled,
+        );
+      } else if (status.configured) {
+        this.notice(
+          `Logged in to ${provider}; use /model to select it.`,
+          tones.switched,
+        );
+      } else {
+        this.notice(`Login did not configure ${provider}.`, "warning");
+      }
+    } catch (error) {
+      this.notice(
+        `Login failed for ${provider}: ${errorMessage(error)}`,
+        tones.invalid,
+      );
     }
     return true;
   }
 
   private async handleLogout(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /logout [provider]");
+      this.notice("Usage: /logout [provider]", tones.invalid);
       return true;
     }
     const provider = args[0] ?? (await this.chooseProvider());
@@ -857,15 +909,16 @@ export class SessionCommands {
       return true;
     }
     if (this.#catalog.getProvider(provider) === undefined) {
-      this.#output(`Unknown provider: ${provider}`);
+      this.notice(`Unknown provider: ${provider}`, tones.invalid);
       return true;
     }
     try {
       await this.#providerAuth.logout(provider);
       const status = await this.#providerAuth.status(provider);
       if (status.configured) {
-        this.#output(
+        this.notice(
           `Removed stored credentials for ${provider}, but it is still configured via ${status.source}.`,
+          "warning",
         );
         return true;
       }
@@ -873,9 +926,12 @@ export class SessionCommands {
         this.#currentConfig.provider === provider
           ? " The current client remains active until you switch models or exit."
           : "";
-      this.#output(`Logged out of ${provider}.${suffix}`);
+      this.notice(`Logged out of ${provider}.${suffix}`, tones.cleared);
     } catch (error) {
-      this.#output(`Could not log out of ${provider}: ${errorMessage(error)}`);
+      this.notice(
+        `Could not log out of ${provider}: ${errorMessage(error)}`,
+        tones.invalid,
+      );
     }
     return true;
   }
@@ -884,7 +940,6 @@ export class SessionCommands {
   private async handleApiKey(args: string[]): Promise<boolean> {
     const first = args[0];
     if (first === undefined) {
-      this.#output("Use /login or /logout to manage credentials.");
       await this.handleProviders([]);
       return true;
     }
@@ -894,20 +949,20 @@ export class SessionCommands {
     if (first === "remove") {
       return this.handleLogout(args.slice(1));
     }
-    this.#output("Usage: /apikey [set|remove] [provider]");
+    this.notice("Usage: /apikey [set|remove] [provider]", tones.invalid);
     return true;
   }
 
   private async handleProviders(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /providers [provider]");
+      this.notice("Usage: /providers [provider]", tones.invalid);
       return true;
     }
     const providerId = args[0];
     if (providerId !== undefined) {
       const provider = this.#catalog.getProvider(providerId);
       if (provider === undefined) {
-        this.#output(`Unknown provider: ${providerId}`);
+        this.notice(`Unknown provider: ${providerId}`, tones.invalid);
         return true;
       }
       await this.reportProviderDetail(provider);
@@ -917,11 +972,18 @@ export class SessionCommands {
     const statuses = await Promise.all(
       providers.map((provider) => this.providerStatus(provider.id)),
     );
-    providers.forEach((provider, index) => {
-      const status = statuses[index]!;
-      this.#output(
-        `${provider.id}: available, ${authState(status)}, ${verificationState(provider)}`,
-      );
+    this.#presenter.providers({
+      providers: providers.map((provider, index) => {
+        const status = statuses[index]!;
+        return {
+          id: provider.id,
+          name: provider.name,
+          available: true,
+          configured: status.configured,
+          verified: provider.verified,
+          source: status.configured ? status.source ?? null : null,
+        };
+      }),
     });
     return true;
   }
@@ -949,25 +1011,41 @@ export class SessionCommands {
 
   private async chooseProvider(): Promise<string | null> {
     const providers = this.#catalog.listProviders();
-    providers.forEach((provider, index) => {
-      this.#output(`  ${index + 1}. ${provider.id}`);
+    return this.#presenter.select({
+      id: "auth-provider",
+      title: "Select provider",
+      items: providers.map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: provider.id,
+      })),
+      currentValue: this.#currentConfig.provider,
     });
-    let answer: string;
-    try {
-      answer = (await this.#input("Select provider: ")).trim();
-    } catch {
-      this.#output("Provider selection cancelled.");
-      return null;
-    }
-    const choice = Number(answer);
-    const selected = Number.isInteger(choice)
-      ? providers[choice - 1]?.id
-      : undefined;
-    if (selected === undefined) {
-      this.#output("Invalid provider selection.");
-      return null;
-    }
-    return selected;
+  }
+
+  private authPrompts(provider: string): AuthPromptHandler {
+    return {
+      prompt: (request) => this.#presenter.prompt(
+        request.kind === "select"
+          ? {
+              id: `auth-${provider}`,
+              kind: request.kind,
+              message: request.message,
+              items: (request.options ?? []).map((item) => ({
+                value: item.id,
+                label: item.label,
+                ...(item.description === undefined
+                  ? {}
+                  : { description: item.description }),
+              })),
+            }
+          : {
+              id: `auth-${provider}`,
+              kind: request.kind,
+              message: request.message,
+            },
+      ),
+    };
   }
 
   private async selectModelProvider(): Promise<string | null> {
@@ -1076,16 +1154,18 @@ export class SessionCommands {
     provider: ModelProviderInfo,
   ): Promise<void> {
     const status = await this.providerStatus(provider.id);
-    this.#output(`Provider: ${provider.id}`);
-    this.#output(`Name: ${provider.name}`);
-    this.#output(
-      status.configured
-        ? `Authentication: configured (${status.source})`
-        : "Authentication: not configured",
-    );
-    this.#output(`Verified: ${provider.verified ? "yes" : "no"}`);
-    this.#output(`Dynamic models: ${provider.dynamicModels ? "yes" : "no"}`);
-    this.#output(`Models: ${this.#catalog.listModels(provider.id).length}`);
+    this.#presenter.providerDetail({
+      provider: {
+        id: provider.id,
+        name: provider.name,
+        available: true,
+        configured: status.configured,
+        verified: provider.verified,
+        source: status.configured ? status.source ?? null : null,
+        dynamicModels: provider.dynamicModels,
+        modelCount: this.#catalog.listModels(provider.id).length,
+      },
+    });
   }
 
   private async providerStatus(provider: string): Promise<ModelAuthStatus> {
@@ -1100,18 +1180,6 @@ export class SessionCommands {
     text: string,
     tone: "info" | "success" | "warning" | "error",
   ): void {
-    if (this.#presenter !== null) {
-      this.#presenter.notice({ text, tone });
-      return;
-    }
-    this.#output(text);
+    this.#presenter.notice({ text, tone });
   }
-}
-
-function authState(status: ModelAuthStatus): string {
-  return status.configured ? "configured" : "not configured";
-}
-
-function verificationState(provider: ModelProviderInfo): string {
-  return provider.verified ? "verified" : "unverified";
 }

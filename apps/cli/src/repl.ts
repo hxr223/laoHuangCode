@@ -27,6 +27,7 @@ import {
 } from "@laohuang/tui";
 
 import type { InputFn as PromptFn } from "./model-selection.ts";
+import type { CommandPresenter } from "./command-presentation.ts";
 
 // REPL-facing input stays liberal (sync or async); the model selector and
 // session commands require the stricter async `PromptFn` contract.
@@ -347,6 +348,23 @@ function suggestCommand(ui: SessionUiLike | null, name: string): string | null {
   return typeof registry?.suggest === "function" ? registry.suggest(name) : null;
 }
 
+function presentNotice(
+  session: SessionReplSession,
+  presenter: CommandPresenter | undefined,
+  text: string,
+  tone: "info" | "success" | "warning" | "error",
+  legacyStyle?: string,
+): void {
+  if (presenter !== undefined) {
+    presenter.notice({ text, tone });
+    return;
+  }
+  session.publishNotice(
+    text,
+    legacyStyle === undefined ? undefined : { style: legacyStyle },
+  );
+}
+
 /**
  * Shared input routing for the session REPLs. Returns false only for /exit,
  * which the persistent loop reports back to the terminal instead.
@@ -355,6 +373,7 @@ async function handleSessionInput(
   session: SessionReplSession,
   commandHandler: CommandHandler | undefined,
   ui: SessionUiLike | null,
+  presenter: CommandPresenter | undefined,
   userInput: string,
   options: SubmitOptions = {},
 ): Promise<boolean> {
@@ -363,10 +382,13 @@ async function handleSessionInput(
   }
   if (!userInput) {
     const promoted = session.promotePendingToSteer();
-    session.publishNotice(
+    presentNotice(
+      session,
+      presenter,
       promoted > 0
         ? `Steered ${promoted} queued message(s).`
         : "No queued message to steer.",
+      promoted > 0 ? "success" : "warning",
     );
     return true;
   }
@@ -385,11 +407,17 @@ async function handleSessionInput(
     }
     result = await session.submitAction(action);
   } catch (error) {
-    session.publishNotice(`Error: ${errorMessage(error)}`, { style: "bold red" });
+    presentNotice(
+      session,
+      presenter,
+      `Error: ${errorMessage(error)}`,
+      "error",
+      "bold red",
+    );
     return true;
   }
   if (isCommandResult(result)) {
-    return handleCommandResult(session, ui, result);
+    return handleCommandResult(session, ui, presenter, result);
   }
   if (typeof result === "boolean") {
     if (action.type === "command") {
@@ -398,22 +426,29 @@ async function handleSessionInput(
         : commandHandler === undefined
           ? { status: "not_found", command: action.name } as const
           : await commandHandler(action.text ?? [action.name, ...action.arguments].join(" "));
-      return handleCommandResult(session, ui, commandResult);
+      return handleCommandResult(session, ui, presenter, commandResult);
     }
     return true;
   }
   submission = result;
   if (submission.queued) {
     const status = session.queueStatus();
-    session.publishNotice(
+    presentNotice(
+      session,
+      presenter,
       options.strategy === "steer"
         ? `Message steered (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`
         : `Message queued (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`,
+      "info",
     );
   } else if (submission.rejected) {
-    session.publishNotice(`Message rejected: ${submission.reason}`, {
-      style: "bold red",
-    });
+    presentNotice(
+      session,
+      presenter,
+      `Message rejected: ${submission.reason}`,
+      "error",
+      "bold red",
+    );
   }
   return true;
 }
@@ -430,6 +465,7 @@ function isCommandResult(value: unknown): value is CommandResult {
 async function handleCommandResult(
   session: SessionReplSession,
   ui: SessionUiLike | null,
+  presenter: CommandPresenter | undefined,
   result: CommandResult,
 ): Promise<boolean> {
   if (result.status === "handled" || result.status === "blocked") {
@@ -439,14 +475,23 @@ async function handleCommandResult(
     return false;
   }
   if (result.status === "error") {
-    session.publishNotice(`Invalid command: ${errorMessage(result.error)}`, {
-      style: "bold red",
-    });
+    presentNotice(
+      session,
+      presenter,
+      `Invalid command: ${errorMessage(result.error)}`,
+      "error",
+      "bold red",
+    );
     return true;
   }
   const suggestion = suggestCommand(ui, result.command);
   const suffix = suggestion ? ` Did you mean ${suggestion}?` : "";
-  session.publishNotice(`Unknown command: ${result.command}.${suffix}`);
+  presentNotice(
+    session,
+    presenter,
+    `Unknown command: ${result.command}.${suffix}`,
+    "info",
+  );
   return true;
 }
 
@@ -455,6 +500,7 @@ export async function runSessionRepl(
   session: SessionReplSession,
   options: {
     commandHandler?: CommandHandler | undefined;
+    presenter?: CommandPresenter | undefined;
     ui: SessionUiLike;
     /** Override for driving a UI whose run() does not read real stdin. */
     runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
@@ -470,10 +516,11 @@ async function runClassicSessionRepl(
   session: SessionReplSession,
   options: {
     commandHandler?: CommandHandler | undefined;
+    presenter?: CommandPresenter | undefined;
     ui: SessionUiLike;
   },
 ): Promise<boolean> {
-  const { commandHandler, ui } = options;
+  const { commandHandler, presenter, ui } = options;
   ui.startEventRenderer?.();
   ui.showWelcome?.();
   let cleanShutdown = false;
@@ -491,7 +538,7 @@ async function runClassicSessionRepl(
           break;
         }
         if (isInterruptedError(error)) {
-          session.publishNotice("Interrupted.", { style: "yellow" });
+          presentNotice(session, presenter, "Interrupted.", "warning", "yellow");
           continue;
         }
         throw error;
@@ -500,6 +547,7 @@ async function runClassicSessionRepl(
         session,
         commandHandler,
         ui,
+        presenter,
         userInput,
       );
       if (!keepGoing) {
@@ -517,7 +565,14 @@ async function runClassicSessionRepl(
   if (cleanShutdown) {
     ui.showGoodbye?.();
   } else {
-    ui.showError?.("Task worker did not stop before the shutdown timeout.");
+    if (options.presenter !== undefined) {
+      options.presenter.notice({
+        text: "Task worker did not stop before the shutdown timeout.",
+        tone: "error",
+      });
+    } else {
+      ui.showError?.("Task worker did not stop before the shutdown timeout.");
+    }
   }
   return cleanShutdown;
 }
@@ -539,6 +594,7 @@ function startCoordinator(
   session: SessionReplSession,
   commandHandler: CommandHandler | undefined,
   ui: SessionUiLike,
+  presenter: CommandPresenter | undefined,
 ): Coordinator {
   const queue: Array<SubmissionRequest | null> = [];
   let wake: (() => void) | null = null;
@@ -565,6 +621,7 @@ function startCoordinator(
           session,
           commandHandler,
           ui,
+          presenter,
           item.text,
           item.options ?? {},
         );
@@ -640,16 +697,17 @@ async function runPersistentSessionRepl(
   session: SessionReplSession,
   options: {
     commandHandler?: CommandHandler | undefined;
+    presenter?: CommandPresenter | undefined;
     ui: SessionUiLike;
     runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
   },
 ): Promise<boolean> {
-  const { commandHandler, ui } = options;
+  const { commandHandler, presenter, ui } = options;
   const runUi =
     options.runUi ??
     ((onSubmit: (text: string, options?: SubmitOptions) => void) => ui.run!(onSubmit));
   ui.showWelcome?.();
-  const coordinator = startCoordinator(session, commandHandler, ui);
+  const coordinator = startCoordinator(session, commandHandler, ui, presenter);
   let cleanShutdown = false;
   try {
     const enqueue = (userInput: string, submitOptions: SubmitOptions = {}): void => {
@@ -662,14 +720,19 @@ async function runPersistentSessionRepl(
               session,
               commandHandler,
               ui,
+              presenter,
               userInput,
               submitOptions,
             );
           } catch (error) {
             try {
-              session.publishNotice(`Error: ${errorMessage(error)}`, {
-                style: "bold red",
-              });
+              presentNotice(
+                session,
+                presenter,
+                `Error: ${errorMessage(error)}`,
+                "error",
+                "bold red",
+              );
             } catch {
               // The event bus may already be closed during shutdown.
             }
@@ -708,7 +771,11 @@ async function runPersistentSessionRepl(
           : coordinator.errors.length > 0
             ? "Input coordinator failed during shutdown."
             : "Task worker did not stop before the shutdown timeout.";
-        ui.showError?.(shutdownMessage);
+        if (presenter !== undefined) {
+          presenter.notice({ text: shutdownMessage, tone: "error" });
+        } else {
+          ui.showError?.(shutdownMessage);
+        }
       }
     } finally {
       ui.close?.();
@@ -724,6 +791,7 @@ export async function runPlainSessionRepl(
   options: {
     commandHandler?: CommandHandler | undefined;
     inputFn?: ((prompt: string) => string | Promise<string>) | undefined;
+    presenter?: CommandPresenter | undefined;
     sink: PlainEventSink;
   },
 ): Promise<boolean> {
@@ -753,7 +821,13 @@ export async function runPlainSessionRepl(
         }
         throw error;
       }
-      const keepGoing = await handleSessionInput(session, commandHandler, null, userInput);
+      const keepGoing = await handleSessionInput(
+        session,
+        commandHandler,
+        null,
+        options.presenter,
+        userInput,
+      );
       if (!keepGoing) {
         break;
       }

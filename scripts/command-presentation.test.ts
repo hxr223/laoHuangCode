@@ -55,6 +55,59 @@ test("terminal presenter appends a help transcript block", () => {
   });
 });
 
+test("terminal presenter preserves typed provider and queue models", () => {
+  const ui = new TerminalUI();
+  const blocks: Array<Parameters<TerminalUI["appendTranscript"]>[0]> = [];
+  ui.appendTranscript = (block) => {
+    blocks.push(block);
+  };
+  const presenter = new TerminalCommandPresenter(ui);
+
+  presenter.providers({
+    providers: [{
+      id: "anthropic",
+      name: "Anthropic",
+      available: true,
+      configured: true,
+      verified: false,
+      source: "stored credential",
+    }],
+  });
+  presenter.queue({
+    queue: {
+      pending: 2,
+      pendingTokens: 20,
+      held: 1,
+      heldTokens: 10,
+      deadLetters: 0,
+    },
+  });
+
+  assert.equal(blocks[0]?.kind, "provider_list");
+  assert.deepEqual(
+    blocks[0]?.kind === "provider_list" ? blocks[0].providers[0] : null,
+    {
+      id: "anthropic",
+      name: "Anthropic",
+      available: true,
+      configured: true,
+      verified: false,
+      source: "stored credential",
+    },
+  );
+  assert.equal(blocks[1]?.kind, "queue_status");
+  assert.deepEqual(
+    blocks[1]?.kind === "queue_status" ? blocks[1].queue : null,
+    {
+      pending: 2,
+      pendingTokens: 20,
+      held: 1,
+      heldTokens: 10,
+      deadLetters: 0,
+    },
+  );
+});
+
 test("terminal presenter delegates selection requests to TerminalUI", async () => {
   const ui = new TerminalUI();
   let received: SelectionPresentation | null = null;

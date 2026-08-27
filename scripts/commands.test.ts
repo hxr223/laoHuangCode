@@ -4,21 +4,24 @@ import assert from "node:assert/strict";
 import type { ModelProviderInfo } from "@laohuang/llm";
 import {
   CommandRegistry,
+  SessionCommands,
   type SessionLike,
 } from "../apps/cli/src/commands.ts";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
 import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 import {
   createSessionCommandFixture,
   FakeAgent,
+  FakeCatalog,
 } from "./helpers/session-command-fixture.ts";
 
 function providerInfo(
   id: string,
-  options: { verified: boolean },
+  options: { verified: boolean; name?: string },
 ): ModelProviderInfo {
   return {
     id,
-    name: id,
+    name: options.name ?? id,
     authName: `${id} API key`,
     dynamicModels: false,
     verified: options.verified,
@@ -34,6 +37,25 @@ test("session commands retain their command presentation port", () => {
   const { commands } = createSessionCommandFixture({ presenter });
 
   assert.equal(commands.presenter, presenter);
+});
+
+test("help emits a structured help model", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands } = createSessionCommandFixture({ presenter });
+
+  await commands.execute("/help");
+
+  assert.ok(
+    presenter.helpViews[0]?.commands.some((item) => item.name === "/model"),
+  );
+  assert.equal(
+    presenter.notices.some((item) => item.text === "Commands:"),
+    false,
+  );
+  assert.deepEqual(
+    presenter.helpViews[0]?.commands.map((item) => item.name),
+    [...(presenter.helpViews[0]?.commands.map((item) => item.name) ?? [])].sort(),
+  );
 });
 
 test("registry completion has a replacement start and respects state", () => {
@@ -122,8 +144,8 @@ test("providers command reports available configured and verified independently"
   const { commands } = createSessionCommandFixture({
     presenter,
     providers: [
-      providerInfo("anthropic", { verified: false }),
-      providerInfo("deepseek", { verified: true }),
+      providerInfo("anthropic", { verified: false, name: "Anthropic" }),
+      providerInfo("deepseek", { verified: true, name: "DeepSeek" }),
     ],
     configured: new Set(["anthropic"]),
   });
@@ -131,13 +153,37 @@ test("providers command reports available configured and verified independently"
   const result = await commands.execute("/providers");
 
   assert.equal(result.status, "handled");
-  assert.deepEqual(noticeTexts(presenter), [
-    "anthropic: available, configured, unverified",
-    "deepseek: available, not configured, verified",
+  assert.deepEqual(presenter.providerViews[0]?.providers, [
+    {
+      id: "anthropic",
+      name: "Anthropic",
+      available: true,
+      configured: true,
+      verified: false,
+      source: "stored credential",
+    },
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      available: true,
+      configured: false,
+      verified: true,
+      source: null,
+    },
   ]);
+  assert.deepEqual(presenter.notices, []);
 
   await commands.execute("/providers anthropic");
-  assert.ok(noticeTexts(presenter).some((line) => line.includes("Authentication: configured")));
+  assert.deepEqual(presenter.providerDetails[0]?.provider, {
+    id: "anthropic",
+    name: "Anthropic",
+    available: true,
+    configured: true,
+    verified: false,
+    source: "stored credential",
+    dynamicModels: false,
+    modelCount: 1,
+  });
 });
 
 test("queue commands delegate to the agent session", async () => {
@@ -164,11 +210,62 @@ test("queue commands delegate to the agent session", async () => {
   await commands.execute("/queue resume");
   await commands.execute("/queue clear");
 
-  assert.deepEqual(noticeTexts(presenter), [
-    "Pending: 2 (20 est. tokens) · Held: 1 (10 est. tokens) · Dead letters: 1",
-    "Resumed 1 held message(s).",
-    "Cleared 3 queued message(s).",
+  assert.deepEqual(presenter.queueViews, [{
+    queue: {
+      pending: 2,
+      held: 1,
+      pendingTokens: 20,
+      heldTokens: 10,
+      deadLetters: 1,
+    },
+  }]);
+  assert.deepEqual(presenter.notices, [
+    { text: "Resumed 1 held message(s).", tone: "success" },
+    { text: "Cleared 3 queued message(s).", tone: "success" },
   ]);
+});
+
+test("cancel and clear emit typed success or warning notices", async () => {
+  const session: SessionLike = {
+    queueStatus: () => ({}),
+    clearQueues: () => 0,
+    resumeHeld: () => 0,
+    cancelActiveTask: () => false,
+    submitAction: () => true,
+  };
+  const presenter = new RecordingPresenter();
+  const { commands, agent } = createSessionCommandFixture({ presenter, session });
+  agent.messages.push({ role: "user", content: "hello" });
+
+  await commands.execute("/cancel");
+  await commands.execute("/clear");
+
+  assert.deepEqual(presenter.notices, [
+    { text: "Cancelling current task…", tone: "warning" },
+    { text: "Conversation cleared.", tone: "success" },
+  ]);
+  assert.equal(agent.messages.length, 1);
+});
+
+test("blocked commands emit warning notices", async () => {
+  const session: SessionLike = {
+    activeTask: { state: "RUNNING_MODEL" },
+    queueStatus: () => ({}),
+    clearQueues: () => 0,
+    resumeHeld: () => 0,
+    cancelActiveTask: () => false,
+    submitAction: () => false,
+  };
+  const presenter = new RecordingPresenter();
+  const { commands } = createSessionCommandFixture({ presenter, session });
+
+  const result = await commands.execute("/clear");
+
+  assert.equal(result.status, "blocked");
+  assert.deepEqual(presenter.notices, [{
+    text: "/clear is unavailable while the task is running_model.",
+    tone: "warning",
+  }]);
 });
 
 test("/model current reports the active provider and model", async () => {
@@ -323,8 +420,9 @@ test("/model adjusts effort when the selected model does not support the current
 });
 
 test("login applies credentials without replacing the running adapter", async () => {
+  const presenter = new RecordingPresenter();
   const { commands, auth, agent } = createSessionCommandFixture({
-    presenter: new RecordingPresenter(),
+    presenter,
     configured: new Set(),
   });
 
@@ -334,19 +432,18 @@ test("login applies credentials without replacing the running adapter", async ()
   assert.deepEqual(agent.modelSwitches, []);
 });
 
-test("/login and /logout manage credentials through auth service", async () => {
-  const presenter = new RecordingPresenter();
+test("login selects an omitted provider through the presenter", async () => {
+  const presenter = new RecordingPresenter({ selections: ["anthropic"] });
   const { commands, auth } = createSessionCommandFixture({ presenter });
 
-  await commands.execute("/login deepseek");
-  await commands.execute("/apikey");
-  await commands.execute("/logout anthropic");
+  await commands.execute("/login");
 
-  assert.deepEqual(auth.loginCalls, ["deepseek"]);
-  assert.deepEqual(auth.logoutCalls, ["anthropic"]);
-  assert.ok(noticeTexts(presenter).some((line) =>
-    line === "deepseek: available, configured, unverified"
-  ));
+  assert.deepEqual(auth.loginCalls, ["anthropic"]);
+  assert.equal(presenter.selections[0]?.id, "auth-provider");
+  assert.equal(
+    presenter.notices.some((notice) => notice.text.includes("1. anthropic")),
+    false,
+  );
 });
 
 test("/logout reports ambient credentials that remain configured", async () => {
@@ -359,25 +456,81 @@ test("/logout reports ambient credentials that remain configured", async () => {
   await commands.execute("/logout deepseek");
 
   assert.deepEqual(auth.logoutCalls, ["deepseek"]);
-  assert.ok(
-    noticeTexts(presenter).some((line) =>
-      line ===
+  assert.deepEqual(presenter.notices, [{
+    text:
       "Removed stored credentials for deepseek, but it is still configured via DEEPSEEK_API_KEY.",
-    ),
-  );
-  assert.equal(noticeTexts(presenter).some((line) => line === "Logged out of deepseek."), false);
+    tone: "warning",
+  }]);
 });
 
-test("/apikey commands remain compatible aliases", async () => {
+test("/apikey delegates to login, logout, and provider views without alias text", async () => {
+  const presenter = new RecordingPresenter();
   const { commands, auth } = createSessionCommandFixture({
-    presenter: new RecordingPresenter(),
+    presenter,
   });
 
   await commands.execute("/apikey set anthropic");
   await commands.execute("/apikey remove anthropic");
+  await commands.execute("/apikey");
 
   assert.deepEqual(auth.loginCalls, ["anthropic"]);
   assert.deepEqual(auth.logoutCalls, ["anthropic"]);
+  assert.equal(presenter.providerViews.length, 1);
+  assert.equal(
+    presenter.notices.some((notice) =>
+      notice.text === "Use /login or /logout to manage credentials."
+    ),
+    false,
+  );
+});
+
+test("login cancellation and service failures use warning and error notices", async () => {
+  const providers = [providerInfo("anthropic", {
+    verified: false,
+    name: "Anthropic",
+  })];
+  const catalog = new FakeCatalog(providers);
+  const presenter = new RecordingPresenter();
+  let loginResult: { configured: boolean; source?: string } | null = {
+    configured: true,
+    source: "stored credential",
+  };
+  let loginError: Error | null = null;
+  const providerAuth = {
+    status: async () => ({ configured: false }),
+    login: async () => {
+      if (loginError !== null) {
+        throw loginError;
+      }
+      return loginResult;
+    },
+    logout: async () => {},
+    ensureConfigured: async () => false,
+  };
+  const commands = new SessionCommands({
+    agent: new FakeAgent({ model: "claude-sonnet-4-5", provider: "anthropic" }),
+    selector: new ModelSelector({ catalog, providerAuth }),
+    catalog,
+    providerAuth,
+    currentConfig: {
+      model: "claude-sonnet-4-5",
+      provider: "anthropic",
+      baseUrl: null,
+    },
+    presenter,
+  });
+
+  await commands.execute("/login anthropic");
+  loginResult = null;
+  await commands.execute("/login anthropic");
+  loginError = new Error("credential store unavailable");
+  await commands.execute("/login anthropic");
+
+  assert.deepEqual(presenter.notices, [
+    { text: "Logged in to anthropic; use /model to select it.", tone: "success" },
+    { text: "Login cancelled; credentials were not changed.", tone: "warning" },
+    { text: "Login failed for anthropic: credential store unavailable", tone: "error" },
+  ]);
 });
 
 test("/model does not prompt for missing credentials", async () => {

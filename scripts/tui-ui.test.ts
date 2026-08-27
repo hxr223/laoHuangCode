@@ -32,13 +32,26 @@ import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
 import { ToolOutputRedactor } from "../packages/terminal/tui/src/tui/display-policy.ts";
 import { TerminalCommandPresenter } from "../apps/cli/src/terminal-command-presenter.ts";
+import { SessionCommands } from "../apps/cli/src/commands.ts";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
+import { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import {
+  runSessionRepl,
+  type SessionReplSession,
+  type SessionUiLike,
+} from "../apps/cli/src/repl.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
   stripTerminalControls,
   visibleWidth,
 } from "../packages/terminal/tui/src/tui/screen.ts";
-import { createSessionCommandFixture } from "./helpers/session-command-fixture.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
+import {
+  createSessionCommandFixture,
+  FakeAgent,
+  FakeCatalog,
+} from "./helpers/session-command-fixture.ts";
 import { TerminalEmulator } from "./helpers/terminal-emulator.ts";
 
 const encoder = new TextEncoder();
@@ -1321,6 +1334,162 @@ test("effort command uses persistent selector submit and cancellation", async ()
   await selected;
 
   assert.equal(agent.reasoningEffort, "medium");
+});
+
+test("login command routes secret input through the persistent auth dialog", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 12 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const presenter = new TerminalCommandPresenter(ui);
+  const catalog = new FakeCatalog([{
+    id: "deepseek",
+    name: "DeepSeek",
+    authName: "DeepSeek API key",
+    dynamicModels: false,
+    verified: false,
+  }]);
+  const providerAuth = new ProviderAuthController({
+    auth: {
+      status: async () => ({ configured: false }),
+      loginApiKey: async (_provider, interaction) => {
+        assert.equal(await interaction.prompt({
+          type: "secret",
+          message: "Enter API key",
+        }), "task10-secret");
+        return { configured: true, source: "stored credential" };
+      },
+      logout: async () => {},
+    },
+  });
+  const commands = new SessionCommands({
+    agent: new FakeAgent({ model: "deepseek-v4-flash", provider: "deepseek" }),
+    selector: new ModelSelector({ catalog, providerAuth }),
+    catalog,
+    providerAuth,
+    currentConfig: {
+      model: "deepseek-v4-flash",
+      provider: "deepseek",
+      baseUrl: null,
+    },
+    presenter,
+  });
+
+  const login = commands.execute("/login deepseek");
+  await drainUntil(ui, () => ui.focusedComponentId() === "auth-deepseek");
+  assert.equal(ui.focusedComponentId(), "auth-deepseek");
+  assert.equal(terminal.writes().includes("  1. deepseek"), false);
+  ui.feedInputBytes(bytes("task10-secret\r"));
+  ui.drainLoop();
+  await login;
+
+  assert.equal(terminal.writes().includes("task10-secret"), false);
+  assert.ok(
+    stripTerminalControls(ui.buildHistoryLines(80).join("\n")).includes(
+      "Logged in to deepseek",
+    ),
+  );
+});
+
+function replSession(options: {
+  readonly submitAction?: SessionReplSession["submitAction"];
+  readonly close?: () => Promise<boolean>;
+  readonly runtimeNotices?: string[];
+} = {}): SessionReplSession {
+  const runtimeNotices = options.runtimeNotices ?? [];
+  return {
+    state: "idle",
+    eventBus: { flush: async () => {} },
+    submitInput: async () => {
+      throw new Error("submitInput is not used by action routing");
+    },
+    submitAction: options.submitAction ?? (async () => false),
+    promotePendingToSteer: () => 0,
+    queueStatus: () => ({}),
+    publishNotice: (text) => {
+      runtimeNotices.push(text);
+    },
+    waitForIdle: async () => true,
+    close: options.close ?? (async () => true),
+  };
+}
+
+test("unknown commands use typed info notices with suggestions", async () => {
+  const presenter = new RecordingPresenter();
+  const runtimeNotices: string[] = [];
+  const ui: SessionUiLike = {
+    commandRegistry: { suggest: () => "/help" },
+    close: () => {},
+  };
+
+  await runSessionRepl(replSession({ runtimeNotices }), {
+    ui,
+    presenter,
+    commandHandler: async () => ({ status: "not_found", command: "/hep" }),
+    runUi: (submit) => {
+      submit("/hep");
+    },
+  });
+
+  assert.deepEqual(presenter.notices, [{
+    text: "Unknown command: /hep. Did you mean /help?",
+    tone: "info",
+  }]);
+  assert.deepEqual(runtimeNotices, []);
+});
+
+test("rejected messages use typed error notices", async () => {
+  const presenter = new RecordingPresenter();
+  const runtimeNotices: string[] = [];
+  const session = replSession({
+    runtimeNotices,
+    submitAction: async () => ({
+      event: {} as never,
+      routed: {} as never,
+      taskId: null,
+      queued: false,
+      control: false,
+      rejected: true,
+      reason: "policy denied input",
+    }),
+  });
+
+  await runSessionRepl(session, {
+    ui: { close: () => {} },
+    presenter,
+    runUi: (submit) => {
+      submit("blocked content");
+    },
+  });
+
+  assert.deepEqual(presenter.notices, [{
+    text: "Message rejected: policy denied input",
+    tone: "error",
+  }]);
+  assert.deepEqual(runtimeNotices, []);
+});
+
+test("shutdown errors use typed error notices", async () => {
+  const presenter = new RecordingPresenter();
+  const legacyErrors: string[] = [];
+
+  const clean = await runSessionRepl(replSession({
+    close: async () => false,
+  }), {
+    ui: {
+      renderError: null,
+      showError: (message) => legacyErrors.push(message),
+      close: () => {},
+    },
+    presenter,
+    runUi: () => {},
+  });
+
+  assert.equal(clean, false);
+  assert.deepEqual(presenter.notices, [{
+    text: "Task worker did not stop before the shutdown timeout.",
+    tone: "error",
+  }]);
+  assert.deepEqual(legacyErrors, []);
 });
 
 test("prompt modal takes priority over an active selector", async () => {
