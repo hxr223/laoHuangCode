@@ -113,11 +113,29 @@ laohuang
 
 ### TUI 设计方向
 
-后续 TUI 会继续增强为完整 Agent 控制台：固定外框、`laoHuang` 标题栏、欢迎语、
-状态栏、工具输出折叠、可配置快捷键、模型选择器，以及更清晰的事件回流与渲染边界。
-未实现功能不会出现在当前快捷键说明中。
+当前 TUI 使用无全局外框的组件化布局：命令结果、模型和 effort 选择器、认证输入、
+thinking、工具状态、输入区和状态行共享结构化语义样式，并保留终端原生 scrollback。
+交互列表不使用编号；普通输入和回答使用终端默认前景色，描述和元数据使用 muted
+语义色。
 
 ### 验证交互终端
+
+不调用供应商的手动检查命令：
+
+```bash
+npm run build
+tmux new-session -d -s laohuang-component-test -x 80 -y 24
+tmux send-keys -t laohuang-component-test "node apps/cli/dist/bin.js" Enter
+tmux send-keys -t laohuang-component-test "/help" Enter
+tmux capture-pane -t laohuang-component-test -p
+tmux send-keys -t laohuang-component-test Escape
+tmux kill-session -t laohuang-component-test
+```
+
+捕获结果应显示无全局外框的 `/help` 结构化命令列表、单一输入提示符和保留的原生
+scrollback，不应出现编号交互列表或终端协商片段。供应商支持的模型选择和认证操作
+需要已配置凭据，不属于自动 `smoke:tui` 验证；自动烟测只打开本地命令界面，不提交
+普通输入，也不发起供应商请求。
 
 1. 在真实 TTY 中运行 `laohuang`。
 2. 发送第一个问题并等待回答完成。
