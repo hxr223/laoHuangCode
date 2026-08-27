@@ -70,7 +70,7 @@ function applyTextPadding(
 ): readonly StyledLine[] {
   const targetWidth = Math.max(0, width);
   const blank = (): StyledLine =>
-    line(span(options.background === undefined ? "" : " ".repeat(targetWidth), backgroundStyle(options.background)));
+    line(span(" ".repeat(targetWidth), backgroundStyle(options.background)));
   const horizontalPadding = span(
     " ".repeat(options.paddingX),
     backgroundStyle(options.background),
@@ -81,9 +81,7 @@ function applyTextPadding(
       targetWidth,
       "",
     );
-    return options.background === undefined
-      ? padded
-      : padStyledLine(padded, targetWidth, options.background);
+    return padStyledLine(padded, targetWidth, options.background);
   });
   return [
     ...Array.from({ length: options.paddingY }, blank),

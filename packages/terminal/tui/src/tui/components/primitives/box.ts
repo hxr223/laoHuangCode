@@ -33,9 +33,6 @@ export class Box implements TuiComponent {
   render(context: RenderContext): ComponentRenderResult {
     const width = Math.max(0, context.width);
     const child = this.#child.render({ ...context, width: Math.max(1, width - this.#paddingX * 2) });
-    if (child.lines.length === 0) {
-      return { lines: [] };
-    }
     const blank = (): StyledLine => line(span(" ".repeat(width), backgroundStyle(this.#background)));
     const lines = child.lines.map((value) => this.#renderLine(value, width));
     return {
