@@ -1192,6 +1192,7 @@ export class TerminalUI {
 
   appendTranscript(block: TranscriptBlock): void {
     this.#transcript.append(block);
+    this.#loop?.requestRender();
   }
 
   acceptUserInput(text: string): void {

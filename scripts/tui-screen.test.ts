@@ -52,6 +52,19 @@ test("emulator wraps only after next printable full width line", () => {
   assert.equal(terminal.cursorColumn, 1);
 });
 
+test("emulator resize updates dimensions and clamps viewport state", () => {
+  const terminal = new TerminalEmulator({ columns: 8, rows: 3 });
+  terminal.write("history\r\nactive");
+
+  terminal.resize({ columns: 4, rows: 2 });
+
+  assert.equal(terminal.columns, 4);
+  assert.equal(terminal.rows, 2);
+  assert.deepEqual(terminal.viewportLines, ["hist", "acti"]);
+  assert.equal(terminal.cursorRow, 1);
+  assert.equal(terminal.cursorColumn, 3);
+});
+
 test("new completed lines append without erasing scrollback", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const renderer = new PiMainScreenRenderer(terminal);
