@@ -101,6 +101,24 @@ test("pending queue drains all task messages in order", async () => {
   assert.deepEqual(queue.snapshot(), []);
 });
 
+test("pending queue promotes the earliest compatible message to steer", async () => {
+  const registry = activeRegistry();
+  const queue = new PendingQueue();
+  const router = new EventRouter(registry);
+  queue.put(await router.route(userEvent("later", { strategy: "follow_up" })));
+  queue.put(await router.route(userEvent("urgent", { strategy: "steer" })));
+
+  const promoted = queue.promoteFirstCompatible({ taskId: "task-1" });
+  const steered = queue.drainCompatible({ taskId: "task-1", strategy: "steer" });
+
+  assert.equal(promoted?.decision.strategy, "steer");
+  assert.deepEqual(
+    steered.map((item) => item.event.payload["content"]),
+    ["later", "urgent"],
+  );
+  assert.deepEqual(queue.snapshot(), []);
+});
+
 test("queues are bounded", async () => {
   const registry = activeRegistry();
   const queue = new PendingQueue(1);

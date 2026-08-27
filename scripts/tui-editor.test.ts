@@ -69,11 +69,18 @@ test("decoder distinguishes submit, alt+enter and ctrl+d", () => {
   ]);
 });
 
-test("decoder emits ctrl+c as neutral key input", () => {
+test("decoder emits ctrl+c and ctrl+s as neutral key input", () => {
   const decoder = new RawInputDecoder();
 
   assert.deepEqual(decoder.feed(Buffer.from("\x03")), [
     inputAction(InputActionKind.Key, "", makeKeyInput("ctrl_c", { ctrl: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x13")), [
+    inputAction(
+      InputActionKind.Key,
+      "",
+      makeKeyInput("character", { text: "s", ctrl: true }),
+    ),
   ]);
 });
 

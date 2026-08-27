@@ -470,7 +470,7 @@ test("persistent repl preserves follow-up submit metadata", async () => {
   class FakePiLoopUI {
     commandRegistry = null;
     renderError: unknown = null;
-    run(submit: (text: string, options?: { strategy?: "follow_up" }) => void): void {
+    run(submit: (text: string, options?: { strategy?: "follow_up" | "steer" }) => void): void {
       submit("later", { strategy: "follow_up" });
       submit("/exit");
     }

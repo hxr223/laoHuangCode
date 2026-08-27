@@ -22,6 +22,7 @@ export type RuntimeCapability = keyof RuntimeCapabilities;
 
 export const ACTION_CAPABILITIES = {
   cancel: "cancellation",
+  steer_now: "queuedInput",
   toggle_tool_output: "tools",
   select_model: "commands",
   toggle_thinking: "reasoning",
@@ -36,6 +37,9 @@ export function unavailableActionNotice(action: keyof typeof ACTION_CAPABILITIES
   }
   if (action === "toggle_tool_output") {
     return "Tool output controls are unavailable for this runtime.";
+  }
+  if (action === "steer_now") {
+    return "Queued input controls are unavailable for this runtime.";
   }
   return "Cancellation is unavailable for this runtime.";
 }

@@ -220,7 +220,7 @@ type LoopWorkItem =
   | { type: "event"; event: unknown };
 
 export interface SubmitOptions {
-  readonly strategy?: "follow_up";
+  readonly strategy?: "follow_up" | "steer";
 }
 
 type SubmitCallback = (text: string, options?: SubmitOptions) => void;
@@ -599,6 +599,8 @@ export class InteractiveTerminalLoop {
     }
     if (action === "editor_newline") {
       this.#applyEditorAction(inputAction(InputActionKind.Newline));
+    } else if (action === "steer_now") {
+      this.#applySteerSubmit();
     } else if (action === "submit_follow_up") {
       this.#applyFollowUpSubmit();
     } else if (action === "dismiss") {
@@ -630,6 +632,38 @@ export class InteractiveTerminalLoop {
     if (effect.submit !== null && effect.submit !== undefined) {
       this.#ui.acceptUserInput(effect.submit);
       this.#onSubmit(effect.submit, { strategy: "follow_up" });
+    }
+    if (effect.notice) {
+      this.#appendNotice(effect.notice);
+    }
+    if (effect.cancelRequested) {
+      this.#ui.cancelFromKeybinding();
+    }
+    if (effect.exitRequested) {
+      this.requestExit();
+    }
+    this.#syncCompletionOverlay();
+    this.#needsRender = true;
+  }
+
+  #applySteerSubmit(): void {
+    if (this.#applyQuestionAction(inputAction(InputActionKind.Submit))) {
+      this.#needsRender = true;
+      return;
+    }
+    if (this.#applyCompletionAction(inputAction(InputActionKind.Submit))) {
+      this.#needsRender = true;
+      return;
+    }
+    const effect = this.#editor.apply(
+      inputAction(InputActionKind.Submit),
+      { runtimeActive: this.#ui.isRunning() },
+    );
+    if (effect.submit !== null && effect.submit !== undefined) {
+      this.#ui.acceptUserInput(effect.submit);
+      this.#onSubmit(effect.submit, { strategy: "steer" });
+    } else if (this.#ui.isRunning()) {
+      this.#onSubmit("", { strategy: "steer" });
     }
     if (effect.notice) {
       this.#appendNotice(effect.notice);
@@ -803,7 +837,7 @@ export interface TerminalUIOptions {
   askFallback?: (message: string, secret: boolean) => Promise<string>;
   capabilities?: Partial<RuntimeCapabilities>;
   keybindingOverrides?: KeybindingOverrides;
-  keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void;
+  keyActionCallback?: (action: Exclude<ActionId, "editor_newline" | "steer_now" | "submit_follow_up" | "dismiss" | "cancel">) => void;
 }
 
 type MutableRuntimeCapabilities = {
@@ -860,7 +894,7 @@ export class TerminalUI {
   });
   readonly #frameBuilder: FrameBuilder;
   #pendingDisplayDrops = 0;
-  #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void) | null;
+  #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "steer_now" | "submit_follow_up" | "dismiss" | "cancel">) => void) | null;
 
   constructor(options: TerminalUIOptions = {}) {
     this.theme = resolveTerminalTheme(options.theme);
@@ -999,12 +1033,12 @@ export class TerminalUI {
   }
 
   setKeyActionCallback(
-    callback: (action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">) => void,
+    callback: (action: Exclude<ActionId, "editor_newline" | "steer_now" | "submit_follow_up" | "dismiss" | "cancel">) => void,
   ): void {
     this.#keyActionCallback = callback;
   }
 
-  handleKeyAction(action: Exclude<ActionId, "editor_newline" | "submit_follow_up" | "dismiss" | "cancel">): void {
+  handleKeyAction(action: Exclude<ActionId, "editor_newline" | "steer_now" | "submit_follow_up" | "dismiss" | "cancel">): void {
     if (this.#keyActionCallback === null) {
       this.write(`Key action is unavailable: ${action}.`);
       return;
