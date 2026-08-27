@@ -402,6 +402,8 @@ export async function main(
   const commandPresenter: CommandPresenter = terminalUi === null
     ? new PlainCommandPresenter({ output: outputFn, input: selectorInput, secretInput: authSecretInput })
     : new TerminalCommandPresenter(terminalUi);
+  providerAuth.setPresenter(commandPresenter);
+  selector.setPresenter(commandPresenter);
   selectorOutput = (message) => {
     commandPresenter.notice({ text: message, tone: "info" });
   };
@@ -420,6 +422,7 @@ export async function main(
     input: (prompt) => selectorInput(prompt),
     catalog: modelPlatform.catalog,
     providerAuth,
+    presenter: commandPresenter,
     output: sessionOutput,
     session: runtime,
     onModelSelected: (selection) => {

@@ -7,6 +7,7 @@ import {
   ModelSelector,
 } from "../apps/cli/src/model-selection.ts";
 import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 
 const providers: readonly ModelProviderInfo[] = [
   {
@@ -120,6 +121,19 @@ test("deepseek provider and model are selected in the terminal", async () => {
   ]);
   assert.deepEqual(catalog.refreshCalls, ["deepseek"]);
   assert.ok(outputs.some((output) => output.includes("deepseek-v4-pro")));
+});
+
+test("model selection retains its command presentation port", () => {
+  const presenter = new RecordingPresenter();
+  const selector = new ModelSelector({
+    catalog: new MemoryCatalog(),
+    providerAuth: new MemoryAuth(),
+    input: async () => "",
+    output: () => {},
+    presenter,
+  });
+
+  assert.equal(selector.presenter, presenter);
 });
 
 test("user can choose a provider before choosing the model", async () => {

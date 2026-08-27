@@ -7,6 +7,7 @@ import type {
   ModelAuthStatus,
 } from "@laohuang/llm";
 import { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 
 class FakeAuthService implements ModelAuthService {
   readonly loginFn: (
@@ -67,6 +68,19 @@ test("api-key controller routes secret, text, and select prompts", async () => {
 
   assert.equal(await controller.login("cloudflare-ai-gateway"), true);
   assert.ok(!outputs.join("\n").includes("secret-1"));
+});
+
+test("provider authentication retains its command presentation port", () => {
+  const presenter = new RecordingPresenter();
+  const controller = new ProviderAuthController({
+    auth: new FakeAuthService(async () => ({ configured: true })),
+    input: async () => "",
+    secretInput: async () => "",
+    output: () => {},
+    presenter,
+  });
+
+  assert.equal(controller.presenter, presenter);
 });
 
 test("cancelled and invalid setup prompts do not report login success", async () => {

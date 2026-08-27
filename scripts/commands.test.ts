@@ -16,6 +16,8 @@ import {
 } from "../apps/cli/src/commands.ts";
 import { ModelSelector } from "../apps/cli/src/model-selection.ts";
 import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import type { CommandPresenter } from "../apps/cli/src/command-presentation.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 
 function model(
   provider: string,
@@ -204,6 +206,7 @@ function makeCommands(options: {
   input?: (prompt: string) => Promise<string>;
   session?: SessionLike | null;
   agent?: FakeAgent;
+  presenter?: CommandPresenter;
 } = {}): CommandFixture {
   const outputs: string[] = [];
   const catalog = new FakeCatalog(
@@ -237,10 +240,18 @@ function makeCommands(options: {
     },
     input: options.input ?? (async () => "1"),
     output: options.output ?? ((message) => outputs.push(message)),
+    presenter: options.presenter,
     session: options.session ?? null,
   });
   return { commands, auth, agent, outputs };
 }
+
+test("session commands retain their command presentation port", () => {
+  const presenter = new RecordingPresenter();
+  const { commands } = makeCommands({ presenter });
+
+  assert.equal(commands.presenter, presenter);
+});
 
 test("registry completion has a replacement start and respects state", () => {
   const registry = new CommandRegistry([
