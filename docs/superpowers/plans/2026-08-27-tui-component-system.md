@@ -1999,8 +1999,22 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
 - The authentication dialog displayed bullets only. The supplied local test
   value did not appear in capture or scrollback, and authentication was
   cancelled without changing credentials.
-- Reasoning-to-answer freeze, ordinary answer foreground, tool
-  expand/collapse, second-turn native scrollback, and local fake tool output
-  were verified in terminal-emulator coverage. The built CLI has no offline
-  fake-turn entry point, so those surfaces were not driven through real tmux;
-  doing so would require a prohibited provider-backed turn.
+- A temporary offline fake-session harness ran the real `StdTerminalDriver`,
+  raw loop, `PiMainScreenRenderer`, transcript reducer, and Ctrl+O display
+  action inside tmux. No harness file was added to the repository because this
+  was a manual terminal acceptance fixture, not product behavior.
+- The collapsed capture showed frozen reasoning, an ordinary answer with no
+  explicit foreground SGR, and a completed local tool without its output. The
+  late reasoning delta was absent. Ctrl+O produced an expanded capture with
+  the local tool output, and the second submitted turn preserved both answers
+  with tmux `history_size` equal to 3.
+- Terminal-emulator coverage remains the deterministic regression layer for
+  reasoning freeze, answer styles, tool folding, resize persistence, and
+  second-turn history; the offline tmux harness now independently verifies
+  those surfaces in a real terminal without a provider-backed turn.
+
+Fix round 1 also replaced fixed 200ms smoke delays with bounded polling. The
+smoke polls startup, slash completion, completion dismissal, `/help`, and ASCII
+input every 100ms for up to five seconds, validates the successful capture,
+and prints the last capture on timeout. `/help` must still appear before any
+subsequent key.
