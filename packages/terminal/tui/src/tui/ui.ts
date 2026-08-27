@@ -62,7 +62,11 @@ import {
 import type { DisplayAction } from "./display-actions.ts";
 import {
   TranscriptStore,
-  createTranscriptBlock,
+  createAssistantBlock,
+  createNoticeBlock,
+  createUserBlock,
+  createWelcomeBlock,
+  noticeTone,
   type TranscriptBlock,
 } from "./transcript-store.ts";
 import {
@@ -83,6 +87,7 @@ import type {
 } from "./contracts.ts";
 import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
+import { compileStyledLines } from "./ansi-renderer.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
   PiMainScreenRenderer,
@@ -107,7 +112,15 @@ export interface CommandRegistryLike {
   complete(text: string, options: { state: string }): CompletionItemLike[];
 }
 
-export { createTranscriptBlock, type TranscriptBlock } from "./transcript-store.ts";
+export {
+  createAssistantBlock,
+  createNoticeBlock,
+  createThinkingBlock,
+  createToolBlock,
+  createUserBlock,
+  createWelcomeBlock,
+  type TranscriptBlock,
+} from "./transcript-store.ts";
 
 /** Local command feedback sharing the loop's event queue. */
 class LocalMessage {
@@ -532,10 +545,7 @@ export class InteractiveTerminalLoop {
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
         this.#ui.appendTranscript(
-          createTranscriptBlock("notice", this.#ui.newBlockId(), {
-            text: message.text,
-            style: message.style,
-          }),
+          createNoticeBlock(this.#ui.newBlockId(), message.text, noticeTone(message.style)),
         );
       } else {
         this.#ui.applyProjectedEvent(item.event as UIEventLike);
@@ -775,10 +785,7 @@ export class InteractiveTerminalLoop {
 
   #appendNotice(text: string): void {
     this.#ui.appendTranscript(
-      createTranscriptBlock("notice", this.#ui.newBlockId(), {
-        text,
-        style: "yellow",
-      }),
+      createNoticeBlock(this.#ui.newBlockId(), text, "warning"),
     );
   }
 
@@ -1127,10 +1134,7 @@ export class TerminalUI {
     }
     const dropped = this.#pendingDisplayDrops;
     this.#pendingDisplayDrops = 0;
-    this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
-      text: displayGapMessage(dropped),
-      style: "yellow",
-    }));
+    this.appendTranscript(createNoticeBlock(this.newBlockId(), displayGapMessage(dropped), "warning"));
     return true;
   }
 
@@ -1153,7 +1157,7 @@ export class TerminalUI {
   }
 
   acceptUserInput(text: string): void {
-    this.appendTranscript(createTranscriptBlock("user", this.newBlockId(), { text }));
+    this.appendTranscript(createUserBlock(this.newBlockId(), text));
   }
 
   blockFor(kind: string, key: string): TranscriptBlock {
@@ -1168,9 +1172,11 @@ export class TerminalUI {
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
     const rendered = new Transcript({
       blocks: this.#transcript.blocks(),
-      theme: this.theme,
-    }).renderWithMetadata(width);
-    return { lines: [...rendered.lines], activeStart: rendered.activeStart };
+    }).renderWithMetadata({ width, theme: this.theme });
+    return {
+      lines: compileStyledLines(rendered.lines, Math.max(12, width), this.theme),
+      activeStart: rendered.activeStart,
+    };
   }
 
   buildFrame(options: {
@@ -1222,10 +1228,7 @@ export class TerminalUI {
     }
     if (event instanceof LocalMessage) {
       this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: event.text,
-          style: event.style,
-        }),
+        createNoticeBlock(this.newBlockId(), event.text, noticeTone(event.style)),
       );
       return;
     }
@@ -1257,10 +1260,7 @@ export class TerminalUI {
 
   #applyDisplayEvent(event: DisplayEvent): void {
     if (event.kind === "display.gap") {
-      this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
-        text: event.text,
-        style: "yellow",
-      }));
+      this.appendTranscript(createNoticeBlock(this.newBlockId(), event.text, "warning"));
       return;
     }
     const update = this.reducer.apply({
@@ -1302,7 +1302,7 @@ export class TerminalUI {
   showAssistant(response: string): void {
     if (this.#loop !== null) {
       this.appendTranscript(
-        createTranscriptBlock("assistant", this.newBlockId(), { text: response }),
+        createAssistantBlock(this.newBlockId(), response, false),
       );
       return;
     }
@@ -1321,19 +1321,8 @@ export class TerminalUI {
     }
     if (this.#loop !== null) {
       this.appendTranscript(
-        createTranscriptBlock("notice", "welcome", {
-          text: WELCOME_TEXT,
-          style: `bold ${this.theme.color("accent")}`,
-        }),
+        createWelcomeBlock(WELCOME_TEXT, ["/help for commands", ...details]),
       );
-      if (details.length > 0) {
-        this.appendTranscript(
-          createTranscriptBlock("notice", this.newBlockId(), {
-            text: details.join(" · "),
-            style: this.theme.color("dim"),
-          }),
-        );
-      }
       return;
     }
     this.#output(

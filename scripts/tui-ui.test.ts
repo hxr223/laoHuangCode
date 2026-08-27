@@ -15,6 +15,17 @@ import { CompletionList } from "../packages/terminal/tui/src/tui/components/comp
 import { ToolCard } from "../packages/terminal/tui/src/tui/components/tool-card.ts";
 import { Transcript } from "../packages/terminal/tui/src/tui/components/transcript.ts";
 import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
+import { FrameBuilder } from "../packages/terminal/tui/src/tui/frame-builder.ts";
+import { lineText } from "../packages/terminal/tui/src/tui/render-model.ts";
+import { createUIState } from "../packages/terminal/tui/src/tui/state.ts";
+import {
+  createAssistantBlock,
+  createThinkingBlock,
+  createToolBlock,
+  createUserBlock,
+  createWelcomeBlock,
+  TranscriptStore,
+} from "../packages/terminal/tui/src/tui/transcript-store.ts";
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
 import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
@@ -106,119 +117,83 @@ test("tool card renders status metadata and expanded output inside width", () =>
   const ui = new TerminalUI({ theme: "dark" });
   const card = new ToolCard({
     block: {
-      kind: "tool",
-      key: "call-12345678",
-      text: "",
+      ...createToolBlock("call-12345678", {
+        name: "bash",
+        subject: "echo hello",
+        status: "completed",
+        expanded: true,
+      }),
       mutable: false,
-      name: "bash",
-      subject: "echo hello",
-      status: "completed",
       exitCode: 0,
       durationMs: 42,
-      streamError: "",
-      toolOutput: "hello from stdout",
-      toolOutputExpanded: true,
-      style: "",
+      stdout: "hello from stdout",
     },
-    theme: ui.theme,
   });
 
-  const rendered = stripTerminalControls(card.render(32).join("\n"));
+  const lines = card.render({ width: 32, theme: ui.theme }).lines;
+  const rendered = lines.map(lineText).join("\n");
 
   assert.ok(rendered.includes("bash"));
   assert.ok(rendered.includes("completed"));
   assert.ok(rendered.includes("exit 0"));
   assert.ok(rendered.includes("42ms"));
   assert.ok(rendered.includes("hello from stdout"));
-  assert.ok(card.render(32).every((line) => visibleWidth(line) <= 32));
+  assert.ok(lines.every((line) => visibleWidth(lineText(line)) <= 32));
 });
 
 test("transcript component reports the first mutable rendered row", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const transcript = new Transcript({
     blocks: [
-      {
-        kind: "user",
-        key: "u1",
-        text: "first question",
-        mutable: false,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
-      {
-        kind: "assistant",
-        key: "r1",
-        text: "streaming answer",
-        mutable: true,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
+      createUserBlock("u1", "first question"),
+      createAssistantBlock("r1", "streaming answer"),
     ],
-    theme: ui.theme,
   });
 
-  const rendered = transcript.renderWithMetadata(80);
+  const rendered = transcript.renderWithMetadata({ width: 80, theme: ui.theme });
 
   assert.equal(rendered.activeStart, 1);
-  assert.ok(rendered.lines[rendered.activeStart]?.includes("streaming answer"));
+  assert.ok(lineText(rendered.lines[rendered.activeStart]!).includes("streaming answer"));
 });
 
 test("transcript component returns newline-free logical rows", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const transcript = new Transcript({
     blocks: [
-      {
-        kind: "user",
-        key: "u1",
-        text: "您好",
-        mutable: false,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
-      {
-        kind: "thinking",
-        key: "r1",
-        text: "thinking line",
-        mutable: true,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
+      createUserBlock("u1", "您好"),
+      createThinkingBlock("r1", "thinking line"),
     ],
-    theme: ui.theme,
   });
 
-  const rendered = transcript.renderWithMetadata(20);
+  const rendered = transcript.renderWithMetadata({ width: 20, theme: ui.theme });
 
   assert.ok(rendered.lines.length > 0);
-  assert.ok(rendered.lines.every((line) => !/[\r\n]/u.test(line)));
+  assert.ok(rendered.lines.every((line) => !/[\r\n]/u.test(lineText(line))));
+});
+
+test("frame fallback projects every typed transcript block", () => {
+  const transcript = new TranscriptStore();
+  transcript.append(createUserBlock("u1", "question"));
+  transcript.append(createAssistantBlock("a1", "answer", false));
+  transcript.append(createThinkingBlock("t1", "inspect", false));
+  transcript.append(createToolBlock("tool1", {
+    name: "bash",
+    subject: "$ pwd",
+    status: "completed",
+    expanded: false,
+  }));
+  transcript.append(createWelcomeBlock("hello", ["/help for commands"]));
+  const frame = new FrameBuilder({ state: createUIState(), transcript }).build({
+    width: 80,
+    editor: new EditorState(),
+  });
+  const text = frame.screen.lines.map(stripTerminalControls).join("\n");
+
+  assert.ok(text.includes("question"));
+  assert.ok(text.includes("answer"));
+  assert.ok(text.includes("inspect"));
+  assert.ok(text.includes("bash"));
+  assert.deepEqual(frame.welcomeBlock, ["hello", "/help for commands"]);
 });
 
 test("built screen frame never embeds physical newlines in logical rows", () => {
@@ -605,7 +580,7 @@ test("raw frame preserves non-markdown block styles", () => {
   const rendered = ui.buildHistoryLines(80).join("\n");
 
   assert.ok(rendered.includes("\x1b[3;38;2;128;128;128mthinking  plan"));
-  assert.ok(rendered.includes("\x1b[48;2;40;40;50;38;2;212;212;212m"));
+  assert.ok(rendered.includes("\x1b[48;2;40;40;50m"));
   assert.ok(rendered.includes("● bash"));
 });
 
@@ -1070,7 +1045,7 @@ test("assistant response is rendered as markdown without chat prefix", () => {
   assert.ok(!rendered.includes("laoHuangCode>"));
 });
 
-test("event sinks hide stdout but render stderr and status", () => {
+test("event sinks hide folded tool output and render status", () => {
   const base = {
     source: "tool",
     session_id: "session-1",
@@ -1118,11 +1093,12 @@ test("event sinks hide stdout but render stderr and status", () => {
 
   const plainRendered = plainOutput.join("\n");
   const terminalRendered = terminal.writes();
-  for (const rendered of [plainRendered, terminalRendered]) {
-    assert.ok(!rendered.includes("very long output"));
-    assert.ok(rendered.includes("warning"));
-    assert.ok(rendered.includes("completed"));
-  }
+  assert.ok(!plainRendered.includes("very long output"));
+  assert.ok(!terminalRendered.includes("very long output"));
+  assert.ok(plainRendered.includes("warning"));
+  assert.ok(!terminalRendered.includes("warning"));
+  assert.ok(plainRendered.includes("completed"));
+  assert.ok(terminalRendered.includes("completed"));
 });
 
 test("welcome panel shows session context", () => {

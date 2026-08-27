@@ -2,42 +2,112 @@
 
 import type { UIUpdate } from "./state.ts";
 
-export interface TranscriptBlock {
-  kind: string;
-  key: string;
-  text: string;
+interface BaseTranscriptBlock {
+  readonly key: string;
   mutable: boolean;
+}
+
+export type NoticeTone = "info" | "success" | "warning" | "error" | "dim";
+
+export interface UserTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "user";
+  text: string;
+}
+
+export interface AssistantTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "assistant";
+  text: string;
+}
+
+export interface ThinkingTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "thinking";
+  text: string;
+}
+
+export interface ToolTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "tool";
   name: string;
   subject: string;
   status: string;
   exitCode: number | null;
   durationMs: number | null;
-  streamError: string;
-  toolOutput: string;
-  toolOutputExpanded: boolean;
-  style: string;
+  stdout: string;
+  stderr: string;
+  expanded: boolean;
 }
 
-export function createTranscriptBlock(
-  kind: string,
+export interface NoticeTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "notice";
+  text: string;
+  tone: NoticeTone;
+}
+
+export interface WelcomeTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "welcome";
+  title: string;
+  details: readonly string[];
+}
+
+export type TranscriptBlock =
+  | UserTranscriptBlock
+  | AssistantTranscriptBlock
+  | ThinkingTranscriptBlock
+  | ToolTranscriptBlock
+  | NoticeTranscriptBlock
+  | WelcomeTranscriptBlock;
+
+export function createUserBlock(key: string, text: string): UserTranscriptBlock {
+  return { kind: "user", key, text, mutable: false };
+}
+
+export function createAssistantBlock(
   key: string,
-  fields: Partial<Omit<TranscriptBlock, "kind" | "key">> = {},
-): TranscriptBlock {
+  text = "",
+  mutable = true,
+): AssistantTranscriptBlock {
+  return { kind: "assistant", key, text, mutable };
+}
+
+export function createThinkingBlock(
+  key: string,
+  text = "",
+  mutable = true,
+): ThinkingTranscriptBlock {
+  return { kind: "thinking", key, text, mutable };
+}
+
+export function createToolBlock(
+  key: string,
+  fields: Pick<ToolTranscriptBlock, "name" | "subject" | "status" | "expanded">,
+): ToolTranscriptBlock {
   return {
-    kind,
+    kind: "tool",
     key,
-    text: fields.text ?? "",
-    mutable: fields.mutable ?? false,
-    name: fields.name ?? "",
-    subject: fields.subject ?? "",
-    status: fields.status ?? "",
-    exitCode: fields.exitCode ?? null,
-    durationMs: fields.durationMs ?? null,
-    streamError: fields.streamError ?? "",
-    toolOutput: fields.toolOutput ?? "",
-    toolOutputExpanded: fields.toolOutputExpanded ?? false,
-    style: fields.style ?? "",
+    mutable: true,
+    name: fields.name,
+    subject: fields.subject,
+    status: fields.status,
+    exitCode: null,
+    durationMs: null,
+    stdout: "",
+    stderr: "",
+    expanded: fields.expanded,
   };
+}
+
+export function createNoticeBlock(
+  key: string,
+  text: string,
+  tone: NoticeTone = "info",
+): NoticeTranscriptBlock {
+  return { kind: "notice", key, text, tone, mutable: false };
+}
+
+export function createWelcomeBlock(
+  title: string,
+  details: readonly string[],
+): WelcomeTranscriptBlock {
+  return { kind: "welcome", key: "welcome", title, details, mutable: false };
 }
 
 export interface TranscriptStoreOptions {
@@ -47,6 +117,15 @@ export interface TranscriptStoreOptions {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function noticeTone(style: unknown): NoticeTone {
+  const value = String(style ?? "");
+  if (value.includes("red")) return "error";
+  if (value.includes("yellow")) return "warning";
+  if (value.includes("green")) return "success";
+  if (value.includes("dim")) return "dim";
+  return "info";
 }
 
 /** Holds mutable active blocks and freezes them as their lifecycle completes. */
@@ -74,61 +153,47 @@ export class TranscriptStore {
 
   append(block: TranscriptBlock): void {
     this.#blocks.push(block);
-    if (block.key) {
-      this.#byCorrelation.set(`${block.kind}:${block.key}`, block);
-    }
+    if (block.key) this.#byCorrelation.set(`${block.kind}:${block.key}`, block);
   }
 
   blockFor(kind: string, key: string): TranscriptBlock {
     const block = this.#byCorrelation.get(`${kind}:${key}`);
-    if (block === undefined) {
-      throw new Error(`no transcript block for ${kind}:${key}`);
-    }
+    if (block === undefined) throw new Error(`no transcript block for ${kind}:${key}`);
     return block;
   }
 
   apply(update: UIUpdate): void {
-    const kind = update.kind;
-    const correlationId = update.correlationId;
+    const { kind, correlationId } = update;
     if (kind === "ui.message") {
-      this.append(createTranscriptBlock("notice", this.newBlockId(), {
-        text: update.text,
-        style: String(update.payload.style ?? ""),
-      }));
+      this.append(createNoticeBlock(this.newBlockId(), update.text, noticeTone(update.payload.style)));
       return;
     }
     if (kind === "model.retry_scheduled") {
-      this.append(createTranscriptBlock("notice", this.newBlockId(), {
-        text:
-          `Model request retry ${String(update.payload.attempt)}/` +
+      this.append(createNoticeBlock(
+        this.newBlockId(),
+        `Model request retry ${String(update.payload.attempt)}/` +
           `${String(update.payload.max_attempts)} in ` +
           `${String(update.payload.delay_ms)}ms ` +
           `(${String(update.payload.error_kind)}).`,
-        style: "yellow",
-      }));
+        "warning",
+      ));
       return;
     }
     if (kind === "model.text_delta") {
       this.freezeThinking();
-      const item = this.#getOrCreate("assistant", correlationId, { mutable: true });
-      if (item.mutable) {
-        item.text += update.text;
-      }
+      const item = this.#getOrCreateAssistant(correlationId);
+      if (item.mutable) item.text += update.text;
       return;
     }
     if (kind === "model.reasoning_delta") {
-      const item = this.#getOrCreate("thinking", correlationId, { mutable: true });
-      if (item.mutable) {
-        item.text += update.text;
-      }
+      const item = this.#getOrCreateThinking(correlationId);
+      if (item.mutable) item.text += update.text;
       return;
     }
     if (["model.response_committed", "model.response_aborted", "model.request_failed"].includes(kind)) {
-      for (const blockKind of ["assistant", "thinking"]) {
+      for (const blockKind of ["assistant", "thinking"] as const) {
         const block = this.#byCorrelation.get(`${blockKind}:${correlationId}`);
-        if (block !== undefined) {
-          block.mutable = false;
-        }
+        if (block !== undefined) block.mutable = false;
       }
       return;
     }
@@ -136,31 +201,27 @@ export class TranscriptStore {
       this.freezeThinking();
       const args = update.payload.arguments;
       const subject = isRecord(args) ? String(args.command || args.path || "") : "";
-      this.append(createTranscriptBlock("tool", correlationId, {
-        mutable: true,
+      this.append(createToolBlock(correlationId, {
         name: String(update.payload.name ?? "tool"),
         subject,
         status: "running",
-        toolOutputExpanded: this.#toolOutputExpanded,
+        expanded: this.#toolOutputExpanded,
       }));
       return;
     }
-    if (kind === "tool.output_delta" && update.stream === "stdout") {
+    if (kind === "tool.output_delta") {
       const item = this.#byCorrelation.get(`tool:${correlationId}`);
-      if (item !== undefined) {
-        item.toolOutput = (item.toolOutput + update.text).slice(-this.#toolBufferLimit);
-      }
-      return;
-    }
-    if (kind === "tool.output_delta" && update.stream === "stderr") {
-      const item = this.#byCorrelation.get(`tool:${correlationId}`);
-      if (item !== undefined) {
-        item.streamError = (item.streamError + update.text).slice(-this.#toolBufferLimit);
+      if (item?.kind === "tool") {
+        if (update.stream === "stdout") {
+          item.stdout = (item.stdout + update.text).slice(-this.#toolBufferLimit);
+        } else if (update.stream === "stderr") {
+          item.stderr = (item.stderr + update.text).slice(-this.#toolBufferLimit);
+        }
       }
       return;
     }
     if (kind === "tool.finished") {
-      const item = this.#getOrCreate("tool", correlationId);
+      const item = this.#getOrCreateTool(correlationId);
       item.status = String(update.payload.status ?? "completed");
       item.exitCode = typeof update.payload.exit_code === "number"
         ? Math.trunc(update.payload.exit_code)
@@ -172,34 +233,32 @@ export class TranscriptStore {
       return;
     }
     if (kind === "task.cancelled") {
-      this.append(createTranscriptBlock("notice", this.newBlockId(), {
-        text: "任务已取消；已经完成的文件修改不会自动撤销。",
-        style: "yellow",
-      }));
+      this.append(createNoticeBlock(
+        this.newBlockId(),
+        "任务已取消；已经完成的文件修改不会自动撤销。",
+        "warning",
+      ));
       return;
     }
     if (kind === "task.failed") {
-      this.append(createTranscriptBlock("notice", this.newBlockId(), {
-        text: `Error: ${String(update.payload.error ?? "Task failed")}`,
-        style: this.#errorStyle,
-      }));
+      this.append(createNoticeBlock(
+        this.newBlockId(),
+        `Error: ${String(update.payload.error ?? "Task failed")}`,
+        noticeTone(this.#errorStyle),
+      ));
     }
   }
 
   freezeThinking(): void {
     for (const block of this.#blocks) {
-      if (block.kind === "thinking") {
-        block.mutable = false;
-      }
+      if (block.kind === "thinking") block.mutable = false;
     }
   }
 
   setToolOutputExpanded(expanded: boolean): void {
     this.#toolOutputExpanded = expanded;
     for (const block of this.#blocks) {
-      if (block.kind === "tool") {
-        block.toolOutputExpanded = expanded;
-      }
+      if (block.kind === "tool") block.expanded = expanded;
     }
   }
 
@@ -207,18 +266,30 @@ export class TranscriptStore {
     return this.#toolOutputExpanded;
   }
 
-  #getOrCreate(
-    kind: string,
-    key: string,
-    fields: Partial<Omit<TranscriptBlock, "kind" | "key">> = {},
-  ): TranscriptBlock {
-    const existing = this.#byCorrelation.get(`${kind}:${key}`);
-    if (existing !== undefined) {
-      return existing;
-    }
-    const block = createTranscriptBlock(kind, key, {
-      ...fields,
-      toolOutputExpanded: kind === "tool" ? this.#toolOutputExpanded : fields.toolOutputExpanded,
+  #getOrCreateAssistant(key: string): AssistantTranscriptBlock {
+    const existing = this.#byCorrelation.get(`assistant:${key}`);
+    if (existing?.kind === "assistant") return existing;
+    const block = createAssistantBlock(key);
+    this.append(block);
+    return block;
+  }
+
+  #getOrCreateThinking(key: string): ThinkingTranscriptBlock {
+    const existing = this.#byCorrelation.get(`thinking:${key}`);
+    if (existing?.kind === "thinking") return existing;
+    const block = createThinkingBlock(key);
+    this.append(block);
+    return block;
+  }
+
+  #getOrCreateTool(key: string): ToolTranscriptBlock {
+    const existing = this.#byCorrelation.get(`tool:${key}`);
+    if (existing?.kind === "tool") return existing;
+    const block = createToolBlock(key, {
+      name: "tool",
+      subject: "",
+      status: "running",
+      expanded: this.#toolOutputExpanded,
     });
     this.append(block);
     return block;

@@ -4,7 +4,7 @@ import type { EditorLike } from "./contracts.ts";
 import type { ScreenFrame } from "./screen.ts";
 import { truncateToWidth, visibleWidth } from "./screen.ts";
 import type { UIState } from "./state.ts";
-import type { TranscriptStore } from "./transcript-store.ts";
+import type { TranscriptBlock, TranscriptStore } from "./transcript-store.ts";
 
 export interface FrameBuilderOptions {
   state: UIState;
@@ -145,12 +145,40 @@ export class FrameBuilder {
   }
 
   #fallbackHistory(): string[] {
-    return this.#transcript.blocks().flatMap((block) => block.text.split(/\r\n|\n|\r/));
+    return this.#transcript.blocks().flatMap((block) =>
+      fallbackText(block).split(/\r\n|\n|\r/));
   }
 
   #welcomeBlock(): string[] {
     return this.#transcript.blocks()
-      .filter((block) => block.kind === "notice" && block.key === "welcome")
-      .map((block) => block.text);
+      .flatMap((block) => {
+        if (block.kind === "welcome") return [block.title, ...block.details];
+        if (block.kind === "notice" && block.key === "welcome") return [block.text];
+        return [];
+      });
   }
+}
+
+function fallbackText(block: TranscriptBlock): string {
+  switch (block.kind) {
+    case "user":
+    case "assistant":
+    case "thinking":
+    case "notice":
+      return block.text;
+    case "tool":
+      return [
+        `● ${block.name}`,
+        block.subject,
+        block.status,
+      ].filter(Boolean).join("  ");
+    case "welcome":
+      return [block.title, ...block.details].join("\n");
+    default:
+      return assertNever(block);
+  }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unknown transcript block: ${String(value)}`);
 }
