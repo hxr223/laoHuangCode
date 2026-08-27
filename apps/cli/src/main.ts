@@ -30,13 +30,16 @@ import {
   type CommandResult,
   type QueueStatus,
 } from "./commands.ts";
+import type { CommandPresenter } from "./command-presentation.ts";
 import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
+import { PlainCommandPresenter } from "./plain-command-presenter.ts";
 import { ProviderAuthController } from "./provider-auth.ts";
 import {
   EXCLUDED_PROVIDER_IDS,
   VERIFIED_PROVIDER_IDS,
 } from "./provider-policy.ts";
 import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
+import { TerminalCommandPresenter } from "./terminal-command-presenter.ts";
 import {
   CliUsageError,
   HELP,
@@ -396,11 +399,14 @@ export async function main(
     selectorInput = prompts.input;
     authSecretInput = prompts.secretInput;
   }
+  const commandPresenter: CommandPresenter = terminalUi === null
+    ? new PlainCommandPresenter({ output: outputFn, input: selectorInput, secretInput: authSecretInput })
+    : new TerminalCommandPresenter(terminalUi);
   selectorOutput = (message) => {
-    runtime.publishNotice(message);
+    commandPresenter.notice({ text: message, tone: "info" });
   };
   const sessionOutput = (message: string): void => {
-    runtime.publishNotice(message);
+    commandPresenter.notice({ text: message, tone: "info" });
   };
 
   const commands = new SessionCommands({
