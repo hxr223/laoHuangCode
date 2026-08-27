@@ -106,7 +106,7 @@ export class ToolOutputRedactor {
     let text = value;
     if (this.#pendingValues.has(key)) {
       const boundary = text.search(/\s/u);
-      if (boundary < 0) return "";
+      if (boundary < 0) return "[REDACTED]";
       this.#pendingValues.delete(key);
       text = text.slice(boundary);
     }
