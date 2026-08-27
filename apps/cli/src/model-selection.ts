@@ -1,6 +1,7 @@
 /** Interactive provider and model selection. */
 
 import type { ModelCatalog, ModelInfo } from "@laohuang/llm";
+import type { CommandPresenter } from "./command-presentation.ts";
 import type { ProviderAuthController } from "./provider-auth.ts";
 
 /**
@@ -30,6 +31,7 @@ export interface ModelSelectorOptions {
   readonly providerAuth: Pick<ProviderAuthController, "ensureConfigured">;
   readonly input: InputFn;
   readonly output?: OutputFn | undefined;
+  readonly presenter?: CommandPresenter | undefined;
 }
 
 export interface SelectOptions {
@@ -44,12 +46,22 @@ export class ModelSelector {
   readonly #providerAuth: Pick<ProviderAuthController, "ensureConfigured">;
   readonly #input: InputFn;
   readonly #output: OutputFn;
+  #presenter: CommandPresenter | null;
 
   constructor(options: ModelSelectorOptions) {
     this.#catalog = options.catalog;
     this.#providerAuth = options.providerAuth;
     this.#input = options.input;
     this.#output = options.output ?? ((message) => console.log(message));
+    this.#presenter = options.presenter ?? null;
+  }
+
+  get presenter(): CommandPresenter | null {
+    return this.#presenter;
+  }
+
+  setPresenter(presenter: CommandPresenter): void {
+    this.#presenter = presenter;
   }
 
   async select(options: SelectOptions = {}): Promise<ModelSelection | null> {

@@ -4,6 +4,7 @@ import type {
   ModelAuthService,
   ModelAuthStatus,
 } from "@laohuang/llm";
+import type { CommandPresenter } from "./command-presentation.ts";
 import type { InputFn, OutputFn } from "./model-selection.ts";
 
 export interface ProviderAuthControllerOptions {
@@ -11,6 +12,7 @@ export interface ProviderAuthControllerOptions {
   readonly input: InputFn;
   readonly secretInput: InputFn;
   readonly output?: OutputFn | undefined;
+  readonly presenter?: CommandPresenter | undefined;
 }
 
 export class ProviderAuthController {
@@ -18,12 +20,22 @@ export class ProviderAuthController {
   readonly #input: InputFn;
   readonly #secretInput: InputFn;
   readonly #output: OutputFn;
+  #presenter: CommandPresenter | null;
 
   constructor(options: ProviderAuthControllerOptions) {
     this.#auth = options.auth;
     this.#input = options.input;
     this.#secretInput = options.secretInput;
     this.#output = options.output ?? ((message) => console.log(message));
+    this.#presenter = options.presenter ?? null;
+  }
+
+  get presenter(): CommandPresenter | null {
+    return this.#presenter;
+  }
+
+  setPresenter(presenter: CommandPresenter): void {
+    this.#presenter = presenter;
   }
 
   status(provider: string): Promise<ModelAuthStatus> {

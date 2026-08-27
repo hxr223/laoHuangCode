@@ -11,6 +11,7 @@ import type {
   OutputFn,
   SelectionConfig,
 } from "./model-selection.ts";
+import type { CommandPresenter } from "./command-presentation.ts";
 import type {
   ModelCatalog,
   ModelProviderInfo,
@@ -403,6 +404,7 @@ export interface SessionCommandsOptions {
   readonly currentConfig: SelectionConfig;
   readonly input: InputFn;
   readonly output?: OutputFn | undefined;
+  readonly presenter?: CommandPresenter | undefined;
   readonly session?: SessionLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
 }
@@ -433,6 +435,7 @@ export class SessionCommands {
   >;
   readonly #input: InputFn;
   readonly #output: OutputFn;
+  readonly #presenter: CommandPresenter | null;
   readonly #session: SessionLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
   #currentConfig: SelectionConfig;
@@ -445,6 +448,7 @@ export class SessionCommands {
     this.#currentConfig = options.currentConfig;
     this.#input = options.input;
     this.#output = options.output ?? ((message) => console.log(message));
+    this.#presenter = options.presenter ?? null;
     this.#session = options.session ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
     this.registry = new CommandRegistry([
@@ -536,6 +540,10 @@ export class SessionCommands {
 
   get currentConfig(): SelectionConfig {
     return this.#currentConfig;
+  }
+
+  get presenter(): CommandPresenter | null {
+    return this.#presenter;
   }
 
   async execute(command: string): Promise<CommandResult> {

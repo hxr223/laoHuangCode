@@ -28,6 +28,7 @@ import {
 } from "../apps/cli/src/model-selection.ts";
 import type { ModelCatalog, ModelInfo, ModelProviderInfo } from "@laohuang/llm";
 import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 import { AgentSession } from "@laohuang/session-runtime";
 import {
   MemoryTerminalDriver,
@@ -524,12 +525,16 @@ test("tty wiring asks model selection through the running terminal ui", async ()
   const ui = new TerminalUI({ driver: terminal });
   ui.startLoop(() => {});
   const prompts = terminalUiPrompts(ui);
+  const presenter = new RecordingPresenter();
   const selector = new ModelSelector({
     catalog,
     providerAuth,
     input: prompts.input,
     output: () => {},
+    presenter,
   });
+
+  assert.equal(selector.presenter, presenter);
 
   const pending = selector.select({ providerName: "deepseek" });
   try {
