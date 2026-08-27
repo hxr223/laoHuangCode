@@ -62,6 +62,7 @@ const SENSITIVE_TEXT_PATTERNS = [
   /(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s+)(?:"[^"]*"|'[^']*'|\S+)/giu,
 ];
 const SENSITIVE_VALUE_AT_END = /(?:authorization\s*:\s*bearer\s+|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s*[:=]\s*|--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s+)(?:"[^"]+"|'[^']+'|[^\s'"]+)$/iu;
+const BEARER_PREFIX_AT_END = /authorization\s*:\s*bearer\s+$/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -108,6 +109,10 @@ export class ToolOutputRedactor {
       if (boundary < 0) return "";
       this.#pendingValues.delete(key);
       text = text.slice(boundary);
+    }
+    if (BEARER_PREFIX_AT_END.test(text)) {
+      this.#pendingValues.add(key);
+      return `${text}[REDACTED]`;
     }
     if (SENSITIVE_VALUE_AT_END.test(text)) {
       this.#pendingValues.add(key);

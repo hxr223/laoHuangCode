@@ -530,6 +530,30 @@ test("terminal transcript redacts credential aliases before storage and renderin
   assert.ok(!rendered.includes(authorization));
 });
 
+test("terminal transcript redacts bearer values split across output chunks", () => {
+  const bearerValue = "task3-split-bearer-fixture";
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-bearer", { name: "bash", arguments: {} }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-bearer", {
+    stream: "stderr",
+    text: "Authorization: Bearer ",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-bearer", {
+    stream: "stderr",
+    text: `${bearerValue}\n`,
+  }));
+
+  const block = ui.blockFor("tool", "call-bearer");
+  assert.equal(block.kind, "tool");
+  assert.ok(block.stderr.includes("[REDACTED]"));
+  assert.ok(!block.stderr.includes(bearerValue));
+
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  const rendered = ui.buildHistoryLines(80).join("\n");
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(bearerValue));
+});
+
 test("trailing empty credential assignments preserve following tool output", () => {
   const ui = new TerminalUI({ theme: "dark" });
   ui.applyProjectedEvent(event("tool.started", "call-empty", { name: "bash", arguments: {} }));
