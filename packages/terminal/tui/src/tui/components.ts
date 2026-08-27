@@ -9,6 +9,16 @@ export type {
   StyleToken,
 } from "./render-model.ts";
 
+export { Box, type BoxOptions } from "./components/primitives/box.ts";
+export { SearchInput, type SearchInputOptions } from "./components/primitives/search-input.ts";
+export {
+  SelectList,
+  type SelectItem,
+  type SelectListOptions,
+} from "./components/primitives/select-list.ts";
+export { Text, type TextOptions } from "./components/primitives/text.ts";
+export { VStack, type VStackOptions } from "./components/primitives/v-stack.ts";
+
 export const COMPOSER_COMPONENT = "composer";
 
 export const COMPLETION_OVERLAY: OverlayEntry = {
