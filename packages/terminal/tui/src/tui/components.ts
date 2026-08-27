@@ -1,4 +1,5 @@
 import type { OverlayEntry } from "./overlay-manager.ts";
+import type { FocusableComponent } from "./component.ts";
 
 export type {
   ComponentRenderResult,
@@ -47,18 +48,27 @@ export {
   type ProviderStatusViewOptions,
 } from "./components/views/provider-status-view.ts";
 export { QueueStatusView, type QueueStatusViewOptions } from "./components/views/queue-status-view.ts";
+export { ViewHost } from "./view-host.ts";
 
 export const COMPOSER_COMPONENT = "composer";
+
+const COMPLETION_COMPONENT: FocusableComponent = {
+  focused: false,
+  render: () => ({ lines: [] }),
+  invalidate: () => {},
+};
 
 export const COMPLETION_OVERLAY: OverlayEntry = {
   id: "completion",
   priority: "completion",
+  placement: "dock",
+  component: COMPLETION_COMPONENT,
 };
 
-export function createSelectorOverlay(id: string): OverlayEntry {
-  return { id, priority: "selector" };
+export function createSelectorOverlay(id: string, component: FocusableComponent): OverlayEntry {
+  return { id, priority: "selector", placement: "dock", component };
 }
 
-export function createModalOverlay(id: string): OverlayEntry {
-  return { id, priority: "modal" };
+export function createModalOverlay(id: string, component: FocusableComponent): OverlayEntry {
+  return { id, priority: "modal", placement: "dock", component };
 }
