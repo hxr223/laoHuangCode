@@ -185,7 +185,7 @@ test("user can write then read a file", async (t) => {
   });
 });
 
-test("file tools block parent directory traversal", async (t) => {
+test("file tools allow paths outside the default working directory", async (t) => {
   const base = await makeTempDir(t);
   const root = path.join(base, "project");
   await fs.mkdir(root);
@@ -194,16 +194,23 @@ test("file tools block parent directory traversal", async (t) => {
 
   const read = await tools.execute("read", { path: "../outside.txt" });
   const write = await tools.execute("write", {
-    path: "../created.txt",
+    path: path.join(base, "created.txt"),
     content: "escaped",
   });
+  const edit = await tools.execute("edit", {
+    path: "../outside.txt",
+    edits: [{ old_text: "secret", new_text: "visible" }],
+  });
 
-  assert.equal(read.ok, false);
-  assert.equal(write.ok, false);
-  assert.equal(await exists(path.join(base, "created.txt")), false);
+  assert.equal(read.ok, true);
+  assert.equal(read.content, "secret");
+  assert.equal(write.ok, true);
+  assert.equal(edit.ok, true);
+  assert.equal(await fs.readFile(path.join(base, "created.txt"), "utf8"), "escaped");
+  assert.equal(await fs.readFile(path.join(base, "outside.txt"), "utf8"), "visible");
 });
 
-test("file tools block symlink escape", async (t) => {
+test("file tools follow symlinks outside the default working directory", async (t) => {
   const base = await makeTempDir(t);
   const root = path.join(base, "project");
   const outside = path.join(base, "outside");
@@ -217,8 +224,8 @@ test("file tools block symlink escape", async (t) => {
     content: "escaped",
   });
 
-  assert.equal(result.ok, false);
-  assert.equal(await exists(path.join(outside, "escaped.txt")), false);
+  assert.equal(result.ok, true);
+  assert.equal(await fs.readFile(path.join(outside, "escaped.txt"), "utf8"), "escaped");
 });
 
 test("user can replace one exact text match", async (t) => {
@@ -335,7 +342,7 @@ test("edit requires a non-empty edits array", async (t) => {
   );
 });
 
-test("bash runs in project root and returns process result", async (t) => {
+test("bash runs in the default working directory and returns process result", async (t) => {
   const directory = await makeTempDir(t);
   const tools = createTestToolRegistry(directory, { runBash: testRunBash });
 
@@ -602,7 +609,7 @@ test("bash schema requires a description", async (t) => {
   assert.match(result.error as string, /description/);
 });
 
-test("bash runs in workdir inside the project root", async (t) => {
+test("bash resolves a relative workdir from the default working directory", async (t) => {
   const directory = await makeTempDir(t);
   await fs.mkdir(path.join(directory, "sub"));
   const tools = createTestToolRegistry(directory, { runBash: testRunBash });
@@ -620,7 +627,7 @@ test("bash runs in workdir inside the project root", async (t) => {
   );
 });
 
-test("bash rejects a workdir outside the project root", async (t) => {
+test("bash accepts a workdir outside the default working directory", async (t) => {
   const base = await makeTempDir(t);
   const root = path.join(base, "project");
   await fs.mkdir(root);
@@ -632,8 +639,18 @@ test("bash rejects a workdir outside the project root", async (t) => {
     workdir: "..",
   });
 
-  assert.equal(result.ok, false);
-  assert.match(result.error as string, /outside the project root/);
+  assert.equal(result.ok, true);
+  assert.equal((result.stdout as string).trim(), await fs.realpath(base));
+});
+
+test("tool descriptions do not claim project-root confinement", async (t) => {
+  const root = await makeTempDir(t);
+  const tools = createTestToolRegistry(root, { runBash: testRunBash });
+
+  for (const definition of tools.definitions) {
+    assert.doesNotMatch(definition.description, /project root/i);
+    assert.doesNotMatch(JSON.stringify(definition.parameters), /project root/i);
+  }
 });
 
 test("bash honors timeoutMs over the registry default", async (t) => {

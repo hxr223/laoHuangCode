@@ -13,7 +13,8 @@
 交互终端采用后台 AgentSession：模型回复和 Bash 的 stderr/状态会实时显示，stdout
 会保留在工具结果中但默认不刷到终端，
 Agent 运行时仍可继续输入。后续输入由事件路由器放入 pending/held 队列，并在安全点
-成批交给模型；当前任务可以通过 `/cancel` 或运行中的 `Ctrl+C` 协作式取消。
+成批交给模型；运行中的 `Ctrl+S` 会把当前输入或最早排队消息作为 steer 优先插队到
+下一个安全点；当前任务可以通过 `/cancel` 或运行中的 `Ctrl+C` 协作式取消。
 连续重复的工具调用和 Token、耗时预算会触发安全保护；保护触发后
 Agent 会禁用工具并尝试基于已有信息完成一次最终回答。
 
@@ -100,6 +101,7 @@ laohuang
 
 - `Enter`：发送任务。
 - `Alt+Enter`：插入换行。
+- Agent 运行中按 `Ctrl+S`：将当前输入作为 steer 插队；输入为空时提升最早排队消息。
 - `↑` / `↓`：浏览历史输入。
 - Agent 运行中按 `Ctrl+C`：取消当前任务。
 - Agent 空闲时按 `Ctrl+C`：清空输入；500ms 内再按一次：退出。
@@ -111,17 +113,40 @@ laohuang
 
 ### TUI 设计方向
 
-后续 TUI 会继续增强为完整 Agent 控制台：固定外框、`laoHuang` 标题栏、欢迎语、
-状态栏、工具输出折叠、可配置快捷键、模型选择器，以及更清晰的事件回流与渲染边界。
-未实现功能不会出现在当前快捷键说明中。
+当前 TUI 使用无全局外框的组件化布局：命令结果、模型和 effort 选择器、认证输入、
+thinking、工具状态、输入区和状态行共享结构化语义样式，并保留终端原生 scrollback。
+交互列表不使用编号；普通输入和回答使用终端默认前景色，描述和元数据使用 muted
+语义色。
 
 ### 验证交互终端
+
+不调用供应商的手动检查命令：
+
+```bash
+npm run build
+tmux new-session -d -s laohuang-component-test -x 80 -y 24
+tmux send-keys -t laohuang-component-test "node apps/cli/dist/bin.js" Enter
+tmux send-keys -t laohuang-component-test "/help" Enter
+tmux capture-pane -t laohuang-component-test -p
+tmux send-keys -t laohuang-component-test Escape
+tmux kill-session -t laohuang-component-test
+```
+
+捕获结果应显示 Kimi 风格的 welcome/input 边框、`/help` 结构化命令列表、单一输入提示符和保留的原生
+scrollback，不应出现编号交互列表或终端协商片段。供应商支持的模型选择和认证操作
+需要已配置凭据，不属于自动 `smoke:tui` 验证。
+
+`npm run smoke:tui` 还会运行
+`node scripts/tui-offline-terminal-transcript-smoke.ts`。这个离线 tmux 验证器
+启动真实 `StdTerminalDriver` 和交互 loop，只注入本地假事件；它会提交两轮普通输入，
+检查 reasoning 冻结、普通回答默认前景色、本地工具输出折叠/展开/收起、tmux resize、
+原生 scrollback 和本地 secret fixture 不泄漏，不发起供应商请求。
 
 1. 在真实 TTY 中运行 `laohuang`。
 2. 发送第一个问题并等待回答完成。
 3. 发送第二个问题；向上滚动确认第一个问题和回答仍保留且未被改写。
 4. 输入 `/` 和 `/e`，确认候选只占可见行数，`Tab` 可接受 `/exit`，继续编辑会移除补全层。
-5. 任务运行中按 `Ctrl+C` 取消；空闲且编辑器为空时按 `Ctrl+D` 退出。
+5. 任务运行中按 `Ctrl+S` 插队、按 `Ctrl+C` 取消；空闲且编辑器为空时按 `Ctrl+D` 退出。
 
 当前版本不会在工具执行前请求确认。请只在你信任的项目和环境中运行。
 
@@ -146,7 +171,7 @@ Node 自带的 `node:test` 运行 `scripts/` 下的离线测试套件，不需�
 
 ## 安全边界
 
-文件工具会限制在启动目录内并阻止符号链接逃逸；API key 不通过环境变量传递给
+文件工具接受绝对路径，相对路径以启动目录为基准，并可访问当前用户有权访问的启动目录外文件；API key 不通过环境变量传递给
 Bash。但 `bash` **没有操作系统级沙箱**，执行后仍能访问项目外文件、网络和其他
 系统资源。公开使用前请阅读 [安全模型](docs/security.md)。
 

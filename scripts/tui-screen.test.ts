@@ -52,6 +52,19 @@ test("emulator wraps only after next printable full width line", () => {
   assert.equal(terminal.cursorColumn, 1);
 });
 
+test("emulator resize updates dimensions and clamps viewport state", () => {
+  const terminal = new TerminalEmulator({ columns: 8, rows: 3 });
+  terminal.write("history\r\nactive");
+
+  terminal.resize({ columns: 4, rows: 2 });
+
+  assert.equal(terminal.columns, 4);
+  assert.equal(terminal.rows, 2);
+  assert.deepEqual(terminal.viewportLines, ["hist", "acti"]);
+  assert.equal(terminal.cursorRow, 1);
+  assert.equal(terminal.cursorColumn, 3);
+});
+
 test("new completed lines append without erasing scrollback", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const renderer = new PiMainScreenRenderer(terminal);
@@ -151,24 +164,20 @@ test("editor only change does not repaint unchanged footer rows", () => {
   assert.ok(!terminal.writes().includes("─".repeat(80)));
 });
 
-test("full width separator rows do not duplicate prompts semantically", () => {
+test("framed editor updates do not duplicate prompts semantically", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
   const emulator = new TerminalEmulator({ columns: 80, rows: 4 });
   const renderer = new PiMainScreenRenderer(terminal);
-  renderer.render(frame(["─".repeat(80), "❯ a", "─".repeat(80)], 1, 1, 3));
+  renderer.render(frame(["❯ a"], 0, 0, 3));
   emulator.write(terminal.writes());
   terminal.clearWrites();
 
-  renderer.render(frame(["─".repeat(80), "❯ as", "─".repeat(80)], 1, 1, 4));
+  renderer.render(frame(["❯ as"], 0, 0, 4));
   emulator.write(terminal.writes());
 
   const rendered = emulator.logicalLines.join("\n");
   assert.equal(rendered.split("❯ ").length - 1, 1);
-  assert.deepEqual(emulator.viewportLines.slice(0, 3), [
-    "─".repeat(80),
-    "❯ as",
-    "─".repeat(80),
-  ]);
+  assert.equal(emulator.viewportLines[0], "❯ as");
   assert.ok(!emulator.logicalLines.includes("❯ a"));
 });
 

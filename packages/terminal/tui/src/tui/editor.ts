@@ -8,6 +8,7 @@
  */
 
 import { charCellWidth } from "./screen.ts";
+import { line, span, type StyledLine } from "./render-model.ts";
 import {
   makeKeyInput,
   type KeyInput,
@@ -442,6 +443,7 @@ const CONTROL_KEYS: ReadonlyMap<number, KeyInput> = new Map([
   [3, makeKeyInput("ctrl_c", { ctrl: true })],
   [12, makeKeyInput("ctrl_l", { ctrl: true })],
   [15, makeKeyInput("character", { text: "o", ctrl: true })],
+  [19, makeKeyInput("character", { text: "s", ctrl: true })],
   [20, makeKeyInput("character", { text: "t", ctrl: true })],
 ]);
 
@@ -1090,6 +1092,14 @@ export interface RenderOptions {
   };
 }
 
+interface EditorProjection {
+  readonly rows: readonly string[];
+  readonly prompt: string;
+  readonly promptWidth: number;
+  readonly cursorRow: number;
+  readonly cursorColumn: number;
+}
+
 /** Text, history, and command-completion state for the active editor. */
 export class EditorState {
   /** Window for the Pi-style double-Ctrl+C-to-exit gesture, in milliseconds. */
@@ -1145,7 +1155,45 @@ export class EditorState {
 
   renderLines(width: number, options: RenderOptions = {}): RenderedEditor {
     const prompt = options.prompt ?? "❯ ";
-    const mask = options.mask ?? false;
+    const projection = this.#renderProjection(width, prompt, options.mask ?? false);
+    const promptStyle = options.styles?.prompt ?? ((text: string) => text);
+    const textStyle = options.styles?.text ?? ((text: string) => text);
+    const lines = projection.rows.map((row, index) => {
+      const promptText = index === 0 ? projection.prompt : " ".repeat(projection.promptWidth);
+      const renderedPrompt = index === 0 ? promptStyle(promptText) : promptText;
+      return renderedPrompt + textStyle(row);
+    });
+    return {
+      lines,
+      cursorRow: projection.cursorRow,
+      cursorColumn: projection.cursorColumn,
+    };
+  }
+
+  renderStyledLines(
+    width: number,
+    options: { readonly prompt: string; readonly mask: boolean },
+  ): {
+    readonly lines: readonly StyledLine[];
+    readonly cursorRow: number;
+    readonly cursorColumn: number;
+  } {
+    const projection = this.#renderProjection(width, options.prompt, options.mask);
+    return {
+      lines: projection.rows.map((row, index) =>
+        line(
+          span(
+            index === 0 ? projection.prompt : " ".repeat(projection.promptWidth),
+            index === 0 ? { foreground: "accent" } : undefined,
+          ),
+          span(row),
+        )),
+      cursorRow: projection.cursorRow,
+      cursorColumn: projection.cursorColumn,
+    };
+  }
+
+  #renderProjection(width: number, prompt: string, mask: boolean): EditorProjection {
     const boundedWidth = Math.max(3, width);
     const promptWidth = Math.max(1, displayWidth(prompt));
     const contentWidth = Math.max(1, boundedWidth - promptWidth);
@@ -1163,13 +1211,6 @@ export class EditorState {
     ) {
       rows.push("");
     }
-    const promptStyle = options.styles?.prompt ?? ((text: string) => text);
-    const textStyle = options.styles?.text ?? ((text: string) => text);
-    const lines = rows.map((row, index) => {
-      const promptText = index === 0 ? prompt : " ".repeat(promptWidth);
-      const renderedPrompt = index === 0 ? promptStyle(promptText) : promptText;
-      return renderedPrompt + textStyle(row);
-    });
     const before = displayText.slice(0, this.cursor);
     const beforeLines = before.split("\n");
     let priorRows = 0;
@@ -1181,8 +1222,10 @@ export class EditorState {
     const cursorRow = priorRows + currentRow;
     const cursorColumn = promptWidth + currentColumn;
     return {
-      lines,
-      cursorRow: Math.min(cursorRow, lines.length - 1),
+      rows,
+      prompt,
+      promptWidth,
+      cursorRow: Math.min(cursorRow, rows.length - 1),
       cursorColumn: Math.min(cursorColumn, boundedWidth - 1),
     };
   }

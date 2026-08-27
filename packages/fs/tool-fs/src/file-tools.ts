@@ -38,23 +38,21 @@ export function createFileToolDefinitions(
   const io = options.fileIo ?? DEFAULT_IO;
   const maxOutputChars = options.maxOutputChars ?? 20_000;
 
-  const resolvePath = async (rawPath: string): Promise<string> => {
-    const resolved = await resolveNonStrict(path.resolve(root, rawPath));
-    if (resolved !== root && !resolved.startsWith(root + path.sep)) {
-      throw new Error(`Path is outside the project root: ${rawPath}`);
-    }
-    return resolved;
-  };
+  const resolvePath = (rawPath: string): Promise<string> =>
+    resolveNonStrict(path.resolve(root, rawPath));
 
   return [
     {
       spec: {
         name: "read",
-        description: "Read a UTF-8 text file inside the project root.",
+        description: "Read a UTF-8 text file.",
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "File path." },
+            path: {
+              type: "string",
+              description: "Absolute path or path relative to the default working directory.",
+            },
             offset: {
               type: "integer",
               description: "1-based line number to start reading from.",
@@ -115,7 +113,10 @@ export function createFileToolDefinitions(
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "File path." },
+            path: {
+              type: "string",
+              description: "Absolute path or path relative to the default working directory.",
+            },
             content: { type: "string", description: "Full file content." },
           },
           required: ["path", "content"],
@@ -148,7 +149,10 @@ export function createFileToolDefinitions(
         parameters: {
           type: "object",
           properties: {
-            path: { type: "string", description: "File path." },
+            path: {
+              type: "string",
+              description: "Absolute path or path relative to the default working directory.",
+            },
             edits: {
               type: "array",
               description:

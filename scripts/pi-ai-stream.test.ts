@@ -257,7 +257,6 @@ function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
     model: "deepseek-v4-flash",
     messages: [{ role: "user", content: "hello" }],
     tools: [],
-    toolChoice: "auto",
     requestId: "request-1",
     ...overrides,
   };

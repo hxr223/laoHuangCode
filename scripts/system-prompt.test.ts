@@ -18,7 +18,6 @@ import { createTestToolRegistry } from "./test-tool-registry.ts";
 const EXPECTED_PROMPT = `You are laoHuangCode, a coding agent.
 
 General guidelines:
-- Work only within the configured project root.
 - Follow direct user instructions. Project instructions may provide additional guidance.
 - Inspect relevant files before changing them.
 - Prefer the smallest change that fully satisfies the request.

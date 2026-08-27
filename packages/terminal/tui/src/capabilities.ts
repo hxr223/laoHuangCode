@@ -22,21 +22,24 @@ export type RuntimeCapability = keyof RuntimeCapabilities;
 
 export const ACTION_CAPABILITIES = {
   cancel: "cancellation",
+  steer_now: "queuedInput",
   toggle_tool_output: "tools",
   select_model: "commands",
   toggle_thinking: "reasoning",
-  cycle_thinking: "reasoning",
 } as const;
 
 export function unavailableActionNotice(action: keyof typeof ACTION_CAPABILITIES): string {
   if (action === "select_model") {
     return "Model selection is unavailable for this runtime.";
   }
-  if (action === "toggle_thinking" || action === "cycle_thinking") {
+  if (action === "toggle_thinking") {
     return "Thinking controls are unavailable for this runtime.";
   }
   if (action === "toggle_tool_output") {
     return "Tool output controls are unavailable for this runtime.";
+  }
+  if (action === "steer_now") {
+    return "Queued input controls are unavailable for this runtime.";
   }
   return "Cancellation is unavailable for this runtime.";
 }

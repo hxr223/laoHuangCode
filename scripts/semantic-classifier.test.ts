@@ -66,11 +66,12 @@ test("uses one no-history request and accepts confident json", async () => {
   const request = calls[0]!.request;
   assert.equal(request.provider, "deepseek");
   assert.equal(request.model, "router-model");
-  assert.equal(request.toolChoice, "none");
+  assert.ok(!("toolChoice" in request));
   assert.equal(request.tools.length, 0);
   assert.equal(request.temperature, 0);
   assert.equal(request.timeoutMs, 3000);
   assert.equal(request.maxAttempts, 1);
+  assert.equal(request.reasoningEffort, "off");
   const messages = request.messages;
   assert.equal(messages.length, 2);
 });

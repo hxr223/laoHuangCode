@@ -63,7 +63,7 @@ test("session satisfies the SessionLike command interface", () => {
   });
 });
 
-test("pending messages are drained once as one model input", async () => {
+test("steer messages are drained before ordinary pending follow-ups", async () => {
   const entered = gate();
   const release = gate();
   const calls: string[] = [];
@@ -86,14 +86,44 @@ test("pending messages are drained once as one model input", async () => {
 
   assert.equal(await session.waitForIdle(1000), true);
   assert.equal(calls[0], "first");
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.ok(calls[1]!.includes("second"));
-  assert.ok(calls[1]!.includes("third"));
   assert.ok(calls[1]!.includes("Please handle all"));
+  assert.ok(!calls[1]!.includes("third"));
+  assert.ok(calls[2]!.includes("third"));
+  assert.ok(!calls[2]!.includes("second"));
   assert.equal(
     session.taskRegistry.get(submission.taskId!)!.state,
     TaskState.Completed,
   );
+});
+
+test("empty steer promotes the earliest pending message", async () => {
+  const entered = gate();
+  const release = gate();
+  const calls: string[] = [];
+
+  const runner: Runner = async (content, _context) => {
+    calls.push(content);
+    if (calls.length === 1) {
+      entered.open();
+      await release.promise;
+    }
+    return `answer-${calls.length}`;
+  };
+
+  const session = new AgentSession(runner, { sessionId: "session-1" });
+  await session.submitInput("first");
+  await awaitGate(entered.promise, "runner entry");
+  await session.submitInput("later", { strategy: "follow_up" });
+
+  assert.equal(session.promotePendingToSteer(), 1);
+  release.open();
+
+  assert.equal(await session.waitForIdle(1000), true);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1]!.includes("later"));
+  assert.equal(session.promotePendingToSteer(), 0);
 });
 
 test("stale worker cannot mark replacement task idle", async () => {

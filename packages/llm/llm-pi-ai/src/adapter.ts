@@ -6,11 +6,14 @@ import {
   modelErrorKind,
 } from "@laohuang/llm";
 import {
+  clampThinkingLevel,
   type Api,
   type Model as PiModel,
+  type ModelThinkingLevel,
   ModelsError,
   type Models,
   type ModelsSimpleStreamOptions,
+  type ThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { toPiContext } from "./context.ts";
@@ -68,7 +71,7 @@ export class PiAiAdapter implements ModelAdapter {
       ...(request.cancelToken === undefined ? {} : { signal: request.cancelToken.signal }),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
       ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
-      ...(model.reasoning ? { reasoning: "high" } : {}),
+      ...thinkingOption(model, request.reasoningEffort ?? "high"),
       maxRetries: 0,
     };
     try {
@@ -103,6 +106,14 @@ export class PiAiAdapter implements ModelAdapter {
       throw new ModelStreamCancelled("stale model request");
     }
   }
+}
+
+function thinkingOption(
+  model: PiModel<Api>,
+  requested: ModelThinkingLevel,
+): { readonly reasoning?: ThinkingLevel } {
+  const level = clampThinkingLevel(model, requested);
+  return level === "off" ? {} : { reasoning: level };
 }
 
 export function piModelErrorKind(error: unknown) {

@@ -187,8 +187,9 @@ Agent 会向模型追加每个调用对应的 provider-neutral tool-result，保
 和工具回调同样先经过 Router，但通常在第一层即可短路，不会调用语义分类器。
 
 同一 Session 只运行一个活动 Task。运行期间的普通输入进入有界 PendingQueue；
-同一 Task 的全部 pending 消息在下一个模型/工具安全点通过原子快照一次 drain，不按
-steer/follow-up 策略拆批，并携带原始 event ID 合并成一次模型输入。取消事件走立即
+`Ctrl+S` 提交的 steer 输入会在下一个模型/工具安全点优先 drain；输入为空时，
+最早的 compatible pending 消息会被提升为 steer。没有 steer 时，同一 Task 的全部
+pending 消息通过原子快照一次 drain，并携带原始 event ID 合并成一次模型输入。取消事件走立即
 控制通道，pending 转入 HeldQueue，不会在任务停止后自动
 执行；用户可通过 `/queue resume` 恢复。
 

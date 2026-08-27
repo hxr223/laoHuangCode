@@ -6,7 +6,10 @@ import {
   filterModels,
   ModelSelector,
 } from "../apps/cli/src/model-selection.ts";
-import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import type {
+  AuthPromptHandler,
+  ProviderAuthController,
+} from "../apps/cli/src/provider-auth.ts";
 
 const providers: readonly ModelProviderInfo[] = [
   {
@@ -74,143 +77,97 @@ class MemoryCatalog implements ModelCatalog {
 }
 
 class MemoryAuth implements Pick<ProviderAuthController, "ensureConfigured"> {
-  readonly calls: Array<{ provider: string; promptIfMissing: boolean }> = [];
+  readonly calls: Array<{
+    readonly provider: string;
+    readonly promptIfMissing: boolean;
+    readonly prompts: AuthPromptHandler | undefined;
+  }> = [];
   configured = new Set(["deepseek", "openai"]);
 
   async ensureConfigured(
     provider: string,
-    options: { promptIfMissing: boolean },
+    options: {
+      readonly promptIfMissing: boolean;
+      readonly prompts?: AuthPromptHandler;
+    },
   ): Promise<boolean> {
-    this.calls.push({ provider, promptIfMissing: options.promptIfMissing });
+    this.calls.push({
+      provider,
+      promptIfMissing: options.promptIfMissing,
+      prompts: options.prompts,
+    });
     return this.configured.has(provider);
   }
 }
 
-function fail(reason: string): (prompt: string) => Promise<string> {
-  return async () => {
-    throw new Error(reason);
-  };
-}
-
-test("deepseek provider and model are selected in the terminal", async () => {
-  const catalog = new MemoryCatalog();
-  const auth = new MemoryAuth();
-  const prompts: string[] = [];
-  const outputs: string[] = [];
-  const selector = new ModelSelector({
-    catalog,
-    providerAuth: auth,
-    input: async (prompt) => {
-      prompts.push(prompt);
-      return prompts.length === 1 ? "v4" : "2";
-    },
-    output: (message) => {
-      outputs.push(message);
-    },
-  });
-
-  const selection = await selector.select({ providerName: "deepseek" });
-
-  assert.ok(selection);
-  assert.equal(selection.config.provider, "deepseek");
-  assert.equal(selection.config.model, "deepseek-v4-pro");
-  assert.equal("apiKey" in selection.config, false);
-  assert.deepEqual(auth.calls, [
-    { provider: "deepseek", promptIfMissing: true },
-  ]);
-  assert.deepEqual(catalog.refreshCalls, ["deepseek"]);
-  assert.ok(outputs.some((output) => output.includes("deepseek-v4-pro")));
-});
-
-test("user can choose a provider before choosing the model", async () => {
-  const auth = new MemoryAuth();
-  const answers = ["1", "v4", "1"];
-  const outputs: string[] = [];
+test("model selector exposes providers without presentation ownership", () => {
   const selector = new ModelSelector({
     catalog: new MemoryCatalog(),
-    providerAuth: auth,
-    input: async () => {
-      const answer = answers.shift();
-      assert.ok(answer !== undefined, "unexpected extra prompt");
-      return answer;
-    },
-    output: (message) => {
-      outputs.push(message);
-    },
+    providerAuth: new MemoryAuth(),
   });
 
-  const selection = await selector.select();
-
-  assert.ok(selection);
-  assert.equal(selection.config.provider, "deepseek");
-  assert.ok(outputs.some((output) => output.includes("DeepSeek")));
-  assert.ok(outputs.some((output) => output.includes("OpenAI")));
+  assert.deepEqual(selector.listProviders(), providers);
 });
 
-test("session model selection requires a prior login", async () => {
+test("model selector refreshes and filters available models", async () => {
+  const catalog = new MemoryCatalog();
+  const selector = new ModelSelector({ catalog, providerAuth: new MemoryAuth() });
+
+  const available = await selector.listModels("deepseek", "pro");
+
+  assert.deepEqual(available.map((item) => item.id), ["deepseek-v4-pro"]);
+  assert.deepEqual(catalog.refreshCalls, ["deepseek"]);
+});
+
+test("exact selection returns provider-neutral runtime configuration", async () => {
+  const catalog = new MemoryCatalog();
+  const auth = new MemoryAuth();
+  const prompts: AuthPromptHandler = { prompt: async () => "secret" };
+  const selector = new ModelSelector({ catalog, providerAuth: auth });
+
+  const selection = await selector.selectExact({
+    providerName: "deepseek",
+    modelName: "deepseek-v4-pro",
+    promptForMissingKey: true,
+    authPrompts: prompts,
+  });
+
+  assert.deepEqual(selection, {
+    config: {
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      baseUrl: null,
+    },
+  });
+  assert.equal("apiKey" in selection!.config, false);
+  assert.deepEqual(auth.calls, [{
+    provider: "deepseek",
+    promptIfMissing: true,
+    prompts,
+  }]);
+  assert.deepEqual(catalog.refreshCalls, ["deepseek"]);
+});
+
+test("session exact selection requires prior login without auth prompts", async () => {
   const auth = new MemoryAuth();
   auth.configured.clear();
   const selector = new ModelSelector({
     catalog: new MemoryCatalog(),
     providerAuth: auth,
-    input: fail("no model input expected"),
-    output: () => {},
   });
 
-  const selection = await selector.select({
+  const selection = await selector.selectExact({
     providerName: "deepseek",
+    modelName: "deepseek-v4-flash",
     promptForMissingKey: false,
   });
 
   assert.equal(selection, null);
-  assert.deepEqual(auth.calls, [
-    { provider: "deepseek", promptIfMissing: false },
-  ]);
-});
-
-test("prompt functions are awaited like the terminal UI's async prompts", async () => {
-  const gates: Array<() => void> = [];
-  const answers = ["v4", "1"];
-  const deferredInput = async (): Promise<string> => {
-    await new Promise<void>((resolve) => {
-      gates.push(resolve);
-    });
-    const answer = answers.shift();
-    assert.ok(answer !== undefined, "unexpected extra prompt");
-    return answer;
-  };
-  const selector = new ModelSelector({
-    catalog: new MemoryCatalog(),
-    providerAuth: new MemoryAuth(),
-    input: () => deferredInput(),
-    output: () => {},
-  });
-
-  const pending = selector.select({ providerName: "deepseek" });
-  let settled = false;
-  void pending.then(() => {
-    settled = true;
-  });
-  for (let index = 0; index < 10 && gates.length === 0; index += 1) {
-    await new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
-  }
-  assert.equal(settled, false);
-  assert.equal(gates.length, 1);
-
-  gates.shift()!();
-  for (let index = 0; index < 10 && gates.length === 0; index += 1) {
-    await new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
-  }
-  assert.equal(gates.length, 1);
-  gates.shift()!();
-
-  const selection = await pending;
-  assert.ok(selection);
-  assert.equal(selection.config.model, "deepseek-v4-flash");
+  assert.deepEqual(auth.calls, [{
+    provider: "deepseek",
+    promptIfMissing: false,
+    prompts: undefined,
+  }]);
 });
 
 test("model search ranks exact ids and limits output", () => {
@@ -222,21 +179,32 @@ test("model search ranks exact ids and limits output", () => {
     ),
   );
 
-  assert.deepEqual(filterModels(searched, "target-model", 20).map((m) => m.id), [
+  assert.deepEqual(filterModels(searched, "target-model", 20).map((item) => item.id), [
     "target-model",
   ]);
   assert.equal(filterModels(searched, "model", 20).length, 20);
 });
 
-test("manual model routes must exist in the provider catalog", async () => {
+test("exact model routes must exist in the provider catalog", async () => {
   const selector = new ModelSelector({
     catalog: new MemoryCatalog(),
     providerAuth: new MemoryAuth(),
-    input: async () => "",
-    output: () => {},
   });
+
   await assert.rejects(
-    selector.select({ providerName: "deepseek", modelName: "missing-model" }),
+    selector.selectExact({
+      providerName: "deepseek",
+      modelName: "missing-model",
+      promptForMissingKey: false,
+    }),
     /Unknown model: deepseek\/missing-model/,
+  );
+  await assert.rejects(
+    selector.selectExact({
+      providerName: "missing",
+      modelName: "missing-model",
+      promptForMissingKey: false,
+    }),
+    /Unknown provider: missing/,
   );
 });

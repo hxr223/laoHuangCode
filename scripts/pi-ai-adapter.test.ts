@@ -61,14 +61,38 @@ test("PiAiAdapter passes baseUrl, timeout, temperature, and cancel signal", asyn
   assert.equal(fake.streams[0]?.options.maxRetries, 0);
 });
 
-test("PiAiAdapter enables thinking for reasoning-capable models", async () => {
+test("PiAiAdapter passes the requested thinking level for reasoning-capable models", async () => {
   const fake = new FakeModels();
   const adapter = new PiAiAdapter(
     { eligibleProviderIds: new Set(["deepseek"]) },
     fake,
   );
 
-  await adapter.runAttempt(request());
+  await adapter.runAttempt(request({ reasoningEffort: "low" }));
+
+  assert.equal(fake.streams[0]?.options.reasoning, "low");
+});
+
+test("PiAiAdapter omits thinking when requested effort is off", async () => {
+  const fake = new FakeModels();
+  const adapter = new PiAiAdapter(
+    { eligibleProviderIds: new Set(["deepseek"]) },
+    fake,
+  );
+
+  await adapter.runAttempt(request({ reasoningEffort: "off" }));
+
+  assert.equal(fake.streams[0]?.options.reasoning, undefined);
+});
+
+test("PiAiAdapter clamps unsupported thinking levels for the concrete model", async () => {
+  const fake = new FakeModels();
+  const adapter = new PiAiAdapter(
+    { eligibleProviderIds: new Set(["deepseek"]) },
+    fake,
+  );
+
+  await adapter.runAttempt(request({ reasoningEffort: "max" }));
 
   assert.equal(fake.streams[0]?.options.reasoning, "high");
 });
@@ -129,7 +153,6 @@ function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
     model: "deepseek-v4-flash",
     messages: [{ role: "user", content: "hello" }],
     tools: [],
-    toolChoice: "auto",
     requestId: "request-1",
     ...overrides,
   };

@@ -7,6 +7,7 @@ import {
   makeCancelIntent,
   makeFollowUpIntent,
   makePromptIntent,
+  makeSteerIntent,
 } from "../packages/core/runtime-protocol/src/index.ts";
 import { routeHumanIntent } from "../packages/core/session-runtime/src/index.ts";
 import {
@@ -105,6 +106,18 @@ test("follow-up intent creates an explicit follow-up action", () => {
   assert.deepEqual(
     { type: action.type, text: "text" in action ? action.text : undefined },
     { type: "follow_up", text: "next" },
+  );
+});
+
+test("steer intent creates an explicit steer action", () => {
+  const action = routeHumanIntent(
+    makeSteerIntent("now", "editor"),
+    SessionState.Running,
+  );
+
+  assert.deepEqual(
+    { type: action.type, text: "text" in action ? action.text : undefined },
+    { type: "steer", text: "now" },
   );
 });
 
