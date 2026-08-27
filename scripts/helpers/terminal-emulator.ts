@@ -6,8 +6,8 @@
  * to assert on the semantic effect of renderer byte streams.
  */
 export class TerminalEmulator {
-  readonly columns: number;
-  readonly rows: number;
+  #columns: number;
+  #rows: number;
 
   #screen: string[];
   #scrollback: string[] = [];
@@ -20,9 +20,17 @@ export class TerminalEmulator {
     if (columns < 1 || rows < 1) {
       throw new Error("terminal size must be positive");
     }
-    this.columns = columns;
-    this.rows = rows;
+    this.#columns = columns;
+    this.#rows = rows;
     this.#screen = Array.from({ length: rows }, () => "");
+  }
+
+  get columns(): number {
+    return this.#columns;
+  }
+
+  get rows(): number {
+    return this.#rows;
   }
 
   get cursorRow(): number {
@@ -47,6 +55,24 @@ export class TerminalEmulator {
 
   get logicalLines(): string[] {
     return [...this.scrollback, ...this.viewportLines];
+  }
+
+  resize(options: { columns: number; rows: number }): void {
+    const { columns, rows } = options;
+    if (columns < 1 || rows < 1) {
+      throw new Error("terminal size must be positive");
+    }
+    this.#columns = columns;
+    this.#rows = rows;
+    this.#screen = this.#screen
+      .slice(0, rows)
+      .map((value) => [...value].slice(0, columns).join(""));
+    while (this.#screen.length < rows) {
+      this.#screen.push("");
+    }
+    this.#cursorRow = Math.min(this.#cursorRow, rows - 1);
+    this.#cursorColumn = Math.min(this.#cursorColumn, columns - 1);
+    this.#pendingWrap = false;
   }
 
   write(data: string): void {

@@ -39,6 +39,30 @@ const HIGH_FREQUENCY_EVENTS = new Set([
   "model.tool_call_delta",
   "tool.output_delta",
 ]);
+const TOOL_EVENTS = new Set([
+  "tool.started",
+  "tool.output_delta",
+  "tool.finished",
+]);
+const SENSITIVE_FIELDS = new Set([
+  "api_key",
+  "apikey",
+  "authorization",
+  "token",
+  "access_token",
+  "refresh_token",
+  "client_secret",
+  "private_key",
+  "secret",
+  "password",
+]);
+const SENSITIVE_TEXT_PATTERNS = [
+  /(authorization\s*:\s*bearer\s+)([^\s'"]+)/giu,
+  /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s'"]+)/giu,
+  /(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s+)(?:"[^"]*"|'[^']*'|\S+)/giu,
+];
+const SENSITIVE_VALUE_AT_END = /(?:authorization\s*:\s*bearer\s+|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s*[:=]\s*|--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s+)(?:"[^"]+"|'[^']+'|[^\s'"]+)$/iu;
+const BEARER_PREFIX_AT_END = /authorization\s*:\s*bearer\s+$/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -46,6 +70,61 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function asPayload(value: unknown): Record<string, unknown> {
   return isRecord(value) ? { ...value } : {};
+}
+
+/** Remove credential-like values before terminal state or transcript storage. */
+export function redactToolText(value: string): string {
+  return SENSITIVE_TEXT_PATTERNS.reduce(
+    (text, pattern) => text.replace(pattern, "$1[REDACTED]"),
+    value,
+  );
+}
+
+function redactToolValue(value: unknown): unknown {
+  if (typeof value === "string") return redactToolText(value);
+  if (Array.isArray(value)) return value.map((item) => redactToolValue(item));
+  if (!isRecord(value)) return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    result[key] = SENSITIVE_FIELDS.has(key.toLowerCase())
+      ? "[REDACTED]"
+      : redactToolValue(item);
+  }
+  return result;
+}
+
+export function redactToolPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return redactToolValue(payload) as Record<string, unknown>;
+}
+
+/** Keeps an unfinished credential value redacted across streamed output deltas. */
+export class ToolOutputRedactor {
+  readonly #pendingValues = new Set<string>();
+
+  redact(correlationId: string, stream: string, value: string): string {
+    const key = `${correlationId}:${stream}`;
+    let text = value;
+    if (this.#pendingValues.has(key)) {
+      const boundary = text.search(/\s/u);
+      if (boundary < 0) return "[REDACTED]";
+      this.#pendingValues.delete(key);
+      text = text.slice(boundary);
+    }
+    if (BEARER_PREFIX_AT_END.test(text)) {
+      this.#pendingValues.add(key);
+      return `${text}[REDACTED]`;
+    }
+    if (SENSITIVE_VALUE_AT_END.test(text)) {
+      this.#pendingValues.add(key);
+    }
+    return redactToolText(text);
+  }
+
+  clear(correlationId: string): void {
+    for (const key of this.#pendingValues) {
+      if (key.startsWith(`${correlationId}:`)) this.#pendingValues.delete(key);
+    }
+  }
 }
 
 function droppedCount(payload: Record<string, unknown>): number {
@@ -68,6 +147,7 @@ export class DisplayPolicy {
   readonly audience: DisplayAudience;
   readonly showReasoning: boolean;
   readonly foldToolOutput: boolean;
+  readonly #toolOutputRedactor = new ToolOutputRedactor();
 
   constructor(options: DisplayPolicyOptions) {
     this.audience = options.audience;
@@ -77,10 +157,22 @@ export class DisplayPolicy {
 
   project(event: DisplayEventLike | RuntimeEvent): DisplayEvent[] {
     const kind = String(event.kind);
-    const payload = asPayload(event.payload);
+    const rawPayload = asPayload(event.payload);
+    let payload = TOOL_EVENTS.has(kind) ? redactToolPayload(rawPayload) : rawPayload;
     const correlationId = this.#correlationId(event);
     const stream = String(payload.stream ?? "");
-    const text = String(payload.text ?? payload.chunk ?? "");
+    const text = kind === "tool.output_delta"
+      ? this.#toolOutputRedactor.redact(
+        correlationId,
+        stream || "stdout",
+        String(rawPayload.text ?? rawPayload.chunk ?? ""),
+      )
+      : String(payload.text ?? payload.chunk ?? "");
+    if (kind === "tool.output_delta") {
+      payload = { ...payload, text };
+    } else if (kind === "tool.finished") {
+      this.#toolOutputRedactor.clear(correlationId);
+    }
     const projected: DisplayEvent[] = [];
     const dropped = droppedCount(payload);
 

@@ -11,25 +11,79 @@ import {
   type CommandRegistryLike,
   type LoopInputSource,
 } from "../packages/terminal/tui/src/tui/ui.ts";
-import { CompletionList } from "../packages/terminal/tui/src/tui/components/completion-list.ts";
+import { CompletionPopup } from "../packages/terminal/tui/src/tui/components/completion-list.ts";
+import { AssistantMessage } from "../packages/terminal/tui/src/tui/components/messages/assistant-message.ts";
+import { ThinkingMessage } from "../packages/terminal/tui/src/tui/components/messages/thinking-message.ts";
+import { ToolMessage } from "../packages/terminal/tui/src/tui/components/messages/tool-message.ts";
+import { UserMessage } from "../packages/terminal/tui/src/tui/components/messages/user-message.ts";
+import { StatusLine } from "../packages/terminal/tui/src/tui/components/status-line.ts";
 import { ToolCard } from "../packages/terminal/tui/src/tui/components/tool-card.ts";
 import { Transcript } from "../packages/terminal/tui/src/tui/components/transcript.ts";
+import { AuthDialog } from "../packages/terminal/tui/src/tui/components/views/auth-dialog.ts";
+import { EffortSelectorView } from "../packages/terminal/tui/src/tui/components/views/effort-selector.ts";
+import { HelpView } from "../packages/terminal/tui/src/tui/components/views/help-view.ts";
+import { ModelSelectorView } from "../packages/terminal/tui/src/tui/components/views/model-selector.ts";
+import { ProviderStatusView } from "../packages/terminal/tui/src/tui/components/views/provider-status-view.ts";
 import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
+import { FrameBuilder } from "../packages/terminal/tui/src/tui/frame-builder.ts";
+import {
+  lineText,
+  type RenderContext,
+  type SpanStyle,
+  type StyledLine,
+} from "../packages/terminal/tui/src/tui/render-model.ts";
+import { createUIState } from "../packages/terminal/tui/src/tui/state.ts";
+import {
+  createAssistantBlock,
+  createThinkingBlock,
+  createToolBlock,
+  createUserBlock,
+  createWelcomeBlock,
+  TranscriptStore,
+} from "../packages/terminal/tui/src/tui/transcript-store.ts";
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
-import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
+import {
+  PI_DARK,
+  PI_LIGHT,
+  type TerminalTheme,
+} from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
+import { ToolOutputRedactor } from "../packages/terminal/tui/src/tui/display-policy.ts";
+import { TerminalCommandPresenter } from "../apps/cli/src/terminal-command-presenter.ts";
+import { SessionCommands } from "../apps/cli/src/commands.ts";
+import { ModelSelector } from "../apps/cli/src/model-selection.ts";
+import { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import {
+  runSessionRepl,
+  type SessionReplSession,
+  type SessionUiLike,
+} from "../apps/cli/src/repl.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
   stripTerminalControls,
   visibleWidth,
 } from "../packages/terminal/tui/src/tui/screen.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
+import {
+  createSessionCommandFixture,
+  FakeAgent,
+  FakeCatalog,
+} from "./helpers/session-command-fixture.ts";
 import { TerminalEmulator } from "./helpers/terminal-emulator.ts";
 
 const encoder = new TextEncoder();
 
 function bytes(text: string): Uint8Array {
   return encoder.encode(text);
+}
+
+async function drainUntil(ui: TerminalUI, predicate: () => boolean): Promise<void> {
+  for (let index = 0; index < 30 && !predicate(); index += 1) {
+    ui.drainLoop();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  ui.drainLoop();
 }
 
 function event(
@@ -40,185 +94,360 @@ function event(
   return { kind, correlation_id: correlationId, payload };
 }
 
-test("completion list is a focusable width-bounded component", () => {
-  const list = new CompletionList({
-    items: [
-      { value: "/help", description: "Show help", start: -5 },
-      { value: "/model", description: "Switch model", start: -6 },
-    ],
-    selectedIndex: 1,
-  });
+type SemanticSnapshot = Array<Array<{ text: string; style?: SpanStyle }>>;
 
-  assert.deepEqual(list.render(20), [
-    "  /help  Show help",
-    "› /model  Switch mod",
-  ]);
-  assert.equal(list.focused, false);
-  list.focused = true;
-  assert.equal(list.focused, true);
+function semanticSnapshot(
+  component: { render(context: RenderContext): { lines: readonly StyledLine[] } },
+  width: number,
+  theme: TerminalTheme,
+): SemanticSnapshot {
+  return component.render({ width, theme }).lines.map((value) =>
+    value.spans.flatMap((item) => {
+      const text = item.text.trim();
+      if (!text) {
+        return [];
+      }
+      return [item.style === undefined ? { text } : { text, style: item.style }];
+    }),
+  );
+}
+
+function structuredStyleComponents() {
+  const auth = new AuthDialog({
+    request: { id: "key", kind: "secret", message: "Enter API key" },
+    onSubmit: () => {},
+    onCancel: () => {},
+  });
+  auth.focused = true;
+  auth.handleInput({ type: "text", text: "abc" });
+  const model = new ModelSelectorView({
+    title: "Models",
+    currentValue: "deepseek-v4-flash",
+    items: [{
+      value: "deepseek-v4-flash",
+      label: "deepseek-v4-flash",
+      description: "DeepSeek",
+    }],
+    onSelect: () => {},
+    onCancel: () => {},
+  });
+  model.focused = true;
+  const effort = new EffortSelectorView({
+    title: "Effort",
+    currentValue: "high",
+    items: [{ value: "high", label: "High" }],
+    onSelect: () => {},
+    onCancel: () => {},
+  });
+  effort.focused = true;
+  return [
+    new HelpView({
+      commands: [{
+        name: "/model",
+        usage: "/model [provider] [model]",
+        description: "Select model",
+      }],
+    }),
+    new ProviderStatusView({
+      providers: [{
+        id: "deepseek",
+        name: "DeepSeek",
+        available: true,
+        configured: true,
+        verified: false,
+        source: "stored credential",
+      }],
+    }),
+    model,
+    effort,
+    auth,
+    new ThinkingMessage({ text: "inspect" }),
+    new ToolMessage({
+      name: "bash",
+      subject: "$ echo hello",
+      status: "completed",
+      exitCode: 0,
+      durationMs: 12,
+      stdout: "hello",
+      stderr: "",
+      expanded: true,
+    }),
+  ];
+}
+
+function expectedStructuredStyleSnapshots(width: number): SemanticSnapshot[] {
+  return [
+    width < 50
+      ? [
+        [{ text: "/model [provider] [model]" }],
+        [{ text: "Select model", style: { foreground: "muted" } }],
+      ]
+      : [[
+        { text: "/model [provider] [model]" },
+        { text: "Select model", style: { foreground: "muted" } },
+      ]],
+    width < 50
+      ? [
+        [{ text: "DeepSeek" }],
+        [{ text: "available" }],
+        [{ text: "configured", style: { foreground: "success" } }],
+        [{ text: "unverified", style: { foreground: "warning" } }],
+        [{ text: "stored credential", style: { foreground: "muted" } }],
+      ]
+      : [
+        [
+          { text: "DeepSeek" },
+          { text: "available" },
+          { text: "configured", style: { foreground: "success" } },
+          { text: "unverified", style: { foreground: "warning" } },
+        ],
+        [{ text: "stored credential", style: { foreground: "muted" } }],
+      ],
+    [
+      [{ text: "Models", style: { foreground: "accent" } }],
+      [],
+      [
+        { text: "❯", style: { foreground: "accent" } },
+        { text: "Search models", style: { foreground: "muted" } },
+      ],
+      [],
+      width < 50
+        ? [
+          { text: "→", style: { foreground: "accent" } },
+          { text: "deepseek-v4-flash", style: { foreground: "accent" } },
+        ]
+        : [
+          { text: "→", style: { foreground: "accent" } },
+          { text: "deepseek-v4-flash", style: { foreground: "accent" } },
+          { text: "DeepSeek", style: { foreground: "muted" } },
+        ],
+      [],
+      [{ text: "DeepSeek", style: { foreground: "muted" } }],
+    ],
+    [
+      [{ text: "Effort", style: { foreground: "accent" } }],
+      [],
+      [
+        { text: "→", style: { foreground: "accent" } },
+        { text: "High", style: { foreground: "accent" } },
+      ],
+    ],
+    [
+      [],
+      [{ text: "Authentication", style: { foreground: "accent", background: "card" } }],
+      [],
+      [{ text: "Enter API key", style: { background: "card" } }],
+      [],
+      [
+        { text: "❯", style: { foreground: "accent", background: "card" } },
+        { text: "•••", style: { background: "card" } },
+      ],
+      [],
+      [{
+        text: "Enter to submit, Esc to cancel",
+        style: { foreground: "dim", background: "card" },
+      }],
+      [],
+    ],
+    [[{ text: "thinking  inspect", style: { foreground: "thinking", italic: true } }]],
+    [
+      [
+        { text: "● bash", style: { foreground: "success", background: "tool_success_bg" } },
+        { text: "$ echo hello", style: { foreground: "bash", background: "tool_success_bg" } },
+      ],
+      [{ text: "completed · exit 0 · 12ms", style: { background: "tool_success_bg" } }],
+      [{ text: "hello", style: { background: "tool_success_bg" } }],
+    ],
+  ];
+}
+
+test("structured component style snapshots stay semantic across themes and widths", () => {
+  for (const width of [40, 80]) {
+    const expected = expectedStructuredStyleSnapshots(width);
+    for (const theme of [PI_DARK, PI_LIGHT]) {
+      assert.deepEqual(
+        structuredStyleComponents().map((component) =>
+          semanticSnapshot(component, width, theme)
+        ),
+        expected,
+      );
+    }
+  }
+
+  const userSpans = new UserMessage({ text: "ordinary input" })
+    .render({ width: 40, theme: PI_DARK }).lines.flatMap((value) => value.spans);
+  const answerSpans = new AssistantMessage({ text: "ordinary answer" })
+    .render({ width: 40, theme: PI_DARK }).lines.flatMap((value) => value.spans);
+  assert.ok(userSpans.some((item) =>
+    item.text.includes("ordinary input") && item.style?.foreground === undefined
+  ));
+  assert.ok(answerSpans.some((item) =>
+    item.text.includes("ordinary answer") && item.style?.foreground === undefined
+  ));
 });
 
-test("completion list leaves unselected command text default and accents selected items", () => {
-  const list = new CompletionList({
+test("completion popup is a focusable structured width-bounded component", () => {
+  const popup = new CompletionPopup({
     items: [
       { value: "/help", description: "Show help", start: -5 },
       { value: "/model", description: "Switch model", start: -6 },
     ],
     selectedIndex: 1,
-    theme: PI_DARK,
   });
 
-  const lines = list.render(20);
+  const rendered = popup.render({ width: 20, theme: PI_DARK });
 
-  assert.match(lines[0]!, /\x1b\[/u);
-  assert.ok(!lines[0]!.includes(PI_DARK.sgr("text")));
-  assert.ok(lines[0]!.includes(PI_DARK.sgr("muted")));
-  assert.ok(lines[1]!.includes(PI_DARK.sgr("accent")));
-  assert.ok(!lines[1]!.includes(PI_DARK.sgr("selected_bg", { background: true })));
-  assert.deepEqual(lines.map(stripTerminalControls), [
+  assert.deepEqual(rendered.lines.map(lineText), [
     "  /help  Show help",
     "› /model  Switch mod",
   ]);
-  assert.deepEqual(lines.map(visibleWidth), [18, 20]);
+  assert.equal(popup.focused, false);
+  popup.focused = true;
+  assert.equal(popup.focused, true);
+});
+
+test("completion height follows actual candidates and uses structured selection styling", () => {
+  const popup = new CompletionPopup({
+    items: [
+      { value: "/help", description: "查看帮助", start: 0 },
+      { value: "/model", description: "选择模型", start: 0 },
+    ],
+    selectedIndex: 0,
+  });
+
+  const rendered = popup.render({ width: 40, theme: PI_DARK });
+  const first = rendered.lines[0]!;
+  const second = rendered.lines[1]!;
+
+  assert.equal(rendered.lines.length, 2);
+  assert.equal(first.spans[0]?.style?.foreground, "accent");
+  assert.equal(first.spans.at(-1)?.style?.foreground, "muted");
+  assert.equal(second.spans[0]?.style?.foreground, undefined);
+  assert.equal(second.spans.at(-1)?.style?.foreground, "muted");
+  assert.deepEqual(rendered.lines.map(lineText), [
+    "› /help  查看帮助",
+    "  /model  选择模型",
+  ]);
+});
+
+test("status line dims metadata while provider and model use terminal default", () => {
+  const state = createUIState();
+  state.pendingCount = 1;
+  state.provider = "openai";
+  state.model = "gpt-test";
+  const rendered = new StatusLine({
+    state,
+    cwd: "/worktree",
+    effort: "high",
+  }).render({ width: 100, theme: PI_DARK });
+  const spans = rendered.lines[0]?.spans ?? [];
+
+  assert.equal(spans.find((item) => item.text === "/worktree")?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text.includes("queue"))?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text === "openai/gpt-test")?.style, undefined);
+  assert.equal(spans.find((item) => item.text === "effort high")?.style?.foreground, "dim");
 });
 
 test("frame colors the pi input prompt but leaves input text default without moving the cjk cursor", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const editor = new EditorState();
   editor.apply({ kind: "insert", text: "你好你" }, { runtimeActive: false });
-  const frame = ui.buildFrame({ width: 11, editor });
+  const frame = ui.buildFrame({ width: 13, editor });
 
   const inputStart = frame.lines.findIndex((line) =>
-    stripTerminalControls(line).includes("❯"),
+    stripTerminalControls(line).includes("> "),
   );
-  const inputLines = frame.lines.slice(inputStart, inputStart + 2);
+  const inputLine = frame.lines[inputStart];
 
   assert.notEqual(inputStart, -1);
-  assert.equal(inputLines.length, 2);
-  assert.ok(inputLines[0]!.includes(PI_DARK.sgr("accent")));
-  assert.ok(!inputLines[0]!.includes(PI_DARK.sgr("text")));
-  assert.deepEqual(inputLines.map(stripTerminalControls), ["│ ❯ 你好  │", "│   你    │"]);
-  assert.equal(frame.cursorCol, 6);
-  assert.ok(frame.lines.every((line) => visibleWidth(line) <= 11));
+  assert.ok(inputLine!.includes(PI_DARK.sgr("accent")));
+  assert.ok(!inputLine!.includes(PI_DARK.sgr("text")));
+  assert.equal(stripTerminalControls(inputLine!), "│> 你好你  │");
+  assert.equal(frame.cursorCol, 9);
+  assert.ok(frame.lines.every((line) => visibleWidth(line) <= 12));
 });
 
 test("tool card renders status metadata and expanded output inside width", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const card = new ToolCard({
     block: {
-      kind: "tool",
-      key: "call-12345678",
-      text: "",
+      ...createToolBlock("call-12345678", {
+        name: "bash",
+        subject: "echo hello",
+        status: "completed",
+        expanded: true,
+      }),
       mutable: false,
-      name: "bash",
-      subject: "echo hello",
-      status: "completed",
       exitCode: 0,
       durationMs: 42,
-      streamError: "",
-      toolOutput: "hello from stdout",
-      toolOutputExpanded: true,
-      style: "",
+      stdout: "hello from stdout",
     },
-    theme: ui.theme,
   });
 
-  const rendered = stripTerminalControls(card.render(32).join("\n"));
+  const lines = card.render({ width: 32, theme: ui.theme }).lines;
+  const rendered = lines.map(lineText).join("\n");
 
   assert.ok(rendered.includes("bash"));
   assert.ok(rendered.includes("completed"));
   assert.ok(rendered.includes("exit 0"));
   assert.ok(rendered.includes("42ms"));
   assert.ok(rendered.includes("hello from stdout"));
-  assert.ok(card.render(32).every((line) => visibleWidth(line) <= 32));
+  assert.ok(lines.every((line) => visibleWidth(lineText(line)) <= 32));
 });
 
 test("transcript component reports the first mutable rendered row", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const transcript = new Transcript({
     blocks: [
-      {
-        kind: "user",
-        key: "u1",
-        text: "first question",
-        mutable: false,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
-      {
-        kind: "assistant",
-        key: "r1",
-        text: "streaming answer",
-        mutable: true,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
+      createUserBlock("u1", "first question"),
+      createAssistantBlock("r1", "streaming answer"),
     ],
-    theme: ui.theme,
   });
 
-  const rendered = transcript.renderWithMetadata(80);
+  const rendered = transcript.renderWithMetadata({ width: 80, theme: ui.theme });
 
   assert.equal(rendered.activeStart, 1);
-  assert.ok(rendered.lines[rendered.activeStart]?.includes("streaming answer"));
+  assert.ok(lineText(rendered.lines[rendered.activeStart]!).includes("streaming answer"));
 });
 
 test("transcript component returns newline-free logical rows", () => {
   const ui = new TerminalUI({ theme: "dark" });
   const transcript = new Transcript({
     blocks: [
-      {
-        kind: "user",
-        key: "u1",
-        text: "您好",
-        mutable: false,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
-      {
-        kind: "thinking",
-        key: "r1",
-        text: "thinking line",
-        mutable: true,
-        name: "",
-        subject: "",
-        status: "",
-        exitCode: null,
-        durationMs: null,
-        streamError: "",
-        toolOutput: "",
-        toolOutputExpanded: false,
-        style: "",
-      },
+      createUserBlock("u1", "您好"),
+      createThinkingBlock("r1", "thinking line"),
     ],
-    theme: ui.theme,
   });
 
-  const rendered = transcript.renderWithMetadata(20);
+  const rendered = transcript.renderWithMetadata({ width: 20, theme: ui.theme });
 
   assert.ok(rendered.lines.length > 0);
-  assert.ok(rendered.lines.every((line) => !/[\r\n]/u.test(line)));
+  assert.ok(rendered.lines.every((line) => !/[\r\n]/u.test(lineText(line))));
+});
+
+test("frame fallback projects every typed transcript block", () => {
+  const transcript = new TranscriptStore();
+  transcript.append(createUserBlock("u1", "question"));
+  transcript.append(createAssistantBlock("a1", "answer", false));
+  transcript.append(createThinkingBlock("t1", "inspect", false));
+  transcript.append(createToolBlock("tool1", {
+    name: "bash",
+    subject: "$ pwd",
+    status: "completed",
+    expanded: false,
+  }));
+  transcript.append(createWelcomeBlock("hello", ["/help for commands"]));
+  const frame = new FrameBuilder({ state: createUIState(), transcript }).build({
+    width: 80,
+    editor: new EditorState(),
+  });
+  const text = frame.screen.lines.map(stripTerminalControls).join("\n");
+
+  assert.ok(text.includes("question"));
+  assert.ok(text.includes("answer"));
+  assert.ok(text.includes("inspect"));
+  assert.ok(text.includes("bash"));
+  assert.deepEqual(frame.welcomeBlock, ["hello", "/help for commands"]);
 });
 
 test("built screen frame never embeds physical newlines in logical rows", () => {
@@ -481,6 +710,151 @@ test("tool output is folded by default and shown by a local display toggle", () 
   assert.ok(ui.buildHistoryLines(80).join("\n").includes("full tool output"));
 });
 
+test("terminal transcript redacts tool command and output before storage", () => {
+  const privateValue = "task3-redaction-fixture";
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-secret", {
+    name: "bash",
+    arguments: { command: `$ deploy --api-key ${privateValue}` },
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stdout",
+    text: "token=task3-",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stdout",
+    text: "redaction-fixture\n",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stderr",
+    text: "Authorization: Bearer task3-",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stderr",
+    text: "redaction-fixture\n",
+  }));
+
+  const block = ui.blockFor("tool", "call-secret");
+  assert.equal(block.kind, "tool");
+  assert.ok(block.subject.includes("[REDACTED]"));
+  assert.ok(block.stdout.includes("[REDACTED]"));
+  assert.ok(block.stderr.includes("[REDACTED]"));
+  assert.ok(!block.subject.includes(privateValue));
+  assert.ok(!block.stdout.includes(privateValue));
+  assert.ok(!block.stderr.includes(privateValue));
+  assert.ok(!block.stdout.includes("redaction-fixture"));
+  assert.ok(!block.stderr.includes("redaction-fixture"));
+
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  const rendered = ui.buildHistoryLines(80).join("\n");
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(privateValue));
+  assert.ok(!rendered.includes("redaction-fixture"));
+});
+
+test("terminal transcript redacts credential aliases before storage and rendering", () => {
+  const clientSecret = "task3-client-secret-fixture";
+  const privateKey = "task3-private-key-fixture";
+  const authorization = "task3-authorization-fixture";
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-aliases", {
+    name: "bash",
+    arguments: { command: `$ deploy client_secret=${clientSecret}` },
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-aliases", {
+    stream: "stdout",
+    text: `private_key=${privateKey}`,
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-aliases", {
+    stream: "stderr",
+    text: `authorization=${authorization}`,
+  }));
+
+  const block = ui.blockFor("tool", "call-aliases");
+  assert.equal(block.kind, "tool");
+  assert.ok(!block.subject.includes(clientSecret));
+  assert.ok(!block.stdout.includes(privateKey));
+  assert.ok(!block.stderr.includes(authorization));
+
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  const rendered = ui.buildHistoryLines(80).join("\n");
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(clientSecret));
+  assert.ok(!rendered.includes(privateKey));
+  assert.ok(!rendered.includes(authorization));
+});
+
+test("terminal transcript redacts bearer values split across output chunks", () => {
+  const bearerValue = "task3-split-bearer-fixture";
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-bearer", { name: "bash", arguments: {} }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-bearer", {
+    stream: "stderr",
+    text: "Authorization: Bearer ",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-bearer", {
+    stream: "stderr",
+    text: `${bearerValue}\n`,
+  }));
+
+  const block = ui.blockFor("tool", "call-bearer");
+  assert.equal(block.kind, "tool");
+  assert.ok(block.stderr.includes("[REDACTED]"));
+  assert.ok(!block.stderr.includes(bearerValue));
+
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  const rendered = ui.buildHistoryLines(80).join("\n");
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(bearerValue));
+});
+
+test("pending bearer redaction emits a marker for chunks without whitespace", () => {
+  const redactor = new ToolOutputRedactor();
+
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "Authorization: Bearer "),
+    "Authorization: Bearer [REDACTED]",
+  );
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "task3-bearer-"),
+    "[REDACTED]",
+  );
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "without-whitespace"),
+    "[REDACTED]",
+  );
+  assert.equal(
+    redactor.redact("call-pending-bearer", "stderr", "\nordinary stderr\n"),
+    "\nordinary stderr\n",
+  );
+});
+
+test("trailing empty credential assignments preserve following tool output", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-empty", { name: "bash", arguments: {} }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stdout",
+    text: "token=",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stdout",
+    text: "ordinary stdout\n",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stderr",
+    text: "secret=",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stderr",
+    text: "ordinary stderr\n",
+  }));
+
+  const block = ui.blockFor("tool", "call-empty");
+  assert.equal(block.kind, "tool");
+  assert.ok(block.stdout.includes("ordinary stdout"));
+  assert.ok(block.stderr.includes("ordinary stderr"));
+});
+
 test("input bytes do not mutate before loop drains", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
@@ -512,10 +886,10 @@ test("typing updates editor line without appending prompt history", () => {
 
   const plainWrites = stripTerminalControls(terminal.writes());
   assert.equal(terminal.writeChunks().length, 1);
-  assert.ok(plainWrites.includes("\r│ ❯ as"));
+  assert.ok(plainWrites.includes("\r│> as"));
   assert.equal(terminal.writes().split("\x1b[2K").length - 1, 1);
   assert.ok(!terminal.writes().includes("\r\n"));
-  assert.ok(!plainWrites.includes("\r\n│ ❯ a"));
+  assert.ok(!plainWrites.includes("\r\n> a"));
 });
 
 test("typing updates editor line semantically in four rows", () => {
@@ -533,9 +907,29 @@ test("typing updates editor line semantically in four rows", () => {
   emulator.write(terminal.writes());
 
   const rendered = emulator.logicalLines.join("\n");
-  assert.equal(rendered.split("❯ ").length - 1, 1);
-  assert.ok(emulator.viewportLines.some((line) => line.includes("❯ as")));
-  assert.ok(!emulator.logicalLines.includes("❯ a"));
+  assert.equal(rendered.split("> ").length - 1, 1);
+  assert.ok(emulator.viewportLines.some((line) => line.includes("> as")));
+  assert.ok(!emulator.logicalLines.includes("> a"));
+});
+
+test("terminal resize requests a fresh frame at the new width", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 40, rows: 6 });
+  const emulator = new TerminalEmulator({ columns: 40, rows: 6 });
+  const ui = new TerminalUI({ theme: "dark", driver: terminal });
+  ui.startLoop(() => {});
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+  const narrow = emulator.logicalLines.find((line) => line.startsWith("╭"));
+
+  terminal.clearWrites();
+  terminal.resize({ columns: 90, rows: 6 });
+  emulator.resize({ columns: 90, rows: 6 });
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+  const wide = emulator.logicalLines.find((line) => line.startsWith("╭"));
+
+  assert.equal(visibleWidth(narrow ?? ""), 39);
+  assert.equal(visibleWidth(wide ?? ""), 89);
 });
 
 test("three ascii keystrokes leave cursor after third character", () => {
@@ -553,14 +947,27 @@ test("three ascii keystrokes leave cursor after third character", () => {
     terminal.clearWrites();
   }
 
-  assert.deepEqual(emulator.viewportLines.slice(0, 3), [
-    "├" + "─".repeat(78) + "┤",
-    "│ ❯ asd".padEnd(79, " ") + "│",
-    "├" + "─".repeat(78) + "┤",
-  ]);
-  assert.equal(emulator.cursorRow, 1);
-  assert.equal(emulator.cursorColumn, 7);
-  assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
+  assert.ok(emulator.viewportLines.includes(`│> asd${" ".repeat(72)}│`));
+  assert.equal(emulator.cursorColumn, 6);
+  assert.equal(emulator.logicalLines.join("\n").split("> ").length - 1, 1);
+  assert.equal(/[╭╮╰╯│]/u.test(emulator.logicalLines.join("\n")), true);
+});
+
+test("cjk typing leaves the framed hardware cursor after ten cells", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
+  const emulator = new TerminalEmulator({ columns: 80, rows: 4 });
+  const ui = new TerminalUI({ theme: "dark", driver: terminal });
+  ui.startLoop(() => {});
+  emulator.write(terminal.writes());
+  terminal.clearWrites();
+
+  ui.feedInputBytes(bytes("中文abc"));
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+
+  assert.ok(emulator.viewportLines.includes(`│> 中文abc${" ".repeat(68)}│`));
+  assert.equal(emulator.cursorColumn, 10);
+  assert.equal(emulator.logicalLines.join("\n").split("> ").length - 1, 1);
 });
 
 test("two completed turns remain in history without tail truncation", () => {
@@ -605,7 +1012,7 @@ test("raw frame preserves non-markdown block styles", () => {
   const rendered = ui.buildHistoryLines(80).join("\n");
 
   assert.ok(rendered.includes("\x1b[3;38;2;128;128;128mthinking  plan"));
-  assert.ok(rendered.includes("\x1b[48;2;40;40;50;38;2;212;212;212m"));
+  assert.ok(rendered.includes("\x1b[48;2;40;40;50m"));
   assert.ok(rendered.includes("● bash"));
 });
 
@@ -692,8 +1099,8 @@ test("raw loop owns transcript and editor together", () => {
   ui.drainLoop();
 
   assert.deepEqual(submitted, ["hello"]);
-  assert.ok(terminal.writes().includes("╭─ laoHuang"));
-  assert.ok(terminal.writes().includes("hello, welcome to laoHuang"));
+  assert.equal(/[╭╮╰╯│]/u.test(stripTerminalControls(terminal.writes())), true);
+  assert.ok(terminal.writes().includes("Welcome to LaoHuang Code!"));
   assert.ok(terminal.writes().includes("hello"));
 });
 
@@ -834,6 +1241,20 @@ test("raw loop goodbye uses loop writer not fallback output", () => {
 
   assert.deepEqual(stream, []);
   assert.ok(terminal.writes().includes("Goodbye."));
+});
+
+test("raw loop error keeps its semantic notice tone", () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  ui.showError("shutdown failed");
+  ui.drainLoop();
+
+  const block = ui.blockFor("notice", "local-1");
+  assert.equal(block.kind, "notice");
+  assert.equal(block.tone, "error");
 });
 
 test("closed raw loop error falls back to plain output", () => {
@@ -981,7 +1402,7 @@ test("frame grows only for actual multiline input", () => {
   );
   const frame = ui.buildFrame({ width: 80, editor });
 
-  assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("❯ first line")));
+  assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("> first line")));
   assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("  second line")));
   assert.equal(
     frame.lines.filter(
@@ -1005,6 +1426,527 @@ test("raw loop reuses editor for command questions", async () => {
 
   assert.equal(await answerPromise, "1");
   assert.ok(terminal.writes().includes("Select model:"));
+});
+
+test("selector receives input before composer and restores focus on submit", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  const selection = ui.select({
+    id: "effort",
+    title: "Reasoning effort",
+    items: [
+      { value: "low", label: "low" },
+      { value: "high", label: "high" },
+    ],
+    currentValue: "low",
+  });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("\x1b[B\r"));
+  ui.drainLoop();
+
+  assert.equal(await selection, "high");
+  assert.deepEqual(submitted, []);
+  assert.equal(ui.focusedComponentId(), "composer");
+});
+
+test("selector cancellation resolves null without submitting composer input", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 8 });
+  const emulator = new TerminalEmulator({ columns: 80, rows: 8 });
+  const ui = new TerminalUI({ driver: terminal });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  const selection = ui.select({
+    id: "provider",
+    title: "Provider",
+    items: [{ value: "deepseek", label: "DeepSeek" }],
+  });
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+  terminal.clearWrites();
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+
+  assert.equal(await selection, null);
+  assert.deepEqual(submitted, []);
+  assert.equal(emulator.logicalLines.filter((line) => line.includes("> ")).length, 1);
+  assert.ok(emulator.viewportLines.some((line) => line.includes("│>")));
+});
+
+test("interactive command component journey preserves scrollback and cursor", async () => {
+  const driver = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const terminal = new TerminalEmulator({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ theme: "dark", driver });
+  const presenter = new TerminalCommandPresenter(ui);
+  const { commands } = createSessionCommandFixture({ presenter });
+  ui.setCommandRegistry(commands.registry);
+  ui.startLoop((text) => {
+    void commands.execute(text);
+  });
+
+  async function type(value: string): Promise<void> {
+    ui.feedInputBytes(bytes(value));
+    ui.drainLoop();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    ui.drainLoop();
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    ui.drainLoop();
+    terminal.write(driver.writes());
+    driver.clearWrites();
+  }
+
+  await type("/");
+  const slashCompletion = terminal.logicalLines.join("\n");
+  assert.ok(slashCompletion.includes("/help"), slashCompletion);
+  await type("h");
+  const shrunkCompletion = terminal.viewportLines.join("\n");
+  assert.ok(shrunkCompletion.includes("/help"));
+  assert.equal(shrunkCompletion.includes("/apikey"), false);
+  assert.equal(shrunkCompletion.includes("/cancel"), false);
+  await type("\x1b");
+  await type("\x03");
+
+  await type("/help\r");
+  await type("/providers\r");
+  await type("/model\r");
+  assert.equal(ui.focusedComponentId(), "model-provider");
+  await type("\x1b");
+  assert.equal(ui.focusedComponentId(), "composer");
+  await type("/model\r");
+  await type("\r");
+  assert.equal(ui.focusedComponentId(), "model-name");
+  await type("\x1b[B\r");
+  await type("/effort\r");
+  await type("\x1b[B\r");
+  await type("中文abc");
+
+  const screen = terminal.logicalLines.join("\n");
+  assert.ok(screen.includes("/model [provider|model] [model]"));
+  assert.ok(screen.includes("deepseek"));
+  assert.equal(screen.includes("Model providers:\n  1."), false);
+  assert.equal(/^[ ]+[0-9]+[.)][ ]/mu.test(screen), false);
+  assert.equal(/[╭╮╰╯│]/u.test(screen), true);
+  assert.equal(screen.split("> 中文abc").length - 1, 1);
+  assert.equal(terminal.cursorColumn, visibleWidth("│> 中文abc"));
+  assert.ok(terminal.scrollback.length > 0);
+});
+
+test("task 9 selection ids route provider and searchable model views", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 12 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  const provider = ui.select({
+    id: "model-provider",
+    title: "Select model provider",
+    items: [{ value: "deepseek", label: "DeepSeek" }],
+  });
+  ui.drainLoop();
+  assert.ok(terminal.writes().includes("Select model provider"));
+  assert.equal(terminal.writes().includes("Search models"), false);
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  assert.equal(await provider, null);
+
+  terminal.clearWrites();
+  const model = ui.select({
+    id: "model-name",
+    title: "Select model",
+    searchable: true,
+    items: [{ value: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" }],
+  });
+  ui.drainLoop();
+  assert.ok(terminal.writes().includes("Search models"));
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  assert.equal(await model, null);
+});
+
+test("model command uses persistent selectors for submit and cancellation", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 16 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const presenter = new TerminalCommandPresenter(ui);
+  const { commands, agent } = createSessionCommandFixture({ presenter });
+
+  const cancelled = commands.execute("/model");
+  await drainUntil(ui, () => terminal.writes().includes("Select model provider"));
+  assert.ok(terminal.writes().includes("Select model provider"));
+  assert.equal(terminal.writes().includes("Select provider: "), false);
+  ui.feedInputBytes(bytes("\r"));
+  await drainUntil(ui, () => terminal.writes().includes("Search models"));
+  assert.ok(terminal.writes().includes("deepseek-v4-flash"));
+  assert.equal(terminal.writes().includes("Select model or search: "), false);
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  await cancelled;
+  assert.equal(agent.model, "deepseek-v4-flash");
+
+  const selected = commands.execute("/model");
+  await drainUntil(ui, () => ui.focusedComponentId() === "model-provider");
+  ui.feedInputBytes(bytes("\r"));
+  await drainUntil(ui, () => ui.focusedComponentId() === "model-name");
+  ui.feedInputBytes(bytes("\x1b[B\r"));
+  ui.drainLoop();
+  await selected;
+
+  assert.equal(agent.model, "deepseek-v4-pro");
+});
+
+test("effort command uses persistent selector submit and cancellation", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 12 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const presenter = new TerminalCommandPresenter(ui);
+  const { commands, agent } = createSessionCommandFixture({ presenter });
+
+  const cancelled = commands.execute("/effort");
+  await drainUntil(ui, () => terminal.writes().includes("Reasoning effort"));
+  assert.ok(terminal.writes().includes("Reasoning effort"));
+  assert.equal(terminal.writes().includes("Select effort: "), false);
+  assert.equal(terminal.writes().includes("  1. off"), false);
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  await cancelled;
+  assert.equal(agent.reasoningEffort, "high");
+
+  const selected = commands.execute("/effort");
+  await drainUntil(ui, () => ui.focusedComponentId() === "model-effort");
+  ui.feedInputBytes(bytes("\x1b[A\r"));
+  ui.drainLoop();
+  await selected;
+
+  assert.equal(agent.reasoningEffort, "medium");
+});
+
+test("login command routes secret input through the persistent auth dialog", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 12 });
+  const emulator = new TerminalEmulator({ columns: 80, rows: 12 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const presenter = new TerminalCommandPresenter(ui);
+  const catalog = new FakeCatalog([{
+    id: "deepseek",
+    name: "DeepSeek",
+    authName: "DeepSeek API key",
+    dynamicModels: false,
+    verified: false,
+  }]);
+  const providerAuth = new ProviderAuthController({
+    auth: {
+      status: async () => ({ configured: false }),
+      loginApiKey: async (_provider, interaction) => {
+        assert.equal(await interaction.prompt({
+          type: "secret",
+          message: "Enter API key",
+        }), "task10-secret");
+        return { configured: true, source: "stored credential" };
+      },
+      logout: async () => {},
+    },
+  });
+  const commands = new SessionCommands({
+    agent: new FakeAgent({ model: "deepseek-v4-flash", provider: "deepseek" }),
+    selector: new ModelSelector({ catalog, providerAuth }),
+    catalog,
+    providerAuth,
+    currentConfig: {
+      model: "deepseek-v4-flash",
+      provider: "deepseek",
+      baseUrl: null,
+    },
+    presenter,
+  });
+
+  const login = commands.execute("/login deepseek");
+  await drainUntil(ui, () => ui.focusedComponentId() === "auth-deepseek");
+  emulator.write(terminal.writes());
+  terminal.clearWrites();
+  assert.equal(ui.focusedComponentId(), "auth-deepseek");
+  assert.equal(terminal.writes().includes("  1. deepseek"), false);
+  ui.feedInputBytes(bytes("task10-secret"));
+  ui.drainLoop();
+  const maskedWrites = terminal.writes();
+  emulator.write(maskedWrites);
+  terminal.clearWrites();
+  assert.ok(emulator.viewportLines.join("\n").includes("•••••••••••••"));
+  assert.equal(maskedWrites.includes("task10-secret"), false);
+  ui.feedInputBytes(bytes("\r"));
+  ui.drainLoop();
+  await login;
+  emulator.write(terminal.writes());
+
+  assert.equal(terminal.writes().includes("task10-secret"), false);
+  assert.equal(emulator.logicalLines.join("\n").includes("task10-secret"), false);
+  assert.equal(ui.buildHistoryLines(80).join("\n").includes("task10-secret"), false);
+  assert.ok(
+    stripTerminalControls(ui.buildHistoryLines(80).join("\n")).includes(
+      "Logged in to deepseek",
+    ),
+  );
+});
+
+test("runtime component journey freezes reasoning, toggles tools, scrolls, and resizes", () => {
+  const driver = new MemoryTerminalDriver({ columns: 40, rows: 6 });
+  const terminal = new TerminalEmulator({ columns: 40, rows: 6 });
+  const ui = new TerminalUI({ theme: "light", driver });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  function flush(): void {
+    ui.drainLoop();
+    terminal.write(driver.writes());
+    driver.clearWrites();
+  }
+
+  flush();
+  ui.feedInputBytes(bytes("first turn\r"));
+  ui.publishEvent(event("model.reasoning_delta", "r1", { text: "inspect once" }));
+  flush();
+  ui.publishEvent(event("model.text_delta", "r1", { text: "first answer" }));
+  ui.publishEvent(event("model.reasoning_delta", "r1", { text: " late reasoning" }));
+  ui.publishEvent(event("tool.started", "tool-1", {
+    name: "bash",
+    arguments: { command: "printf local" },
+  }));
+  ui.publishEvent(event("tool.output_delta", "tool-1", {
+    stream: "stdout",
+    text: "local tool output",
+  }));
+  ui.publishEvent(event("tool.finished", "tool-1", {
+    status: "completed",
+    exit_code: 0,
+    duration_ms: 2,
+  }));
+  flush();
+
+  assert.equal(ui.blockFor("thinking", "r1").text, "inspect once");
+  assert.equal(ui.buildHistoryLines(40).join("\n").includes("local tool output"), false);
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  flush();
+  assert.ok(ui.buildHistoryLines(40).join("\n").includes("local tool output"));
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(false));
+  flush();
+  assert.equal(ui.buildHistoryLines(40).join("\n").includes("local tool output"), false);
+
+  ui.publishEvent(event("model.response_committed", "r1"));
+  ui.feedInputBytes(bytes("second turn\r"));
+  ui.publishEvent(event("model.text_delta", "r2", { text: "second answer" }));
+  flush();
+
+  assert.deepEqual(submitted, ["first turn", "second turn"]);
+  assert.ok(terminal.scrollback.join("\n").includes("first"));
+  assert.ok(terminal.logicalLines.join("\n").includes("second answer"));
+
+  driver.resize({ columns: 80, rows: 8 });
+  terminal.resize({ columns: 80, rows: 8 });
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(false));
+  flush();
+
+  const resized = terminal.logicalLines.join("\n");
+  assert.ok(resized.includes("first answer"));
+  assert.ok(resized.includes("second answer"));
+  assert.ok(terminal.logicalLines.every((value) => visibleWidth(value) <= 80));
+});
+
+function replSession(options: {
+  readonly submitAction?: SessionReplSession["submitAction"];
+  readonly close?: () => Promise<boolean>;
+  readonly runtimeNotices?: string[];
+} = {}): SessionReplSession {
+  const runtimeNotices = options.runtimeNotices ?? [];
+  return {
+    state: "idle",
+    eventBus: { flush: async () => {} },
+    submitInput: async () => {
+      throw new Error("submitInput is not used by action routing");
+    },
+    submitAction: options.submitAction ?? (async () => false),
+    promotePendingToSteer: () => 0,
+    queueStatus: () => ({}),
+    publishNotice: (text) => {
+      runtimeNotices.push(text);
+    },
+    waitForIdle: async () => true,
+    close: options.close ?? (async () => true),
+  };
+}
+
+test("unknown commands use typed info notices with suggestions", async () => {
+  const presenter = new RecordingPresenter();
+  const runtimeNotices: string[] = [];
+  const ui: SessionUiLike = { close: () => {} };
+
+  await runSessionRepl(replSession({ runtimeNotices }), {
+    ui,
+    presenter,
+    suggestCommand: () => "/help",
+    commandHandler: async () => ({ status: "not_found", command: "/hep" }),
+    runUi: (submit) => {
+      submit("/hep");
+    },
+  });
+
+  assert.deepEqual(presenter.notices, [{
+    text: "Unknown command: /hep. Did you mean /help?",
+    tone: "info",
+  }]);
+  assert.deepEqual(runtimeNotices, []);
+});
+
+test("rejected messages use typed error notices", async () => {
+  const presenter = new RecordingPresenter();
+  const runtimeNotices: string[] = [];
+  const session = replSession({
+    runtimeNotices,
+    submitAction: async () => ({
+      event: {} as never,
+      routed: {} as never,
+      taskId: null,
+      queued: false,
+      control: false,
+      rejected: true,
+      reason: "policy denied input",
+    }),
+  });
+
+  await runSessionRepl(session, {
+    ui: { close: () => {} },
+    presenter,
+    suggestCommand: () => null,
+    runUi: (submit) => {
+      submit("blocked content");
+    },
+  });
+
+  assert.deepEqual(presenter.notices, [{
+    text: "Message rejected: policy denied input",
+    tone: "error",
+  }]);
+  assert.deepEqual(runtimeNotices, []);
+});
+
+test("shutdown errors use typed error notices", async () => {
+  const presenter = new RecordingPresenter();
+  const legacyErrors: string[] = [];
+
+  const clean = await runSessionRepl(replSession({
+    close: async () => false,
+  }), {
+    ui: {
+      renderError: null,
+      showError: (message) => legacyErrors.push(message),
+      close: () => {},
+    },
+    presenter,
+    suggestCommand: () => null,
+    runUi: () => {},
+  });
+
+  assert.equal(clean, false);
+  assert.deepEqual(presenter.notices, [{
+    text: "Task worker did not stop before the shutdown timeout.",
+    tone: "error",
+  }]);
+  assert.deepEqual(legacyErrors, []);
+});
+
+test("prompt modal takes priority over an active selector", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  const selection = ui.select({
+    id: "model",
+    title: "Model",
+    items: [{ value: "v4", label: "v4" }],
+  });
+  const prompt = ui.prompt({ id: "credential", kind: "text", message: "Credential" });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("value\r"));
+  ui.drainLoop();
+
+  assert.equal(await prompt, "value");
+  assert.equal(ui.focusedComponentId(), "model");
+  ui.close();
+  assert.equal(await selection, null);
+});
+
+test("closing a loop cancels a pending view", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  const selection = ui.select({
+    id: "effort",
+    title: "Reasoning effort",
+    items: [{ value: "low", label: "low" }],
+  });
+  ui.close();
+
+  assert.equal(await selection, null);
+});
+
+test("secret prompt values never reach terminal writes", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  const secret = "task6-secret-fixture";
+  const prompt = ui.prompt({ id: "api-key", kind: "secret", message: "Enter API key" });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes(`${secret}\r`));
+  ui.drainLoop();
+
+  assert.equal(await prompt, secret);
+  assert.equal(terminal.writes().includes(secret), false);
+});
+
+test("closing a loop disposes a pending secret prompt before resolving null", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  const secret = "task6-close-secret";
+  const prompt = ui.prompt({ id: "api-key", kind: "secret", message: "Enter API key" });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes(secret));
+  ui.drainLoop();
+  ui.close();
+
+  assert.equal(await prompt, null);
+  assert.equal(terminal.writes().includes(secret), false);
+});
+
+test("raw newline input stays out of the hidden composer while a selector is active", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  const selection = ui.select({
+    id: "effort",
+    title: "Reasoning effort",
+    items: [{ value: "low", label: "low" }],
+  });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("\x1b[13;2u"));
+  ui.drainLoop();
+
+  assert.equal(ui.interactiveLoop?.editor.text, "");
+  assert.equal(ui.focusedComponentId(), "effort");
+  ui.close();
+  assert.equal(await selection, null);
 });
 
 test("single renderer keeps stream text across tool boundaries", () => {
@@ -1070,7 +2012,7 @@ test("assistant response is rendered as markdown without chat prefix", () => {
   assert.ok(!rendered.includes("laoHuangCode>"));
 });
 
-test("event sinks hide stdout but render stderr and status", () => {
+test("event sinks hide folded tool output and render status", () => {
   const base = {
     source: "tool",
     session_id: "session-1",
@@ -1118,11 +2060,12 @@ test("event sinks hide stdout but render stderr and status", () => {
 
   const plainRendered = plainOutput.join("\n");
   const terminalRendered = terminal.writes();
-  for (const rendered of [plainRendered, terminalRendered]) {
-    assert.ok(!rendered.includes("very long output"));
-    assert.ok(rendered.includes("warning"));
-    assert.ok(rendered.includes("completed"));
-  }
+  assert.ok(!plainRendered.includes("very long output"));
+  assert.ok(!terminalRendered.includes("very long output"));
+  assert.ok(plainRendered.includes("warning"));
+  assert.ok(!terminalRendered.includes("warning"));
+  assert.ok(plainRendered.includes("completed"));
+  assert.ok(terminalRendered.includes("completed"));
 });
 
 test("welcome panel shows session context", () => {
@@ -1139,7 +2082,8 @@ test("welcome panel shows session context", () => {
   ui.showWelcome();
 
   const rendered = stream.join("\n");
-  assert.ok(rendered.includes("hello, welcome to laoHuang"));
+  assert.ok(rendered.includes("Welcome to LaoHuang Code!"));
+  assert.ok(rendered.includes("Send /help for help information."));
   assert.ok(rendered.includes("/tmp/demo"));
   assert.ok(rendered.includes("deepseek/deepseek-v4-pro"));
 });
@@ -1183,6 +2127,34 @@ class FakeInputSource implements LoopInputSource {
     }
   }
 }
+
+test("run renders command presenter blocks appended while stdin is idle", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const presenter = new TerminalCommandPresenter(ui);
+  const { commands } = createSessionCommandFixture({ presenter });
+  ui.setCommandRegistry(commands.registry);
+  ui.startLoop((text) => {
+    void commands.execute(text);
+  });
+  const loop = ui.interactiveLoop;
+  assert.ok(loop !== null);
+  if (loop === null) {
+    return;
+  }
+  const input = new FakeInputSource();
+  const done = loop.run(input);
+  try {
+    terminal.clearWrites();
+    await commands.execute("/help");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.ok(terminal.writes().includes("/model [provider|model] [model]"));
+  } finally {
+    loop.requestExit();
+    await done;
+  }
+});
 
 test("run restores raw mode and pauses stdin on exit", async () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });

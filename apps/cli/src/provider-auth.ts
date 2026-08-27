@@ -4,26 +4,28 @@ import type {
   ModelAuthService,
   ModelAuthStatus,
 } from "@laohuang/llm";
-import type { InputFn, OutputFn } from "./model-selection.ts";
+
+export interface AuthPromptHandler {
+  prompt(request: {
+    readonly kind: "text" | "secret" | "select";
+    readonly message: string;
+    readonly options?: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly description?: string;
+    }[];
+  }): Promise<string | null>;
+}
 
 export interface ProviderAuthControllerOptions {
   readonly auth: ModelAuthService;
-  readonly input: InputFn;
-  readonly secretInput: InputFn;
-  readonly output?: OutputFn | undefined;
 }
 
 export class ProviderAuthController {
   readonly #auth: ModelAuthService;
-  readonly #input: InputFn;
-  readonly #secretInput: InputFn;
-  readonly #output: OutputFn;
 
   constructor(options: ProviderAuthControllerOptions) {
     this.#auth = options.auth;
-    this.#input = options.input;
-    this.#secretInput = options.secretInput;
-    this.#output = options.output ?? ((message) => console.log(message));
   }
 
   status(provider: string): Promise<ModelAuthStatus> {
@@ -32,35 +34,41 @@ export class ProviderAuthController {
 
   async ensureConfigured(
     provider: string,
-    options: { promptIfMissing: boolean },
+    options: {
+      readonly promptIfMissing: boolean;
+      readonly prompts?: AuthPromptHandler;
+    },
   ): Promise<boolean> {
     const status = await this.status(provider);
     if (status.configured) {
       return true;
     }
     if (!options.promptIfMissing) {
-      this.#output(
-        `No credentials configured for ${provider}. Run /login ${provider} first.`,
-      );
       return false;
     }
-    return this.login(provider);
+    if (options.prompts === undefined) {
+      throw new Error("Authentication prompt handler is required.");
+    }
+    const configured = await this.login(provider, options.prompts);
+    return configured?.configured ?? false;
   }
 
-  async login(provider: string): Promise<boolean> {
+  async login(
+    provider: string,
+    prompts: AuthPromptHandler,
+  ): Promise<ModelAuthStatus | null> {
+    const cancellation = { requested: false };
     try {
       const status = await this.#auth.loginApiKey(
         provider,
-        this.#interaction(),
+        this.#interaction(prompts, cancellation),
       );
-      return status.configured;
+      return cancellation.requested ? null : status;
     } catch (error) {
-      if (isPromptCancellation(error)) {
-        this.#output("Login cancelled; credentials were not changed.");
-      } else {
-        this.#output(`Login failed for ${provider}: ${errorMessage(error)}`);
+      if (cancellation.requested) {
+        return null;
       }
-      return false;
+      throw error;
     }
   }
 
@@ -68,66 +76,44 @@ export class ProviderAuthController {
     return this.#auth.logout(provider);
   }
 
-  #interaction(): ApiKeySetupInteraction {
+  #interaction(
+    prompts: AuthPromptHandler,
+    cancellation: { requested: boolean },
+  ): ApiKeySetupInteraction {
     return {
-      prompt: (prompt) => this.#prompt(prompt),
-      notify: (message) => {
-        this.#output(message);
-      },
+      prompt: (prompt) => this.#prompt(prompt, prompts, cancellation),
+      notify: () => {},
     };
   }
 
-  async #prompt(prompt: ApiKeySetupPrompt): Promise<string> {
-    if (prompt.type === "secret") {
-      const answer = (await this.#secretInput(prompt.message)).trim();
-      if (answer.length === 0) {
-        throw new ProviderLoginCancelledError("empty secret");
-      }
-      return answer;
+  async #prompt(
+    prompt: ApiKeySetupPrompt,
+    prompts: AuthPromptHandler,
+    cancellation: { requested: boolean },
+  ): Promise<string> {
+    const answer = await prompts.prompt(
+      prompt.type === "select"
+        ? {
+            kind: prompt.type,
+            message: prompt.message,
+            options: prompt.options,
+          }
+        : {
+            kind: prompt.type,
+            message: prompt.message,
+          },
+    );
+    if (answer === null) {
+      cancellation.requested = true;
+      throw new ProviderLoginCancelledError();
     }
-    if (prompt.type === "text") {
-      return (await this.#input(prompt.message)).trim();
-    }
-
-    this.#output(prompt.message);
-    prompt.options.forEach((option, index) => {
-      const description =
-        option.description === undefined ? "" : ` - ${option.description}`;
-      this.#output(`  ${index + 1}. ${option.label}${description}`);
-    });
-    const raw = (await this.#input("Select option: ")).trim();
-    const choice = Number(raw);
-    const selected = Number.isInteger(choice)
-      ? prompt.options[choice - 1]
-      : undefined;
-    if (selected === undefined) {
-      throw new ProviderLoginCancelledError("invalid selection");
-    }
-    return selected.id;
+    return answer;
   }
 }
 
 class ProviderLoginCancelledError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor() {
+    super("Authentication prompt cancelled.");
     this.name = "ProviderLoginCancelledError";
   }
-}
-
-function isPromptCancellation(error: unknown): boolean {
-  if (error instanceof ProviderLoginCancelledError) {
-    return true;
-  }
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return (
-    error.name === "PromptCancelledError" ||
-    error.name === "PromptEofError" ||
-    error.name === "EOFError"
-  );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

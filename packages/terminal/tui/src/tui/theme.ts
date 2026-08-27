@@ -1,3 +1,5 @@
+import type { StyleToken } from "./render-model.ts";
+
 /**
  * Pi-inspired color tokens shared by the interactive terminal renderers.
  *
@@ -9,13 +11,15 @@ export class TerminalTheme {
   /** Semantic colors for terminal UI, independent from a rendering library. */
 
   readonly name: string;
-  readonly colors: Readonly<Record<string, string>>;
+  readonly colors: Readonly<Record<ThemeToken, string>> & Readonly<Record<string, string>>;
 
-  constructor(name: string, colors: Record<string, string>) {
+  constructor(name: string, colors: Record<ThemeToken, string>) {
     this.name = name;
     this.colors = Object.freeze({ ...colors });
   }
 
+  color(token: StyleToken): string;
+  color(token: string): string;
   color(token: string): string {
     const value = this.colors[token];
     if (value === undefined) {
@@ -25,7 +29,8 @@ export class TerminalTheme {
   }
 
   /** Truecolor SGR sequence for a token, foreground or background. */
-  sgr(token: string, options?: { background?: boolean }): string {
+  sgr(token: StyleToken, options?: { background?: boolean }): string;
+  sgr(token: StyleToken, options?: { background?: boolean }): string {
     const hex = this.color(token);
     const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
     if (!match) {
@@ -39,6 +44,8 @@ export class TerminalTheme {
     return `\x1b[${channel};2;${r};${g};${b}m`;
   }
 }
+
+type ThemeToken = StyleToken | "border" | "border_muted";
 
 export const PI_DARK = new TerminalTheme("dark", {
   accent: "#8abeb7",
@@ -55,7 +62,6 @@ export const PI_DARK = new TerminalTheme("dark", {
   tool_success_bg: "#283228",
   tool_error_bg: "#3c2828",
   card: "#1e1e24",
-  selected_bg: "#3a3a4a",
   code: "#b5bd68",
   heading: "#f0c674",
   link: "#81a2be",
@@ -78,7 +84,6 @@ export const PI_LIGHT = new TerminalTheme("light", {
   tool_success_bg: "#e8f0e8",
   tool_error_bg: "#f0e8e8",
   card: "#ffffff",
-  selected_bg: "#d0d0e0",
   code: "#588458",
   heading: "#9a7326",
   link: "#547da7",

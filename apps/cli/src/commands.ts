@@ -5,12 +5,11 @@ import { makeCancelAction } from "@laohuang/runtime-protocol";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 import type {
-  InputFn,
   ModelSelection,
   ModelSelector,
-  OutputFn,
   SelectionConfig,
 } from "./model-selection.ts";
+import type { CommandPresenter } from "./command-presentation.ts";
 import type {
   ModelCatalog,
   ModelProviderInfo,
@@ -21,7 +20,10 @@ import {
   clampReasoningEffort,
   isReasoningEffort,
 } from "@laohuang/llm";
-import type { ProviderAuthController } from "./provider-auth.ts";
+import type {
+  AuthPromptHandler,
+  ProviderAuthController,
+} from "./provider-auth.ts";
 
 export type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 
@@ -401,8 +403,7 @@ export interface SessionCommandsOptions {
     "status" | "login" | "logout" | "ensureConfigured"
   >;
   readonly currentConfig: SelectionConfig;
-  readonly input: InputFn;
-  readonly output?: OutputFn | undefined;
+  readonly presenter: CommandPresenter;
   readonly session?: SessionLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
 }
@@ -415,6 +416,15 @@ const ALL_STATES: ReadonlySet<string> = new Set([
   "FAILED",
 ]);
 const IDLE_ONLY: ReadonlySet<string> = new Set(["IDLE", "FAILED"]);
+
+const tones = {
+  blocked: "warning",
+  cancelled: "warning",
+  cleared: "success",
+  switched: "success",
+  invalid: "error",
+  unknown: "info",
+} as const;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -431,8 +441,7 @@ export class SessionCommands {
     ProviderAuthController,
     "status" | "login" | "logout" | "ensureConfigured"
   >;
-  readonly #input: InputFn;
-  readonly #output: OutputFn;
+  readonly #presenter: CommandPresenter;
   readonly #session: SessionLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
   #currentConfig: SelectionConfig;
@@ -443,8 +452,7 @@ export class SessionCommands {
     this.#catalog = options.catalog;
     this.#providerAuth = options.providerAuth;
     this.#currentConfig = options.currentConfig;
-    this.#input = options.input;
-    this.#output = options.output ?? ((message) => console.log(message));
+    this.#presenter = options.presenter;
     this.#session = options.session ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
     this.registry = new CommandRegistry([
@@ -538,13 +546,18 @@ export class SessionCommands {
     return this.#currentConfig;
   }
 
+  get presenter(): CommandPresenter {
+    return this.#presenter;
+  }
+
   async execute(command: string): Promise<CommandResult> {
     const result = await this.registry.execute(command, {
       state: this.runtimeState(),
     });
     if (result.status === "blocked") {
-      this.#output(
+      this.notice(
         `${result.command} is unavailable while the task is ${this.runtimeState().toLowerCase()}.`,
+        tones.blocked,
       );
     }
     return result;
@@ -571,32 +584,36 @@ export class SessionCommands {
 
   private handleHelp(args: string[]): boolean {
     if (args.length > 0) {
-      this.#output("Usage: /help");
+      this.notice("Usage: /help", tones.invalid);
       return true;
     }
-    this.#output("Commands:");
-    for (const spec of this.registry.all()) {
-      this.#output(`  ${spec.usage.padEnd(32)} ${spec.description}`);
-    }
+    this.#presenter.help({
+      commands: this.registry.all().map((spec) => ({
+        name: spec.name,
+        usage: spec.usage,
+        description: spec.description,
+      })),
+    });
     return true;
   }
 
   private async handleCancel(args: string[]): Promise<boolean> {
     if (args.length > 0) {
-      this.#output("Usage: /cancel");
+      this.notice("Usage: /cancel", tones.invalid);
       return true;
     }
     if (this.#session === null) {
-      this.#output("No active task to cancel.");
+      this.notice("No active task to cancel.", tones.cancelled);
       return true;
     }
     const cancelled = await this.#session.submitAction(
       makeCancelAction("command", "command"),
     );
-    this.#output(
+    this.notice(
       cancelled === true
         ? "Cancelling current task…"
         : "No active task to cancel.",
+      tones.cancelled,
     );
     return true;
   }
@@ -606,37 +623,47 @@ export class SessionCommands {
       args.length > 1 ||
       (args.length > 0 && args[0] !== "resume" && args[0] !== "clear")
     ) {
-      this.#output("Usage: /queue [resume|clear]");
+      this.notice("Usage: /queue [resume|clear]", tones.invalid);
       return true;
     }
     if (this.#session === null) {
-      this.#output("Pending: 0 · Held: 0 · Dead letters: 0");
+      this.#presenter.queue({
+        queue: {
+          pending: 0,
+          pendingTokens: 0,
+          held: 0,
+          heldTokens: 0,
+          deadLetters: 0,
+        },
+      });
       return true;
     }
     if (args[0] === "clear") {
       const cleared = this.#session.clearQueues();
-      this.#output(`Cleared ${cleared} queued message(s).`);
+      this.notice(`Cleared ${cleared} queued message(s).`, tones.cleared);
       return true;
     }
     if (args[0] === "resume") {
       const resumed = this.#session.resumeHeld();
-      this.#output(`Resumed ${resumed} held message(s).`);
+      this.notice(`Resumed ${resumed} held message(s).`, tones.switched);
       return true;
     }
     const status = this.#session.queueStatus();
-    this.#output(
-      `Pending: ${status.pending ?? 0}` +
-        ` (${status.pendingTokens ?? 0} est. tokens)` +
-        ` · Held: ${status.held ?? 0}` +
-        ` (${status.heldTokens ?? 0} est. tokens)` +
-        ` · Dead letters: ${status.deadLetters ?? 0}`,
-    );
+    this.#presenter.queue({
+      queue: {
+        pending: status.pending ?? 0,
+        pendingTokens: status.pendingTokens ?? 0,
+        held: status.held ?? 0,
+        heldTokens: status.heldTokens ?? 0,
+        deadLetters: status.deadLetters ?? 0,
+      },
+    });
     return true;
   }
 
   private handleClear(args: string[]): boolean {
     if (args.length > 0) {
-      this.#output("Usage: /clear");
+      this.notice("Usage: /clear", tones.invalid);
       return true;
     }
     const clear = this.#agent.clearHistory;
@@ -645,33 +672,90 @@ export class SessionCommands {
     } else if (this.#agent.messages !== undefined && this.#agent.messages.length > 0) {
       this.#agent.messages.splice(1);
     }
-    this.#output("Conversation cleared.");
+    this.notice("Conversation cleared.", tones.cleared);
     return true;
   }
 
   private async handleModel(args: string[]): Promise<boolean> {
     if (args.length === 1 && args[0] === "current") {
-      this.#output(
+      this.notice(
         `Current model: ${this.#currentConfig.provider} / ` +
           `${this.#currentConfig.model}`,
+        "info",
       );
       return true;
     }
     if (args.length > 2) {
-      this.#output("Usage: /model [provider|model] [model]");
+      this.notice("Usage: /model [provider|model] [model]", "error");
       return true;
     }
 
-    const route = this.resolveModelRoute(args);
+    let provider: string;
+    let modelName: string | undefined;
+    if (args.length === 0) {
+      const selectedProvider = await this.selectModelProvider();
+      if (selectedProvider === null) {
+        return true;
+      }
+      provider = selectedProvider;
+    } else if (args.length === 2) {
+      provider = args[0]!;
+      modelName = args[1];
+    } else {
+      const argument = args[0]!;
+      if (this.#catalog.getProvider(argument) !== undefined) {
+        provider = argument;
+      } else {
+        provider = this.#currentConfig.provider;
+        modelName = argument;
+      }
+    }
+
+    if (modelName === undefined) {
+      try {
+        const models = await this.#selector.listModels(provider, "");
+        if (models.length === 0) {
+          this.notice(`No models available for provider: ${provider}`, "error");
+          return true;
+        }
+        if (this.#presenter === null) {
+          this.notice("Model selection is unavailable.", "error");
+          return true;
+        }
+        const selected = await this.#presenter.select({
+          id: "model-name",
+          title: `Select model for ${provider}`,
+          items: models.map((model) => ({
+            value: `${provider}/${model.id}`,
+            label: model.name,
+            description: provider,
+          })),
+          currentValue: this.#currentConfig.provider === provider
+            ? `${provider}/${this.#currentConfig.model}`
+            : undefined,
+          searchable: true,
+          maxVisible: 20,
+        });
+        if (selected === null) {
+          return true;
+        }
+        const prefix = `${provider}/`;
+        modelName = selected.startsWith(prefix) ? selected.slice(prefix.length) : selected;
+      } catch (error) {
+        this.notice(`Could not list models: ${errorMessage(error)}`, "error");
+        return true;
+      }
+    }
+
     let selection: ModelSelection | null;
     try {
-      selection = await this.#selector.select({
-        providerName: route.provider,
-        modelName: route.model,
+      selection = await this.#selector.selectExact({
+        providerName: provider,
+        modelName,
         promptForMissingKey: false,
       });
     } catch (error) {
-      this.#output(`Could not switch model: ${errorMessage(error)}`);
+      this.notice(`Could not switch model: ${errorMessage(error)}`, "error");
       return true;
     }
     if (selection === null) {
@@ -688,39 +772,74 @@ export class SessionCommands {
     this.#currentConfig = selection.config;
     this.adjustReasoningEffortForCurrentModel({ emitNotice: true });
     this.publishModelSwitched(previousProvider, previousModel);
-    this.#output(
+    this.notice(
       `Switched to ${selection.config.provider} / ${selection.config.model}`,
+      "success",
     );
     return true;
   }
 
   private async handleEffort(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]");
+      this.notice(
+        "Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]",
+        "error",
+      );
       return true;
     }
     const requested = args[0];
     if (requested === "current") {
-      this.#output(`Current effort: ${this.currentReasoningEffort()}`);
+      this.notice(`Current effort: ${this.currentReasoningEffort()}`, "info");
       return true;
     }
     if (requested === undefined) {
-      const selected = await this.chooseEffort();
+      if (this.#presenter === null) {
+        this.notice("Effort selection is unavailable.", "error");
+        return true;
+      }
+      const selected = await this.#presenter.select({
+        id: "model-effort",
+        title: `Reasoning effort for ${this.#currentConfig.provider} / ${this.#currentConfig.model}`,
+        items: this.supportedReasoningEfforts().map((effort) => ({
+          value: effort,
+          label: effort,
+          description: effort === "off" ? "Disable reasoning" : undefined,
+        })),
+        currentValue: this.currentReasoningEffort(),
+      });
       if (selected !== null) {
+        if (!isReasoningEffort(selected)) {
+          this.notice(`Invalid effort selection: ${selected}`, "error");
+          return true;
+        }
+        const supported = this.supportedReasoningEfforts();
+        if (!supported.includes(selected)) {
+          this.notice(
+            `Effort ${selected} is not supported by ` +
+              `${this.#currentConfig.provider} / ${this.#currentConfig.model}. ` +
+              `Supported: ${supported.join(", ")}`,
+            "error",
+          );
+          return true;
+        }
         this.setReasoningEffort(selected);
       }
       return true;
     }
     if (!isReasoningEffort(requested)) {
-      this.#output("Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]");
+      this.notice(
+        "Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]",
+        "error",
+      );
       return true;
     }
     const supported = this.supportedReasoningEfforts();
     if (!supported.includes(requested)) {
-      this.#output(
+      this.notice(
         `Effort ${requested} is not supported by ` +
           `${this.#currentConfig.provider} / ${this.#currentConfig.model}. ` +
           `Supported: ${supported.join(", ")}`,
+        "error",
       );
       return true;
     }
@@ -730,7 +849,7 @@ export class SessionCommands {
 
   private async handleLogin(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /login [provider]");
+      this.notice("Usage: /login [provider]", tones.invalid);
       return true;
     }
     const provider = args[0] ?? (await this.chooseProvider());
@@ -738,18 +857,39 @@ export class SessionCommands {
       return true;
     }
     if (this.#catalog.getProvider(provider) === undefined) {
-      this.#output(`Unknown provider: ${provider}`);
+      this.notice(`Unknown provider: ${provider}`, tones.invalid);
       return true;
     }
-    if (await this.#providerAuth.login(provider)) {
-      this.#output(`Logged in to ${provider}; use /model to select it.`);
+    try {
+      const status = await this.#providerAuth.login(
+        provider,
+        this.authPrompts(provider),
+      );
+      if (status === null) {
+        this.notice(
+          "Login cancelled; credentials were not changed.",
+          tones.cancelled,
+        );
+      } else if (status.configured) {
+        this.notice(
+          `Logged in to ${provider}; use /model to select it.`,
+          tones.switched,
+        );
+      } else {
+        this.notice(`Login did not configure ${provider}.`, "warning");
+      }
+    } catch (error) {
+      this.notice(
+        `Login failed for ${provider}: ${errorMessage(error)}`,
+        tones.invalid,
+      );
     }
     return true;
   }
 
   private async handleLogout(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /logout [provider]");
+      this.notice("Usage: /logout [provider]", tones.invalid);
       return true;
     }
     const provider = args[0] ?? (await this.chooseProvider());
@@ -757,15 +897,16 @@ export class SessionCommands {
       return true;
     }
     if (this.#catalog.getProvider(provider) === undefined) {
-      this.#output(`Unknown provider: ${provider}`);
+      this.notice(`Unknown provider: ${provider}`, tones.invalid);
       return true;
     }
     try {
       await this.#providerAuth.logout(provider);
       const status = await this.#providerAuth.status(provider);
       if (status.configured) {
-        this.#output(
+        this.notice(
           `Removed stored credentials for ${provider}, but it is still configured via ${status.source}.`,
+          "warning",
         );
         return true;
       }
@@ -773,9 +914,12 @@ export class SessionCommands {
         this.#currentConfig.provider === provider
           ? " The current client remains active until you switch models or exit."
           : "";
-      this.#output(`Logged out of ${provider}.${suffix}`);
+      this.notice(`Logged out of ${provider}.${suffix}`, tones.cleared);
     } catch (error) {
-      this.#output(`Could not log out of ${provider}: ${errorMessage(error)}`);
+      this.notice(
+        `Could not log out of ${provider}: ${errorMessage(error)}`,
+        tones.invalid,
+      );
     }
     return true;
   }
@@ -784,7 +928,6 @@ export class SessionCommands {
   private async handleApiKey(args: string[]): Promise<boolean> {
     const first = args[0];
     if (first === undefined) {
-      this.#output("Use /login or /logout to manage credentials.");
       await this.handleProviders([]);
       return true;
     }
@@ -794,20 +937,20 @@ export class SessionCommands {
     if (first === "remove") {
       return this.handleLogout(args.slice(1));
     }
-    this.#output("Usage: /apikey [set|remove] [provider]");
+    this.notice("Usage: /apikey [set|remove] [provider]", tones.invalid);
     return true;
   }
 
   private async handleProviders(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /providers [provider]");
+      this.notice("Usage: /providers [provider]", tones.invalid);
       return true;
     }
     const providerId = args[0];
     if (providerId !== undefined) {
       const provider = this.#catalog.getProvider(providerId);
       if (provider === undefined) {
-        this.#output(`Unknown provider: ${providerId}`);
+        this.notice(`Unknown provider: ${providerId}`, tones.invalid);
         return true;
       }
       await this.reportProviderDetail(provider);
@@ -817,11 +960,18 @@ export class SessionCommands {
     const statuses = await Promise.all(
       providers.map((provider) => this.providerStatus(provider.id)),
     );
-    providers.forEach((provider, index) => {
-      const status = statuses[index]!;
-      this.#output(
-        `${provider.id}: available, ${authState(status)}, ${verificationState(provider)}`,
-      );
+    this.#presenter.providers({
+      providers: providers.map((provider, index) => {
+        const status = statuses[index]!;
+        return {
+          id: provider.id,
+          name: provider.name,
+          available: true,
+          configured: status.configured,
+          verified: provider.verified,
+          source: status.configured ? status.source ?? null : null,
+        };
+      }),
     });
     return true;
   }
@@ -849,24 +999,58 @@ export class SessionCommands {
 
   private async chooseProvider(): Promise<string | null> {
     const providers = this.#catalog.listProviders();
-    providers.forEach((provider, index) => {
-      this.#output(`  ${index + 1}. ${provider.id}`);
+    return this.#presenter.select({
+      id: "auth-provider",
+      title: "Select provider",
+      items: providers.map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: provider.id,
+      })),
+      currentValue: this.#currentConfig.provider,
     });
-    let answer: string;
-    try {
-      answer = (await this.#input("Select provider: ")).trim();
-    } catch {
-      this.#output("Provider selection cancelled.");
+  }
+
+  private authPrompts(provider: string): AuthPromptHandler {
+    return {
+      prompt: (request) => this.#presenter.prompt(
+        request.kind === "select"
+          ? {
+              id: `auth-${provider}`,
+              kind: request.kind,
+              message: request.message,
+              items: (request.options ?? []).map((item) => ({
+                value: item.id,
+                label: item.label,
+                ...(item.description === undefined
+                  ? {}
+                  : { description: item.description }),
+              })),
+            }
+          : {
+              id: `auth-${provider}`,
+              kind: request.kind,
+              message: request.message,
+            },
+      ),
+    };
+  }
+
+  private async selectModelProvider(): Promise<string | null> {
+    if (this.#presenter === null) {
+      this.notice("Model provider selection is unavailable.", "error");
       return null;
     }
-    const choice = Number(answer);
-    const selected = Number.isInteger(choice)
-      ? providers[choice - 1]?.id
-      : undefined;
-    if (selected === undefined) {
-      this.#output("Invalid provider selection.");
-      return null;
-    }
+    const selected = await this.#presenter.select({
+      id: "model-provider",
+      title: "Select model provider",
+      items: this.#selector.listProviders().map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: provider.id,
+      })),
+      currentValue: this.#currentConfig.provider,
+    });
     return selected;
   }
 
@@ -894,23 +1078,6 @@ export class SessionCommands {
     }
   }
 
-  private resolveModelRoute(args: readonly string[]): {
-    readonly provider: string;
-    readonly model: string | undefined;
-  } {
-    if (args.length === 0) {
-      return { provider: this.#currentConfig.provider, model: undefined };
-    }
-    if (args.length === 2) {
-      return { provider: args[0]!, model: args[1] };
-    }
-    const argument = args[0]!;
-    if (this.#catalog.getProvider(argument) !== undefined) {
-      return { provider: argument, model: undefined };
-    }
-    return { provider: this.#currentConfig.provider, model: argument };
-  }
-
   private *effortCompletions(
     args: readonly string[],
   ): Iterable<readonly [string, string]> {
@@ -923,46 +1090,16 @@ export class SessionCommands {
     }
   }
 
-  private async chooseEffort(): Promise<ReasoningEffort | null> {
-    const supported = this.supportedReasoningEfforts();
-    this.#output(
-      `Reasoning efforts for ${this.#currentConfig.provider} / ` +
-        `${this.#currentConfig.model}:`,
-    );
-    supported.forEach((effort, index) => {
-      this.#output(`  ${index + 1}. ${effort}`);
-    });
-    const answer = await this.readInput("Select effort: ");
-    if (answer === null) {
-      return null;
-    }
-    const choice = Number(answer);
-    const selected = Number.isInteger(choice)
-      ? supported[choice - 1]
-      : undefined;
-    if (selected === undefined) {
-      this.#output("Effort selection cancelled: invalid choice.");
-      return null;
-    }
-    return selected;
-  }
-
-  private async readInput(prompt: string): Promise<string | null> {
-    try {
-      return (await this.#input(prompt)).trim();
-    } catch {
-      this.#output("Effort selection cancelled.");
-      return null;
-    }
-  }
-
   private currentReasoningEffort(): ReasoningEffort {
     return this.#agent.getReasoningEffort?.() ?? "high";
   }
 
   private setReasoningEffort(effort: ReasoningEffort): void {
     this.#agent.setReasoningEffort?.(effort);
-    this.#output(`Effort set to ${effort}. Applies to the next model request.`);
+    this.notice(
+      `Effort set to ${effort}. Applies to the next model request.`,
+      "success",
+    );
   }
 
   private adjustReasoningEffortForCurrentModel(options: {
@@ -975,9 +1112,10 @@ export class SessionCommands {
     }
     this.#agent.setReasoningEffort?.(adjusted);
     if (options.emitNotice) {
-      this.#output(
+      this.notice(
         `Reasoning effort adjusted to ${adjusted} for ` +
           `${this.#currentConfig.provider} / ${this.#currentConfig.model}.`,
+        "info",
       );
     }
   }
@@ -1004,16 +1142,18 @@ export class SessionCommands {
     provider: ModelProviderInfo,
   ): Promise<void> {
     const status = await this.providerStatus(provider.id);
-    this.#output(`Provider: ${provider.id}`);
-    this.#output(`Name: ${provider.name}`);
-    this.#output(
-      status.configured
-        ? `Authentication: configured (${status.source})`
-        : "Authentication: not configured",
-    );
-    this.#output(`Verified: ${provider.verified ? "yes" : "no"}`);
-    this.#output(`Dynamic models: ${provider.dynamicModels ? "yes" : "no"}`);
-    this.#output(`Models: ${this.#catalog.listModels(provider.id).length}`);
+    this.#presenter.providerDetail({
+      provider: {
+        id: provider.id,
+        name: provider.name,
+        available: true,
+        configured: status.configured,
+        verified: provider.verified,
+        source: status.configured ? status.source ?? null : null,
+        dynamicModels: provider.dynamicModels,
+        modelCount: this.#catalog.listModels(provider.id).length,
+      },
+    });
   }
 
   private async providerStatus(provider: string): Promise<ModelAuthStatus> {
@@ -1023,12 +1163,11 @@ export class SessionCommands {
       return { configured: false };
     }
   }
-}
 
-function authState(status: ModelAuthStatus): string {
-  return status.configured ? "configured" : "not configured";
-}
-
-function verificationState(provider: ModelProviderInfo): string {
-  return provider.verified ? "verified" : "unverified";
+  private notice(
+    text: string,
+    tone: "info" | "success" | "warning" | "error",
+  ): void {
+    this.#presenter.notice({ text, tone });
+  }
 }
