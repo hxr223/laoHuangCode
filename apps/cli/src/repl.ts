@@ -323,7 +323,7 @@ export interface SessionUiLike {
   showWelcome?(): void;
   showGoodbye?(): void;
   showError?(message: string): void;
-  prompt?(): string | Promise<string>;
+  prompt?: unknown;
   run?(onSubmit: (text: string, options?: SubmitOptions) => void): void | Promise<void>;
   requestExit?(): void;
   close?(): void;
@@ -481,7 +481,11 @@ async function runClassicSessionRepl(
     for (;;) {
       let userInput: string;
       try {
-        userInput = (await ui.prompt!()).trim();
+        const prompt = ui.prompt;
+        if (typeof prompt !== "function") {
+          throw new Error("Classic session UI requires a prompt function.");
+        }
+        userInput = (await (prompt as (this: SessionUiLike) => string | Promise<string>).call(ui)).trim();
       } catch (error) {
         if (isEofError(error)) {
           break;
