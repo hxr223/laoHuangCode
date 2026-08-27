@@ -1306,6 +1306,7 @@ test("effort command uses persistent selector submit and cancellation", async ()
 
   const cancelled = commands.execute("/effort");
   await drainUntil(ui, () => terminal.writes().includes("Reasoning effort"));
+  assert.ok(terminal.writes().includes("Reasoning effort"));
   assert.equal(terminal.writes().includes("Select effort: "), false);
   assert.equal(terminal.writes().includes("  1. off"), false);
   ui.feedInputBytes(bytes("\x1b"));
