@@ -71,14 +71,21 @@ export class ProviderAuthController {
       );
       return false;
     }
-    return this.login(provider);
+    return this.#login(provider, options.prompts);
   }
 
-  async login(provider: string): Promise<boolean> {
+  login(provider: string): Promise<boolean> {
+    return this.#login(provider);
+  }
+
+  async #login(
+    provider: string,
+    prompts?: AuthPromptHandler,
+  ): Promise<boolean> {
     try {
       const status = await this.#auth.loginApiKey(
         provider,
-        this.#interaction(),
+        this.#interaction(prompts),
       );
       return status.configured;
     } catch (error) {
@@ -95,16 +102,48 @@ export class ProviderAuthController {
     return this.#auth.logout(provider);
   }
 
-  #interaction(): ApiKeySetupInteraction {
+  #interaction(prompts?: AuthPromptHandler): ApiKeySetupInteraction {
     return {
-      prompt: (prompt) => this.#prompt(prompt),
+      prompt: (prompt) => this.#prompt(prompt, prompts),
       notify: (message) => {
         this.#output(message);
       },
     };
   }
 
-  async #prompt(prompt: ApiKeySetupPrompt): Promise<string> {
+  async #prompt(
+    prompt: ApiKeySetupPrompt,
+    prompts?: AuthPromptHandler,
+  ): Promise<string> {
+    if (prompts !== undefined) {
+      const answer = await prompts.prompt(
+        prompt.type === "select"
+          ? {
+              kind: prompt.type,
+              message: prompt.message,
+              options: prompt.options,
+            }
+          : {
+              kind: prompt.type,
+              message: prompt.message,
+            },
+      );
+      if (answer === null) {
+        throw new ProviderLoginCancelledError("prompt cancelled");
+      }
+      const normalized = answer.trim();
+      if (prompt.type === "secret" && normalized.length === 0) {
+        throw new ProviderLoginCancelledError("empty secret");
+      }
+      if (
+        prompt.type === "select"
+        && !prompt.options.some((option) => option.id === normalized)
+      ) {
+        throw new ProviderLoginCancelledError("invalid selection");
+      }
+      return normalized;
+    }
+
     if (prompt.type === "secret") {
       const answer = (await this.#secretInput(prompt.message)).trim();
       if (answer.length === 0) {

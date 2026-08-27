@@ -6,7 +6,10 @@ import type {
   ModelAuthService,
   ModelAuthStatus,
 } from "@laohuang/llm";
-import { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
+import {
+  type AuthPromptHandler,
+  ProviderAuthController,
+} from "../apps/cli/src/provider-auth.ts";
 import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 
 class FakeAuthService implements ModelAuthService {
@@ -81,6 +84,108 @@ test("provider authentication retains its command presentation port", () => {
   });
 
   assert.equal(controller.presenter, presenter);
+});
+
+test("ensureConfigured routes text, secret, and select prompts through the prompt handler", async () => {
+  const requests: Parameters<AuthPromptHandler["prompt"]>[0][] = [];
+  const prompts: AuthPromptHandler = {
+    async prompt(request) {
+      requests.push(request);
+      if (request.kind === "secret") {
+        return "  secret-1  ";
+      }
+      if (request.kind === "text") {
+        return "  account-1  ";
+      }
+      return "eu";
+    },
+  };
+  const auth = new FakeAuthService(async (interaction) => {
+    assert.equal(await interaction.prompt({
+      type: "secret",
+      message: "Enter key",
+    }), "secret-1");
+    assert.equal(await interaction.prompt({
+      type: "text",
+      message: "Enter account",
+    }), "account-1");
+    assert.equal(await interaction.prompt({
+      type: "select",
+      message: "Choose region",
+      options: [
+        { id: "us", label: "US" },
+        { id: "eu", label: "EU", description: "Europe" },
+      ],
+    }), "eu");
+    return { configured: true, source: "stored credential" };
+  });
+  const controller = new ProviderAuthController({
+    auth,
+    input: async () => {
+      throw new Error("legacy text input must not be used");
+    },
+    secretInput: async () => {
+      throw new Error("legacy secret input must not be used");
+    },
+    output: () => {},
+  });
+
+  assert.equal(await controller.ensureConfigured("provider", {
+    promptIfMissing: true,
+    prompts,
+  }), true);
+  assert.deepEqual(requests, [
+    { kind: "secret", message: "Enter key" },
+    { kind: "text", message: "Enter account" },
+    {
+      kind: "select",
+      message: "Choose region",
+      options: [
+        { id: "us", label: "US" },
+        { id: "eu", label: "EU", description: "Europe" },
+      ],
+    },
+  ]);
+});
+
+test("ensureConfigured treats prompt-handler cancellation as a cancelled login", async (t) => {
+  const promptKinds = ["text", "secret", "select"] as const;
+
+  for (const kind of promptKinds) {
+    await t.test(`cancels ${kind} prompts`, async () => {
+      const outputs: string[] = [];
+      const auth = new FakeAuthService(async (interaction) => {
+        await interaction.prompt(
+          kind === "select"
+            ? {
+                type: "select",
+                message: "Choose region",
+                options: [{ id: "us", label: "US" }],
+              }
+            : { type: kind, message: `Enter ${kind}` },
+        );
+        return { configured: true, source: "stored credential" };
+      });
+      const controller = new ProviderAuthController({
+        auth,
+        input: async () => {
+          throw new Error("legacy text input must not be used");
+        },
+        secretInput: async () => {
+          throw new Error("legacy secret input must not be used");
+        },
+        output: (message) => outputs.push(message),
+      });
+
+      assert.equal(await controller.ensureConfigured("provider", {
+        promptIfMissing: true,
+        prompts: { prompt: async () => null },
+      }), false);
+      assert.deepEqual(outputs, [
+        "Login cancelled; credentials were not changed.",
+      ]);
+    });
+  }
 });
 
 test("cancelled and invalid setup prompts do not report login success", async () => {
