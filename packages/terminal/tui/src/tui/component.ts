@@ -6,6 +6,7 @@ export interface TuiComponent {
   render(context: RenderContext): ComponentRenderResult;
   handleInput?(event: TuiInputEvent): boolean;
   invalidate(): void;
+  dispose?(): void;
 }
 
 /** Temporary string-rendering contract for components pending migration. */
