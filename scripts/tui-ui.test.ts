@@ -11,7 +11,8 @@ import {
   type CommandRegistryLike,
   type LoopInputSource,
 } from "../packages/terminal/tui/src/tui/ui.ts";
-import { CompletionList } from "../packages/terminal/tui/src/tui/components/completion-list.ts";
+import { CompletionPopup } from "../packages/terminal/tui/src/tui/components/completion-list.ts";
+import { StatusLine } from "../packages/terminal/tui/src/tui/components/status-line.ts";
 import { ToolCard } from "../packages/terminal/tui/src/tui/components/tool-card.ts";
 import { Transcript } from "../packages/terminal/tui/src/tui/components/transcript.ts";
 import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
@@ -52,8 +53,8 @@ function event(
   return { kind, correlation_id: correlationId, payload };
 }
 
-test("completion list is a focusable width-bounded component", () => {
-  const list = new CompletionList({
+test("completion popup is a focusable structured width-bounded component", () => {
+  const popup = new CompletionPopup({
     items: [
       { value: "/help", description: "Show help", start: -5 },
       { value: "/model", description: "Switch model", start: -6 },
@@ -61,37 +62,57 @@ test("completion list is a focusable width-bounded component", () => {
     selectedIndex: 1,
   });
 
-  assert.deepEqual(list.render(20), [
+  const rendered = popup.render({ width: 20, theme: PI_DARK });
+
+  assert.deepEqual(rendered.lines.map(lineText), [
     "  /help  Show help",
     "› /model  Switch mod",
   ]);
-  assert.equal(list.focused, false);
-  list.focused = true;
-  assert.equal(list.focused, true);
+  assert.equal(popup.focused, false);
+  popup.focused = true;
+  assert.equal(popup.focused, true);
 });
 
-test("completion list leaves unselected command text default and accents selected items", () => {
-  const list = new CompletionList({
+test("completion height follows actual candidates and uses structured selection styling", () => {
+  const popup = new CompletionPopup({
     items: [
-      { value: "/help", description: "Show help", start: -5 },
-      { value: "/model", description: "Switch model", start: -6 },
+      { value: "/help", description: "查看帮助", start: 0 },
+      { value: "/model", description: "选择模型", start: 0 },
     ],
-    selectedIndex: 1,
-    theme: PI_DARK,
+    selectedIndex: 0,
   });
 
-  const lines = list.render(20);
+  const rendered = popup.render({ width: 40, theme: PI_DARK });
+  const first = rendered.lines[0]!;
+  const second = rendered.lines[1]!;
 
-  assert.match(lines[0]!, /\x1b\[/u);
-  assert.ok(!lines[0]!.includes(PI_DARK.sgr("text")));
-  assert.ok(lines[0]!.includes(PI_DARK.sgr("muted")));
-  assert.ok(lines[1]!.includes(PI_DARK.sgr("accent")));
-  assert.doesNotMatch(lines[1]!, /\x1b\[48;2;/u);
-  assert.deepEqual(lines.map(stripTerminalControls), [
-    "  /help  Show help",
-    "› /model  Switch mod",
+  assert.equal(rendered.lines.length, 2);
+  assert.equal(first.spans[0]?.style?.foreground, "accent");
+  assert.equal(first.spans.at(-1)?.style?.foreground, "muted");
+  assert.equal(second.spans[0]?.style?.foreground, undefined);
+  assert.equal(second.spans.at(-1)?.style?.foreground, "muted");
+  assert.deepEqual(rendered.lines.map(lineText), [
+    "› /help  查看帮助",
+    "  /model  选择模型",
   ]);
-  assert.deepEqual(lines.map(visibleWidth), [18, 20]);
+});
+
+test("status line dims metadata while provider and model use terminal default", () => {
+  const state = createUIState();
+  state.pendingCount = 1;
+  state.provider = "openai";
+  state.model = "gpt-test";
+  const rendered = new StatusLine({
+    state,
+    cwd: "/worktree",
+    effort: "high",
+  }).render({ width: 100, theme: PI_DARK });
+  const spans = rendered.lines[0]?.spans ?? [];
+
+  assert.equal(spans.find((item) => item.text === "/worktree")?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text.includes("queue"))?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text === "openai/gpt-test")?.style, undefined);
+  assert.equal(spans.find((item) => item.text === "effort high")?.style?.foreground, "dim");
 });
 
 test("frame colors the pi input prompt but leaves input text default without moving the cjk cursor", () => {
@@ -106,11 +127,11 @@ test("frame colors the pi input prompt but leaves input text default without mov
   const inputLines = frame.lines.slice(inputStart, inputStart + 2);
 
   assert.notEqual(inputStart, -1);
-  assert.equal(inputLines.length, 2);
+  assert.equal(inputLines.length, 1);
   assert.ok(inputLines[0]!.includes(PI_DARK.sgr("accent")));
   assert.ok(!inputLines[0]!.includes(PI_DARK.sgr("text")));
-  assert.deepEqual(inputLines.map(stripTerminalControls), ["│ ❯ 你好  │", "│   你    │"]);
-  assert.equal(frame.cursorCol, 6);
+  assert.deepEqual(inputLines.map(stripTerminalControls), ["❯ 你好你"]);
+  assert.equal(frame.cursorCol, 8);
   assert.ok(frame.lines.every((line) => visibleWidth(line) <= 11));
 });
 
@@ -633,10 +654,10 @@ test("typing updates editor line without appending prompt history", () => {
 
   const plainWrites = stripTerminalControls(terminal.writes());
   assert.equal(terminal.writeChunks().length, 1);
-  assert.ok(plainWrites.includes("\r│ ❯ as"));
+  assert.ok(plainWrites.includes("\r❯ as"));
   assert.equal(terminal.writes().split("\x1b[2K").length - 1, 1);
   assert.ok(!terminal.writes().includes("\r\n"));
-  assert.ok(!plainWrites.includes("\r\n│ ❯ a"));
+  assert.ok(!plainWrites.includes("\r\n❯ a"));
 });
 
 test("typing updates editor line semantically in four rows", () => {
@@ -674,13 +695,26 @@ test("three ascii keystrokes leave cursor after third character", () => {
     terminal.clearWrites();
   }
 
-  assert.deepEqual(emulator.viewportLines.slice(0, 3), [
-    "├" + "─".repeat(78) + "┤",
-    "│ ❯ asd".padEnd(79, " ") + "│",
-    "├" + "─".repeat(78) + "┤",
-  ]);
-  assert.equal(emulator.cursorRow, 1);
-  assert.equal(emulator.cursorColumn, 7);
+  assert.ok(emulator.viewportLines.includes("❯ asd"));
+  assert.equal(emulator.cursorColumn, 5);
+  assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
+  assert.equal(/[╭╮╰╯│]/u.test(emulator.logicalLines.join("\n")), false);
+});
+
+test("cjk typing leaves the unframed hardware cursor after nine cells", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
+  const emulator = new TerminalEmulator({ columns: 80, rows: 4 });
+  const ui = new TerminalUI({ theme: "dark", driver: terminal });
+  ui.startLoop(() => {});
+  emulator.write(terminal.writes());
+  terminal.clearWrites();
+
+  ui.feedInputBytes(bytes("中文abc"));
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+
+  assert.ok(emulator.viewportLines.includes("❯ 中文abc"));
+  assert.equal(emulator.cursorColumn, 9);
   assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
 });
 
@@ -813,7 +847,7 @@ test("raw loop owns transcript and editor together", () => {
   ui.drainLoop();
 
   assert.deepEqual(submitted, ["hello"]);
-  assert.ok(terminal.writes().includes("╭─ laoHuang"));
+  assert.equal(/[╭╮╰╯│]/u.test(stripTerminalControls(terminal.writes())), false);
   assert.ok(terminal.writes().includes("hello, welcome to laoHuang"));
   assert.ok(terminal.writes().includes("hello"));
 });
@@ -1167,9 +1201,9 @@ test("selector receives input before composer and restores focus on submit", asy
 });
 
 test("selector cancellation resolves null without submitting composer input", async () => {
-  const ui = new TerminalUI({
-    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
-  });
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 8 });
+  const emulator = new TerminalEmulator({ columns: 80, rows: 8 });
+  const ui = new TerminalUI({ driver: terminal });
   const submitted: string[] = [];
   ui.startLoop((text) => submitted.push(text));
 
@@ -1179,11 +1213,16 @@ test("selector cancellation resolves null without submitting composer input", as
     items: [{ value: "deepseek", label: "DeepSeek" }],
   });
   ui.drainLoop();
+  emulator.write(terminal.writes());
+  terminal.clearWrites();
   ui.feedInputBytes(bytes("\x1b"));
   ui.drainLoop();
+  emulator.write(terminal.writes());
 
   assert.equal(await selection, null);
   assert.deepEqual(submitted, []);
+  assert.equal(emulator.logicalLines.filter((line) => line.startsWith("❯")).length, 1);
+  assert.ok(emulator.viewportLines.some((line) => line === "❯"));
 });
 
 test("prompt modal takes priority over an active selector", async () => {
