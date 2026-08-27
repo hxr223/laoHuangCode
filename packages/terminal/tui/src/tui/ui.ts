@@ -62,8 +62,12 @@ import {
 import type { DisplayAction } from "./display-actions.ts";
 import {
   TranscriptStore,
-  createTranscriptBlock,
+  createAssistantBlock,
+  createNoticeBlock,
+  createUserBlock,
+  createWelcomeBlock,
   type TranscriptBlock,
+  type NoticeTone,
 } from "./transcript-store.ts";
 import {
   EditorState,
@@ -83,6 +87,12 @@ import type {
 } from "./contracts.ts";
 import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
+import { compileStyledLines } from "./ansi-renderer.ts";
+import { CompletionPopup } from "./components/completion-list.ts";
+import { Composer } from "./components/composer.ts";
+import { StatusLine } from "./components/status-line.ts";
+import { MainScreen } from "./main-screen.ts";
+import { truncateStyledLine } from "./render-model.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
   PiMainScreenRenderer,
@@ -94,29 +104,39 @@ import {
   type TerminalDriver,
 } from "./screen.ts";
 import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "./components.ts";
-import { CompletionList } from "./components/completion-list.ts";
+import type { PromptRequest, SelectionRequest } from "./components/views/contracts.ts";
 import { Transcript } from "./components/transcript.ts";
 import { FocusManager } from "./focus-manager.ts";
 import { OverlayManager } from "./overlay-manager.ts";
 import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
+import { ViewHost } from "./view-host.ts";
 
-const WELCOME_TEXT = "hello, welcome to laoHuang";
+const WELCOME_TEXT = "Welcome to LaoHuang Code!";
+const WELCOME_HELP_TEXT = "Send /help for help information.";
 
 /** Slash-command completion source supplied by the host application. */
 export interface CommandRegistryLike {
   complete(text: string, options: { state: string }): CompletionItemLike[];
 }
 
-export { createTranscriptBlock, type TranscriptBlock } from "./transcript-store.ts";
+export {
+  createAssistantBlock,
+  createNoticeBlock,
+  createThinkingBlock,
+  createToolBlock,
+  createUserBlock,
+  createWelcomeBlock,
+  type TranscriptBlock,
+} from "./transcript-store.ts";
 
 /** Local command feedback sharing the loop's event queue. */
 class LocalMessage {
   readonly text: string;
-  readonly style: string;
+  readonly tone: NoticeTone;
 
-  constructor(text: string, style = "") {
+  constructor(text: string, tone: NoticeTone = "info") {
     this.text = text;
-    this.style = style;
+    this.tone = tone;
   }
 }
 
@@ -205,19 +225,32 @@ function ansiStyledText(style: string, text: string): string {
   return `\x1b[${codes.join(";")}m${text}\x1b[0m`;
 }
 
+function ansiNoticeStyle(theme: TerminalTheme, tone: NoticeTone): string {
+  if (tone === "error") return `bold ${theme.color("error")}`;
+  if (tone === "warning") return theme.color("warning");
+  if (tone === "success") return theme.color("success");
+  if (tone === "dim") return theme.color("dim");
+  return "";
+}
+
 // ---------------------------------------------------------------------------
 // InteractiveTerminalLoop — serialize stdin, UI events, and terminal writes
 // ---------------------------------------------------------------------------
 
-interface LoopQuestion {
-  message: string;
-  secret: boolean;
-  resolve(answer: string): void;
-}
-
 type LoopWorkItem =
   | { type: "input"; data: Uint8Array }
-  | { type: "event"; event: unknown };
+  | { type: "event"; event: unknown }
+  | {
+    type: "open_selection";
+    request: SelectionRequest;
+    resolve: (value: string | null) => void;
+  }
+  | {
+    type: "open_prompt";
+    request: PromptRequest;
+    resolve: (value: string | null) => void;
+  }
+  | { type: "close_view"; value: string | null };
 
 export interface SubmitOptions {
   readonly strategy?: "follow_up" | "steer";
@@ -235,7 +268,10 @@ export interface LoopInputSource {
 }
 
 /** A terminal driver that may support raw-mode entry (POSIX TTY). */
-export type RawTerminalDriver = TerminalDriver & { enterRawMode?: () => void };
+export type RawTerminalDriver = TerminalDriver & {
+  enterRawMode?: () => void;
+  onResize?: (callback: () => void) => () => void;
+};
 
 function editorActionForKey(key: KeyInput): InputAction | null {
   if (key.id === "enter") return inputAction(InputActionKind.Submit);
@@ -262,11 +298,11 @@ export class InteractiveTerminalLoop {
   #renderer: PiMainScreenRenderer;
   #overlays = new OverlayManager();
   #focus = new FocusManager(this.#overlays, COMPOSER_COMPONENT);
+  #viewHost = new ViewHost(this.#overlays);
   #onSubmit: SubmitCallback = () => {};
   #exitRequested = false;
   #closed = false;
   #running = false;
-  #question: LoopQuestion | null = null;
   #needsRender = true;
   #terminalModesStarted = false;
   #keyboardProtocolPushed = false;
@@ -275,6 +311,7 @@ export class InteractiveTerminalLoop {
   #escapeTimer: ReturnType<typeof setTimeout> | null = null;
   #wakeupEnabled = false;
   #wakeupScheduled = false;
+  #disposeResize: (() => void) | null = null;
   writeError: unknown = null;
 
   constructor(
@@ -313,6 +350,7 @@ export class InteractiveTerminalLoop {
     this.#onSubmit = onSubmit;
     this.#exitRequested = false;
     this.#running = true;
+    this.#startResizeWatcher();
   }
 
   publishEvent(event: unknown): void {
@@ -355,17 +393,28 @@ export class InteractiveTerminalLoop {
     this.#scheduleWakeup();
   }
 
-  ask(message: string, options: { secret?: boolean } = {}): Promise<string> {
-    if (this.#closed || !this.#running) {
-      return Promise.resolve("");
+  openSelection(request: SelectionRequest): Promise<string | null> {
+    return this.#queueView("open_selection", request);
+  }
+
+  openPrompt(request: PromptRequest): Promise<string | null> {
+    return this.#queueView("open_prompt", request);
+  }
+
+  closeActiveView(value: string | null = null): void {
+    if (this.#closed) {
+      return;
     }
-    const secret = options.secret ?? false;
-    return new Promise<string>((resolve) => {
-      this.#question = { message, secret, resolve };
-      this.#resetEditor();
-      this.#needsRender = true;
-      this.#scheduleWakeup();
-    });
+    this.#work.push({ type: "close_view", value });
+    this.#scheduleWakeup();
+  }
+
+  focusedComponentId(): string {
+    return this.#focus.current();
+  }
+
+  renderActiveView(context: { width: number; theme: TerminalTheme }) {
+    return this.#viewHost.render(context);
   }
 
   requestExit(): void {
@@ -379,13 +428,13 @@ export class InteractiveTerminalLoop {
     }
     this.#closed = true;
     this.#running = false;
-    const question = this.#question;
-    this.#question = null;
-    question?.resolve("");
+    this.#cancelPendingViews();
+    this.#viewHost.closeAll();
     if (this.#escapeTimer !== null) {
       clearTimeout(this.#escapeTimer);
       this.#escapeTimer = null;
     }
+    this.#stopResizeWatcher();
     this.#stopTerminalModes();
     try {
       this.#renderer.close();
@@ -454,6 +503,21 @@ export class InteractiveTerminalLoop {
     this.#keyboardProtocolPushed = true;
     this.#driver.write("\x1b[>7u\x1b[?u\x1b[c");
     this.#driver.flush();
+  }
+
+  #startResizeWatcher(): void {
+    if (this.#disposeResize !== null) {
+      return;
+    }
+    this.#disposeResize = this.#driver.onResize?.(() => {
+      this.requestRender();
+    }) ?? null;
+  }
+
+  #stopResizeWatcher(): void {
+    const dispose = this.#disposeResize;
+    this.#disposeResize = null;
+    dispose?.();
   }
 
   #stopTerminalModes(): void {
@@ -529,13 +593,19 @@ export class InteractiveTerminalLoop {
           this.#applyActions(this.#decoder.flush());
         }
         changed = true;
+      } else if (item.type === "open_selection") {
+        this.#viewHost.openSelection(item.request).then(item.resolve);
+        changed = true;
+      } else if (item.type === "open_prompt") {
+        this.#viewHost.openPrompt(item.request).then(item.resolve);
+        changed = true;
+      } else if (item.type === "close_view") {
+        this.#viewHost.closeActive(item.value);
+        changed = true;
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
         this.#ui.appendTranscript(
-          createTranscriptBlock("notice", this.#ui.newBlockId(), {
-            text: message.text,
-            style: message.style,
-          }),
+          createNoticeBlock(this.#ui.newBlockId(), message.text, message.tone),
         );
       } else {
         this.#ui.applyProjectedEvent(item.event as UIEventLike);
@@ -549,13 +619,10 @@ export class InteractiveTerminalLoop {
   #render(): void {
     this.#needsRender = false;
     try {
-      const question = this.#question;
       this.#renderer.render(
         this.#ui.buildFrame({
           width: Math.max(1, this.#driver.getSize().columns),
           editor: this.#editor,
-          prompt: question !== null ? `${question.message} ` : "❯ ",
-          secret: question !== null && question.secret,
         }),
       );
     } catch (error) {
@@ -567,6 +634,11 @@ export class InteractiveTerminalLoop {
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
       if (action.kind === InputActionKind.Newline) {
+        if (this.#viewHost.activeId() !== null) {
+          this.#viewHost.handleInput({ type: "text", text: "\n" });
+          this.#needsRender = true;
+          continue;
+        }
         this.#applyEditorAction(action);
         continue;
       }
@@ -575,6 +647,10 @@ export class InteractiveTerminalLoop {
   }
 
   #applyInputEvent(event: TuiInputEvent): void {
+    if (this.#viewHost.handleInput(event)) {
+      this.#needsRender = true;
+      return;
+    }
     if (event.type === "text" || event.type === "paste") {
       this.#applyEditorAction(inputAction(InputActionKind.Insert, event.text));
       return;
@@ -617,10 +693,6 @@ export class InteractiveTerminalLoop {
   }
 
   #applyFollowUpSubmit(): void {
-    if (this.#applyQuestionAction(inputAction(InputActionKind.Submit))) {
-      this.#needsRender = true;
-      return;
-    }
     if (this.#applyCompletionAction(inputAction(InputActionKind.Submit))) {
       this.#needsRender = true;
       return;
@@ -647,10 +719,6 @@ export class InteractiveTerminalLoop {
   }
 
   #applySteerSubmit(): void {
-    if (this.#applyQuestionAction(inputAction(InputActionKind.Submit))) {
-      this.#needsRender = true;
-      return;
-    }
     if (this.#applyCompletionAction(inputAction(InputActionKind.Submit))) {
       this.#needsRender = true;
       return;
@@ -679,10 +747,6 @@ export class InteractiveTerminalLoop {
   }
 
   #applyEditorAction(action: InputAction): void {
-    if (this.#applyQuestionAction(action)) {
-      this.#needsRender = true;
-      return;
-    }
     if (this.#applyCompletionAction(action)) {
       this.#needsRender = true;
       return;
@@ -741,61 +805,13 @@ export class InteractiveTerminalLoop {
     }
   }
 
-  #applyQuestionAction(action: InputAction): boolean {
-    const question = this.#question;
-    if (question === null) {
-      return false;
-    }
-    if (action.kind === InputActionKind.Submit) {
-      const answer = this.#editor.text;
-      if (this.#question === question) {
-        this.#question = null;
-      }
-      this.#resetEditor();
-      question.resolve(answer);
-      return true;
-    }
-    if (
-      action.kind === InputActionKind.Cancel ||
-      action.kind === InputActionKind.Eof
-    ) {
-      if (this.#question === question) {
-        this.#question = null;
-      }
-      this.#resetEditor();
-      question.resolve("");
-      return true;
-    }
-    const effect = this.#editor.apply(action, { runtimeActive: false });
-    if (effect.notice) {
-      this.#appendNotice(effect.notice);
-    }
-    return true;
-  }
-
   #appendNotice(text: string): void {
     this.#ui.appendTranscript(
-      createTranscriptBlock("notice", this.#ui.newBlockId(), {
-        text,
-        style: "yellow",
-      }),
+      createNoticeBlock(this.#ui.newBlockId(), text, "warning"),
     );
   }
 
-  #resetEditor(): void {
-    this.#editor.text = "";
-    this.#editor.cursor = 0;
-    this.#editor.historyIndex = null;
-    this.#editor.setCompletions([]);
-    this.#syncCompletionOverlay();
-  }
-
   #refreshCompletions(): void {
-    if (this.#question !== null) {
-      this.#editor.setCompletions([]);
-      this.#syncCompletionOverlay();
-      return;
-    }
     const registry = this.#ui.commandRegistry;
     if (registry !== null) {
       this.#editor.setCompletions(
@@ -814,6 +830,43 @@ export class InteractiveTerminalLoop {
       this.#overlays.close(COMPLETION_OVERLAY.id);
     }
   }
+
+  #queueView(
+    type: "open_selection" | "open_prompt",
+    request: SelectionRequest | PromptRequest,
+  ): Promise<string | null> {
+    if (this.#closed || !this.#running) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      if (type === "open_selection") {
+        this.#work.push({
+          type,
+          request: request as SelectionRequest,
+          resolve,
+        });
+      } else {
+        this.#work.push({
+          type,
+          request: request as PromptRequest,
+          resolve,
+        });
+      }
+      this.#scheduleWakeup();
+    });
+  }
+
+  #cancelPendingViews(): void {
+    const retained: LoopWorkItem[] = [];
+    for (const item of this.#work) {
+      if (item.type === "open_selection" || item.type === "open_prompt") {
+        item.resolve(null);
+      } else {
+        retained.push(item);
+      }
+    }
+    this.#work = retained;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +880,9 @@ export interface TerminalUIOptions {
   projectRoot?: string;
   provider?: string;
   model?: string;
+  effort?: string;
+  version?: string;
+  sessionId?: string;
   commandRegistry?: CommandRegistryLike | null;
   cancelCallback?: (() => void) | null;
   theme?: string | null;
@@ -879,6 +935,9 @@ export class TerminalUI {
   readonly projectRoot: string | null;
   readonly provider: string | null;
   readonly model: string | null;
+  readonly effort: string | null;
+  readonly #version: string;
+  #sessionId: string | null;
   readonly capabilities: RuntimeCapabilities;
   readonly keybindings: KeybindingsManager;
 
@@ -901,6 +960,9 @@ export class TerminalUI {
     this.projectRoot = options.projectRoot ?? null;
     this.provider = options.provider ?? null;
     this.model = options.model ?? null;
+    this.effort = options.effort ?? null;
+    this.#version = options.version ?? "0.0.0";
+    this.#sessionId = options.sessionId ?? null;
     this.capabilities = { ...DEFAULT_RUNTIME_CAPABILITIES, ...options.capabilities };
     this.keybindings = new KeybindingsManager(
       DEFAULT_KEYBINDINGS,
@@ -924,6 +986,8 @@ export class TerminalUI {
       projectRoot: this.projectRoot,
       provider: this.provider,
       model: this.model,
+      effort: this.effort,
+      theme: this.theme,
     });
     if (options.driver) {
       const editorFactory = options.editorFactory ?? (() => new EditorState());
@@ -948,12 +1012,21 @@ export class TerminalUI {
 
   // -- prompts ------------------------------------------------------------
 
-  prompt(message?: string): Promise<string> {
+  select(request: SelectionRequest): Promise<string | null> {
+    return this.#loop?.openSelection(request) ?? Promise.resolve(null);
+  }
+
+  prompt(request: PromptRequest): Promise<string | null>;
+  prompt(message: string): Promise<string>;
+  prompt(request: PromptRequest | string): Promise<string | null> {
+    const normalized: PromptRequest = typeof request === "string"
+      ? { id: "legacy-text-prompt", kind: "text", message: request }
+      : request;
     if (this.#loop !== null && this.#loop.running) {
-      return this.#loop.ask(message ?? "Input:");
+      return this.#loop.openPrompt(normalized);
     }
-    if (this.#askFallback !== null) {
-      return this.#askFallback(message ?? "", false);
+    if (this.#askFallback !== null && normalized.kind !== "select") {
+      return this.#askFallback(normalized.message, normalized.kind === "secret");
     }
     return Promise.reject(
       new Error("interactive prompt requires a running terminal loop"),
@@ -961,15 +1034,11 @@ export class TerminalUI {
   }
 
   promptSecret(message: string): Promise<string> {
-    if (this.#loop !== null && this.#loop.running) {
-      return this.#loop.ask(message, { secret: true });
-    }
-    if (this.#askFallback !== null) {
-      return this.#askFallback(message, true);
-    }
-    return Promise.reject(
-      new Error("interactive prompt requires a running terminal loop"),
-    );
+    return this.prompt({
+      id: "legacy-secret-prompt",
+      kind: "secret",
+      message,
+    }).then((value) => value ?? "");
   }
 
   // -- loop lifecycle -----------------------------------------------------
@@ -1014,6 +1083,10 @@ export class TerminalUI {
     this.#loop?.drain();
   }
 
+  focusedComponentId(): string {
+    return this.#loop?.focusedComponentId() ?? COMPOSER_COMPONENT;
+  }
+
   // -- callbacks ----------------------------------------------------------
 
   setCommandRegistry(registry: CommandRegistryLike): void {
@@ -1030,6 +1103,11 @@ export class TerminalUI {
 
   setRuntimeCapabilities(capabilities: Partial<RuntimeCapabilities>): void {
     Object.assign(this.capabilities as MutableRuntimeCapabilities, capabilities);
+  }
+
+  setSessionId(sessionId: string): void {
+    this.#sessionId = sessionId;
+    this.#loop?.requestRender();
   }
 
   setKeyActionCallback(
@@ -1127,10 +1205,7 @@ export class TerminalUI {
     }
     const dropped = this.#pendingDisplayDrops;
     this.#pendingDisplayDrops = 0;
-    this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
-      text: displayGapMessage(dropped),
-      style: "yellow",
-    }));
+    this.appendTranscript(createNoticeBlock(this.newBlockId(), displayGapMessage(dropped), "warning"));
     return true;
   }
 
@@ -1150,10 +1225,11 @@ export class TerminalUI {
 
   appendTranscript(block: TranscriptBlock): void {
     this.#transcript.append(block);
+    this.#loop?.requestRender();
   }
 
   acceptUserInput(text: string): void {
-    this.appendTranscript(createTranscriptBlock("user", this.newBlockId(), { text }));
+    this.appendTranscript(createUserBlock(this.newBlockId(), text));
   }
 
   blockFor(kind: string, key: string): TranscriptBlock {
@@ -1168,9 +1244,11 @@ export class TerminalUI {
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
     const rendered = new Transcript({
       blocks: this.#transcript.blocks(),
-      theme: this.theme,
-    }).renderWithMetadata(width);
-    return { lines: [...rendered.lines], activeStart: rendered.activeStart };
+    }).renderWithMetadata({ width, theme: this.theme });
+    return {
+      lines: compileStyledLines(rendered.lines, Math.max(12, width), this.theme),
+      activeStart: rendered.activeStart,
+    };
   }
 
   buildFrame(options: {
@@ -1180,36 +1258,46 @@ export class TerminalUI {
     secret?: boolean;
   }): ScreenFrame {
     const { width, editor } = options;
-    const contentWidth = width >= 4 ? width - 4 : width;
-    const { lines: history, activeStart } = this.#buildHistoryFrameParts(contentWidth);
-    const completion = this.#completionLines(contentWidth, editor);
-    return this.#frameBuilder.build({
-      ...options,
-      editorStyles: this.#editorStyles(),
-      historyLines: history,
-      activeStart,
-      completionLines: completion,
-    }).screen;
-  }
-
-  #editorStyles(): {
-    readonly prompt: (text: string) => string;
-    readonly text: (text: string) => string;
-  } {
-    return {
-      prompt: (text) => text ? `${this.theme.sgr("accent")}${text}\x1b[0m` : text,
-      text: (text) => text,
-    };
-  }
-
-  #completionLines(width: number, editor: EditorLike): string[] {
-    return [
-      ...new CompletionList({
+    const contentWidth = Math.max(1, width - 1);
+    const activeView = this.#loop?.renderActiveView({
+      width: contentWidth,
+      theme: this.theme,
+    });
+    const rendered = new MainScreen({
+      transcript: new Transcript({ blocks: this.#transcript.blocks() }),
+      composer: new Composer({
+        editor,
+        prompt: options.prompt ?? "> ",
+        mask: options.secret ?? false,
+      }),
+      activeView: activeView !== undefined && activeView.lines.length > 0
+        ? activeView
+        : null,
+      completion: new CompletionPopup({
         items: editor.completions,
         selectedIndex: editor.selectedCompletion,
-        theme: this.theme,
-      }).render(width),
-    ];
+      }),
+      status: new StatusLine({
+        state: this.state,
+        cwd: this.projectRoot,
+        provider: this.provider,
+        model: this.model,
+        effort: this.effort,
+      }),
+    }).renderWithMetadata({ width: contentWidth, theme: this.theme });
+    const lines = compileStyledLines(
+      rendered.lines.map((line) => truncateStyledLine(line, contentWidth, "")),
+      contentWidth,
+      this.theme,
+    );
+    return this.#frameBuilder.build({
+      ...options,
+      compiledMainScreen: {
+        lines,
+        cursor: rendered.cursor ?? { row: 0, column: 0 },
+        activeStart: rendered.activeStart,
+      },
+    }).screen;
   }
 
   // -- events ---------------------------------------------------------------
@@ -1222,10 +1310,7 @@ export class TerminalUI {
     }
     if (event instanceof LocalMessage) {
       this.appendTranscript(
-        createTranscriptBlock("notice", this.newBlockId(), {
-          text: event.text,
-          style: event.style,
-        }),
+        createNoticeBlock(this.newBlockId(), event.text, event.tone),
       );
       return;
     }
@@ -1257,10 +1342,7 @@ export class TerminalUI {
 
   #applyDisplayEvent(event: DisplayEvent): void {
     if (event.kind === "display.gap") {
-      this.appendTranscript(createTranscriptBlock("notice", this.newBlockId(), {
-        text: event.text,
-        style: "yellow",
-      }));
+      this.appendTranscript(createNoticeBlock(this.newBlockId(), event.text, "warning"));
       return;
     }
     const update = this.reducer.apply({
@@ -1280,29 +1362,29 @@ export class TerminalUI {
   }
 
   showError(message: string): void {
-    this.#writeLocal(`Error: ${message}`, `bold ${this.theme.color("error")}`);
+    this.#writeLocal(`Error: ${message}`, "error");
   }
 
   showInterrupted(options: { operation?: boolean } = {}): void {
     const message = options.operation ? "Operation interrupted." : "Interrupted.";
-    this.#writeLocal(message, this.theme.color("warning"));
+    this.#writeLocal(message, "warning");
   }
 
   showGoodbye(): void {
     if (this.#loop !== null) {
       if (!this.#loop.closed) {
-        this.#writeLocal("Goodbye.", this.theme.color("dim"));
+        this.#writeLocal("Goodbye.", "dim");
         this.flushEventRenderer();
       }
       return;
     }
-    this.#output(ansiStyledText(this.theme.color("dim"), "Goodbye."));
+    this.#writeLocal("Goodbye.", "dim");
   }
 
   showAssistant(response: string): void {
     if (this.#loop !== null) {
       this.appendTranscript(
-        createTranscriptBlock("assistant", this.newBlockId(), { text: response }),
+        createAssistantBlock(this.newBlockId(), response, false),
       );
       return;
     }
@@ -1312,50 +1394,37 @@ export class TerminalUI {
   }
 
   showWelcome(): void {
-    const details: string[] = [];
-    if (this.projectRoot !== null) {
-      details.push(this.projectRoot);
-    }
-    if (this.provider && this.model) {
-      details.push(`${this.provider}/${this.model}`);
-    }
+    const details = [
+      WELCOME_HELP_TEXT,
+      `Directory: ${this.projectRoot ?? process.cwd()}`,
+      `Session: ${this.#sessionId ?? "pending"}`,
+      `Model: ${this.provider && this.model ? `${this.provider}/${this.model}` : "unconfigured"}`,
+      `Version: ${this.#version}`,
+    ];
     if (this.#loop !== null) {
       this.appendTranscript(
-        createTranscriptBlock("notice", "welcome", {
-          text: WELCOME_TEXT,
-          style: `bold ${this.theme.color("accent")}`,
-        }),
+        createWelcomeBlock(WELCOME_TEXT, details),
       );
-      if (details.length > 0) {
-        this.appendTranscript(
-          createTranscriptBlock("notice", this.newBlockId(), {
-            text: details.join(" · "),
-            style: this.theme.color("dim"),
-          }),
-        );
-      }
       return;
     }
     this.#output(
       ansiStyledText(`bold ${this.theme.color("accent")}`, WELCOME_TEXT) +
         "  " +
-        ansiStyledText(this.theme.color("dim"), "/help for commands"),
+        ansiStyledText(this.theme.color("dim"), WELCOME_HELP_TEXT),
     );
-    if (details.length > 0) {
-      this.#output(ansiStyledText(this.theme.color("dim"), details.join(" · ")));
-    }
+    this.#output(ansiStyledText(this.theme.color("dim"), details.slice(1).join(" · ")));
   }
 
-  #writeLocal(message: string, style = ""): void {
+  #writeLocal(message: string, tone: NoticeTone = "info"): void {
     if (this.#loop !== null) {
       if (!this.#loop.closed) {
-        this.#loop.publishEvent(new LocalMessage(message, style));
+        this.#loop.publishEvent(new LocalMessage(message, tone));
         return;
       }
-      this.#output(ansiStyledText(style, message));
+      this.#output(ansiStyledText(ansiNoticeStyle(this.theme, tone), message));
       return;
     }
-    this.#output(ansiStyledText(style, message));
+    this.#output(ansiStyledText(ansiNoticeStyle(this.theme, tone), message));
   }
 }
 
@@ -1550,6 +1619,13 @@ export class StdTerminalDriver implements RawTerminalDriver {
     return {
       columns: process.stdout.columns || 80,
       rows: process.stdout.rows || 24,
+    };
+  }
+
+  onResize(callback: () => void): () => void {
+    process.stdout.on("resize", callback);
+    return () => {
+      process.stdout.off("resize", callback);
     };
   }
 

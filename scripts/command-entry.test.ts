@@ -16,6 +16,7 @@ import type {
 } from "@laohuang/llm";
 import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
 import { TerminalUI } from "../packages/terminal/tui/src/index.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 
 const providers: readonly ModelProviderInfo[] = [{
   id: "deepseek",
@@ -71,9 +72,9 @@ class FakeAgent implements AgentLike {
 
 function makeCommands(options: { session?: SessionLike | null } = {}): {
   commands: SessionCommands;
-  outputs: string[];
+  presenter: RecordingPresenter;
 } {
-  const outputs: string[] = [];
+  const presenter = new RecordingPresenter();
   const commands = new SessionCommands({
     agent: new FakeAgent(),
     selector: new ModelSelector({
@@ -89,18 +90,19 @@ function makeCommands(options: { session?: SessionLike | null } = {}): {
       model: "deepseek-v4-flash",
       provider: "deepseek",
     },
-    input: async () => "",
-    output: (message) => {
-      outputs.push(message);
-    },
+    presenter,
     session: options.session ?? null,
   });
-  return { commands, outputs };
+  return { commands, presenter };
+}
+
+function noticeTexts(presenter: RecordingPresenter): string[] {
+  return presenter.notices.map((notice) => notice.text);
 }
 
 test("typed cancel submits a neutral cancellation action", async () => {
   const actions: unknown[] = [];
-  const { commands, outputs } = makeCommands({
+  const { commands, presenter } = makeCommands({
     session: {
       activeTask: { state: "RUNNING_MODEL" },
       submitAction: (action) => {
@@ -120,12 +122,12 @@ test("typed cancel submits a neutral cancellation action", async () => {
     type: (action as { type: string }).type,
     source: (action as { source: string }).source,
   })), [{ type: "cancel", source: "command" }]);
-  assert.deepEqual(outputs, ["Cancelling current task…"]);
+  assert.deepEqual(noticeTexts(presenter), ["Cancelling current task…"]);
 });
 
 test("keyboard cancellation reaches the neutral cancellation action", async () => {
   const actions: unknown[] = [];
-  const { commands, outputs } = makeCommands({
+  const { commands, presenter } = makeCommands({
     session: {
       activeTask: { state: "RUNNING_MODEL" },
       submitAction: (action) => {
@@ -149,7 +151,7 @@ test("keyboard cancellation reaches the neutral cancellation action", async () =
   assert.deepEqual(actions.map((action) => (action as { type: string }).type), [
     "cancel",
   ]);
-  assert.deepEqual(outputs, ["Cancelling current task…"]);
+  assert.deepEqual(noticeTexts(presenter), ["Cancelling current task…"]);
 });
 
 test("command entry reports exit requests", async () => {
@@ -178,7 +180,7 @@ test("command entry reports unknown commands without handling them", async () =>
 });
 
 test("command entry blocks clear while a task runs", async () => {
-  const { commands, outputs } = makeCommands({
+  const { commands, presenter } = makeCommands({
     session: {
       activeTask: { state: "RUNNING_MODEL" },
       cancelActiveTask: () => false,
@@ -192,11 +194,13 @@ test("command entry blocks clear while a task runs", async () => {
   const result = await commands.execute("/clear");
 
   assert.deepEqual(result, { status: "blocked", command: "/clear" });
-  assert.deepEqual(outputs, ["/clear is unavailable while the task is running_model."]);
+  assert.deepEqual(noticeTexts(presenter), [
+    "/clear is unavailable while the task is running_model.",
+  ]);
 });
 
 test("command entry permits model current while a task runs", async () => {
-  const { commands, outputs } = makeCommands({
+  const { commands, presenter } = makeCommands({
     session: {
       activeTask: { state: "RUNNING_MODEL" },
       cancelActiveTask: () => false,
@@ -210,7 +214,9 @@ test("command entry permits model current while a task runs", async () => {
   const result = await commands.execute("/model current");
 
   assert.equal(result.status, "handled");
-  assert.deepEqual(outputs, ["Current model: deepseek / deepseek-v4-flash"]);
+  assert.deepEqual(noticeTexts(presenter), [
+    "Current model: deepseek / deepseek-v4-flash",
+  ]);
 });
 
 test("command entry returns an error result for malformed quotes", async () => {

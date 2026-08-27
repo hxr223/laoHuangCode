@@ -9,6 +9,7 @@ import {
 } from "../packages/terminal/tui/src/tui/components.ts";
 import { FocusManager } from "../packages/terminal/tui/src/tui/focus-manager.ts";
 import { OverlayManager } from "../packages/terminal/tui/src/tui/overlay-manager.ts";
+import type { FocusableComponent } from "../packages/terminal/tui/src/tui/component.ts";
 import { TerminalUI, type CommandRegistryLike } from "../packages/terminal/tui/src/tui/ui.ts";
 import { MemoryTerminalDriver } from "../packages/terminal/tui/src/tui/screen.ts";
 
@@ -27,6 +28,14 @@ function createFocus(): { overlays: OverlayManager; focus: FocusManager } {
   return { overlays, focus: new FocusManager(overlays, COMPOSER_COMPONENT) };
 }
 
+function focusableComponent(): FocusableComponent {
+  return {
+    focused: false,
+    render: () => ({ lines: [] }),
+    invalidate: () => {},
+  };
+}
+
 test("focus routes to the composer without an overlay", () => {
   const { focus } = createFocus();
 
@@ -43,15 +52,15 @@ test("focus routes to completion when completion is open", () => {
 test("selector focus takes priority over completion", () => {
   const { overlays, focus } = createFocus();
   overlays.open(COMPLETION_OVERLAY);
-  overlays.open(createSelectorOverlay("command-selector"));
+  overlays.open(createSelectorOverlay("command-selector", focusableComponent()));
 
   assert.equal(focus.current(), "command-selector");
 });
 
 test("modal focus takes priority over a selector", () => {
   const { overlays, focus } = createFocus();
-  overlays.open(createSelectorOverlay("command-selector"));
-  overlays.open(createModalOverlay("confirm-exit"));
+  overlays.open(createSelectorOverlay("command-selector", focusableComponent()));
+  overlays.open(createModalOverlay("confirm-exit", focusableComponent()));
 
   assert.equal(focus.current(), "confirm-exit");
 });
@@ -59,8 +68,8 @@ test("modal focus takes priority over a selector", () => {
 test("closing the focused overlay restores the previous focus", () => {
   const { overlays, focus } = createFocus();
   overlays.open(COMPLETION_OVERLAY);
-  overlays.open(createSelectorOverlay("command-selector"));
-  overlays.open(createModalOverlay("confirm-exit"));
+  overlays.open(createSelectorOverlay("command-selector", focusableComponent()));
+  overlays.open(createModalOverlay("confirm-exit", focusableComponent()));
 
   overlays.close("confirm-exit");
   assert.equal(focus.current(), "command-selector");
@@ -70,6 +79,23 @@ test("closing the focused overlay restores the previous focus", () => {
 
   overlays.close("completion");
   assert.equal(focus.current(), "composer");
+});
+
+test("overlay ownership focuses the top component and restores the previous component", () => {
+  const { overlays } = createFocus();
+  const selector = focusableComponent();
+  const modal = focusableComponent();
+
+  overlays.open(createSelectorOverlay("command-selector", selector));
+  assert.equal(selector.focused, true);
+
+  overlays.open(createModalOverlay("confirm-exit", modal));
+  assert.equal(selector.focused, false);
+  assert.equal(modal.focused, true);
+
+  overlays.close("confirm-exit");
+  assert.equal(selector.focused, true);
+  assert.equal(modal.focused, false);
 });
 
 test("live completion Enter accepts a partial command and submits it", () => {

@@ -2,6 +2,7 @@ import type {
   EditorEffect,
   InputAction,
 } from "./editor.ts";
+import type { StyledLine } from "./render-model.ts";
 
 export interface CompletionItemLike {
   readonly value: string;
@@ -35,6 +36,14 @@ export interface EditorLike {
       };
     },
   ): EditorRenderResult;
+  renderStyledLines(
+    width: number,
+    options: { readonly prompt: string; readonly mask: boolean },
+  ): {
+    readonly lines: readonly StyledLine[];
+    readonly cursorRow: number;
+    readonly cursorColumn: number;
+  };
 }
 
 /** Hooks the input decoder uses to negotiate terminal keyboard modes. */

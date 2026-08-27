@@ -35,6 +35,7 @@ export interface TerminalDriver {
 export class MemoryTerminalDriver implements TerminalDriver {
   #size: TerminalSize;
   #writes: string[] = [];
+  #resizeListeners = new Set<() => void>();
 
   flushes = 0;
   restored = false;
@@ -58,6 +59,16 @@ export class MemoryTerminalDriver implements TerminalDriver {
 
   resize(size: TerminalSize): void {
     this.#size = { ...size };
+    for (const listener of this.#resizeListeners) {
+      listener();
+    }
+  }
+
+  onResize(callback: () => void): () => void {
+    this.#resizeListeners.add(callback);
+    return () => {
+      this.#resizeListeners.delete(callback);
+    };
   }
 
   restore(): void {
