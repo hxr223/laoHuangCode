@@ -20,7 +20,6 @@ export interface ModelRuntimeRequest {
   readonly baseUrl?: string;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ToolSpec[];
-  readonly toolChoice: "auto" | "none";
   readonly reasoningEffort?: ReasoningEffort;
   readonly temperature?: number;
   readonly timeoutMs?: number;
@@ -69,7 +68,6 @@ export class ModelRuntime {
         ...(request.baseUrl === undefined ? {} : { baseUrl: request.baseUrl }),
         messages: request.messages,
         tools: request.tools,
-        toolChoice: request.toolChoice,
         ...(request.reasoningEffort === undefined
           ? {}
           : { reasoningEffort: request.reasoningEffort }),

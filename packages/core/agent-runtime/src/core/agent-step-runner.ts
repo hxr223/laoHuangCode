@@ -20,17 +20,15 @@ import {
   type HistoryCommitContext,
 } from "./history-committer.ts";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
-import { GuardPolicy } from "./guard-policy.ts";
+import {
+  RepeatToolPolicy,
+  repeatToolReminder,
+} from "./repeat-tool-policy.ts";
 import {
   ToolRuntime,
   type ToolRuntimeToolEvent,
   type ToolRuntimeToolResultEvent,
 } from "@laohuang/tools";
-
-export const FORCED_FINAL_PROMPT = `Tool use has been stopped by the runtime safety guard.
-Do not call any tools. Give the user the best concise answer possible from the
-information already available. Clearly state any limitation caused by stopping
-tool use, but do not mention internal implementation details unless useful.`;
 
 export interface AgentStepRunnerContext extends HistoryCommitContext {
   modelStarted?(): boolean | void;
@@ -48,7 +46,7 @@ export interface AgentStepRunnerOptions {
   toolDefinitions: readonly ToolSpec[];
   toolExecution: ToolExecutionMode;
   history: HistoryCommitter;
-  guardPolicy: GuardPolicy;
+  repeatToolPolicy: RepeatToolPolicy;
   userInput: string;
   context: AgentStepRunnerContext | null;
   cancelToken: CancelToken | null;
@@ -77,17 +75,14 @@ export class AgentStepRunner {
     const {
       cancelToken,
       context,
-      guardPolicy,
       history,
+      repeatToolPolicy,
       userInput,
     } = this.options;
     let toolRounds = 0;
     let modelRound = 0;
     let modelRequests = 0;
     let totalTokens = 0;
-    const startedAt = performance.now();
-    let guardReason: string | null = null;
-    let guardEmitted = false;
 
     if (!history.commitInput(userInput)) {
       throw this.options.createCancelled("cancelled before user input commit");
@@ -97,21 +92,6 @@ export class AgentStepRunner {
 
     for (;;) {
       this.raiseIfCancelled();
-      guardReason = guardReason ?? guardPolicy.budgetReason(
-        totalTokens,
-        (performance.now() - startedAt) / 1000,
-      );
-      const forceFinal = guardReason !== null;
-      if (guardReason !== null && !guardEmitted) {
-        guardEmitted = true;
-        this.emit("agent_guard_triggered", this.guardPayload({
-          reason: guardReason,
-          toolRounds,
-          modelRequests,
-          totalTokens,
-          startedAt,
-        }));
-      }
       if (context?.modelStarted?.() === false) {
         throw this.options.createCancelled("cancelled before model request");
       }
@@ -128,19 +108,8 @@ export class AgentStepRunner {
         tool_rounds: toolRounds,
         model_requests: modelRequests,
         total_tokens: totalTokens,
-        force_final: forceFinal,
-        guard_reason: guardReason,
       });
       const requestMessages = history.snapshot();
-      if (forceFinal) {
-        const first = requestMessages[0];
-        if (first?.role === "system") {
-          requestMessages[0] = {
-            ...first,
-            content: `${first.content}\n\n${FORCED_FINAL_PROMPT}`,
-          };
-        }
-      }
 
       let result;
       try {
@@ -151,7 +120,6 @@ export class AgentStepRunner {
           ...(this.options.baseUrl === null ? {} : { baseUrl: this.options.baseUrl }),
           messages: requestMessages,
           tools: this.options.toolDefinitions,
-          toolChoice: forceFinal ? "none" : "auto",
           reasoningEffort: this.options.getReasoningEffort(),
           requestId,
           cancelToken,
@@ -183,23 +151,6 @@ export class AgentStepRunner {
         } else {
           this.emit("model_error", errorPayload);
         }
-        if (forceFinal) {
-          const payload = this.guardPayload({
-            reason: guardReason ?? "runtime safety guard",
-            toolRounds,
-            modelRequests,
-            totalTokens,
-            startedAt,
-            finalError: errorMessage(error),
-          });
-          this.emit("agent_guard_failed", payload);
-          let message = guardErrorMessage(payload);
-          if (this.options.provider && modelErrorKind(error) === "authentication") {
-            message += ` Authentication failed for ${this.options.provider}. ` +
-              `Run /login ${this.options.provider} to update your API key.`;
-          }
-          throw this.options.createError(message, error);
-        }
         let message = `Model request failed: ${errorMessage(error)}`;
         if (this.options.provider && modelErrorKind(error) === "authentication") {
           message += `\nAuthentication failed for ${this.options.provider}. ` +
@@ -228,38 +179,7 @@ export class AgentStepRunner {
         total_tokens: totalTokens,
         tool_rounds: toolRounds,
         model_requests: modelRequests,
-        force_final: forceFinal,
       });
-      if (forceFinal && toolCalls.length > 0) {
-        this.emit("model_response_aborted", {
-          round: modelRound,
-          request_id: requestId,
-          reason: "tool call returned while tools were disabled",
-        });
-        const payload = this.guardPayload({
-          reason: guardReason ?? "runtime safety guard",
-          toolRounds,
-          modelRequests,
-          totalTokens,
-          startedAt,
-        });
-        this.emit("agent_guard_failed", payload);
-        throw this.options.createError(guardErrorMessage(payload));
-      }
-
-      const postResponseGuard = guardPolicy.budgetReason(
-        totalTokens,
-        (performance.now() - startedAt) / 1000,
-      );
-      if (toolCalls.length > 0 && postResponseGuard !== null) {
-        this.emit("model_response_aborted", {
-          round: modelRound,
-          request_id: requestId,
-          reason: postResponseGuard,
-        });
-        guardReason = postResponseGuard;
-        continue;
-      }
 
       if (!history.commitAssistant(result.message)) {
         this.emit("model_response_aborted", {
@@ -291,7 +211,7 @@ export class AgentStepRunner {
         onToolStart: (event) => this.startToolEvent(event, modelRound),
         onToolResult: (event) => this.completeToolEvent(event, modelRound),
       })).results;
-      const repeated = guardPolicy.recordRepeatedToolCalls(toolCalls, toolResults);
+      const repeated = repeatToolPolicy.record(toolCalls, toolResults);
       history.commitToolResults(toolCalls, toolResults);
       this.raiseIfCancelled();
       const touchedPaths: string[] = [];
@@ -303,8 +223,13 @@ export class AgentStepRunner {
       }
       this.options.discoverForTouchedPaths(touchedPaths);
       if (repeated !== null) {
-        guardReason = `repeated tool call detected (${repeated.name} repeated ` +
-          `${repeated.count} times with the same arguments and result)`;
+        const content = repeatToolReminder(repeated);
+        history.commitReminder(content);
+        this.emit("agent_repeat_warning", {
+          tool_name: repeated.name,
+          repeat_count: repeated.count,
+          content,
+        });
       }
       const pendingBatch = context?.safePoint?.();
       if (pendingBatch !== null && pendingBatch !== undefined && (pendingBatch.content ?? "") !== "") {
@@ -353,27 +278,6 @@ export class AgentStepRunner {
     };
   }
 
-  private guardPayload(options: {
-    reason: string;
-    toolRounds: number;
-    modelRequests: number;
-    totalTokens: number;
-    startedAt: number;
-    finalError?: string | undefined;
-  }): Record<string, unknown> {
-    const payload: Record<string, unknown> = {
-      reason: options.reason,
-      tool_rounds: options.toolRounds,
-      model_requests: options.modelRequests,
-      total_tokens: options.totalTokens,
-      elapsed_ms: Math.round(performance.now() - options.startedAt),
-    };
-    if (options.finalError) {
-      payload["final_error"] = options.finalError;
-    }
-    return payload;
-  }
-
   private emit(eventType: string, payload: Record<string, unknown>): void {
     this.options.emit(eventType, payload);
   }
@@ -414,19 +318,6 @@ function textOf(message: AssistantModelMessage): string {
     .filter((block): block is TextContentBlock => block.type === "text")
     .map((block) => block.text)
     .join("");
-}
-
-function guardErrorMessage(payload: Record<string, unknown>): string {
-  let message = "Agent safety guard stopped tool use but could not produce a final " +
-    `answer: ${String(payload["reason"])}. ` +
-    `Tool rounds: ${String(payload["tool_rounds"])}; ` +
-    `model requests: ${String(payload["model_requests"])}; ` +
-    `tokens counted: ${String(payload["total_tokens"])}; ` +
-    `elapsed: ${String(payload["elapsed_ms"])}ms.`;
-  if (payload["final_error"]) {
-    message += ` Final request failed: ${String(payload["final_error"])}`;
-  }
-  return message;
 }
 
 function safeArguments(args: Record<string, unknown>): Record<string, unknown> {

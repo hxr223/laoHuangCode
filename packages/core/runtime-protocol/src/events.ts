@@ -30,8 +30,7 @@ export const EventKind = {
   ModelResponseSummary: "model.response_summary",
   ModelSwitched: "model.switched",
 
-  AgentGuardTriggered: "agent.guard_triggered",
-  AgentGuardFailed: "agent.guard_failed",
+  AgentRepeatWarning: "agent.repeat_warning",
 
   ToolStarted: "tool.started",
   ToolOutputDelta: "tool.output_delta",
@@ -128,12 +127,10 @@ export interface ModelRetryScheduledPayload extends EventPayloadBase {
   error_kind: string;
 }
 
-export interface AgentGuardPayload extends EventPayloadBase {
-  reason: string;
-  tool_rounds?: number;
-  model_requests?: number;
-  total_tokens?: number;
-  elapsed_ms?: number;
+export interface AgentRepeatWarningPayload extends EventPayloadBase {
+  tool_name: string;
+  repeat_count: number;
+  content: string;
 }
 
 export interface ToolStartedPayload extends EventPayloadBase {
@@ -187,8 +184,7 @@ export interface EventPayloadMap {
   "model.request_failed": EventPayloadBase;
   "model.response_summary": EventPayloadBase;
   "model.switched": EventPayloadBase;
-  "agent.guard_triggered": AgentGuardPayload;
-  "agent.guard_failed": AgentGuardPayload;
+  "agent.repeat_warning": AgentRepeatWarningPayload;
   "tool.started": ToolStartedPayload;
   "tool.output_delta": ToolOutputDeltaPayload;
   "tool.finished": ToolFinishedPayload;
@@ -502,28 +498,13 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
     spec(EventKind.ModelSwitched, {
       sources: [EventSource.Model, EventSource.Session, EventSource.System],
     }),
-    spec(EventKind.AgentGuardTriggered, {
+    spec(EventKind.AgentRepeatWarning, {
       sources: [EventSource.System],
-      required_payload: ["reason"],
+      required_payload: ["tool_name", "repeat_count", "content"],
       payload_types: {
-        reason: "string",
-        tool_rounds: "integer",
-        model_requests: "integer",
-        total_tokens: "integer",
-        elapsed_ms: "integer",
-      },
-      require_task_id: true,
-      max_payload_chars: 100_000,
-    }),
-    spec(EventKind.AgentGuardFailed, {
-      sources: [EventSource.System],
-      required_payload: ["reason"],
-      payload_types: {
-        reason: "string",
-        tool_rounds: "integer",
-        model_requests: "integer",
-        total_tokens: "integer",
-        elapsed_ms: "integer",
+        tool_name: "string",
+        repeat_count: "integer",
+        content: "string",
       },
       require_task_id: true,
       max_payload_chars: 100_000,

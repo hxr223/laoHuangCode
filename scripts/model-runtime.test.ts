@@ -60,7 +60,6 @@ function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
       parameters: { type: "object" },
       promptGuidelines: [],
     }],
-    toolChoice: "auto",
     requestId: "request-1",
     ...overrides,
   };

@@ -1,40 +1,20 @@
 import type { ToolCall, ToolResult } from "@laohuang/tools";
 
-export interface GuardPolicyOptions {
-  maxTotalTokens: number;
-  maxElapsedSeconds: number;
-  repeatedToolCallLimit: number;
-}
-
 export interface RepeatedToolCall {
   name: string;
   count: number;
 }
 
-/** Owns token, elapsed-time, and repeated-tool-call safety decisions. */
-export class GuardPolicy {
-  private readonly maxTotalTokens: number;
-  private readonly maxElapsedSeconds: number;
-  private readonly repeatedToolCallLimit: number;
+/** Detects consecutive identical tool calls at configured reminder thresholds. */
+export class RepeatToolPolicy {
+  private readonly reminderThresholds: ReadonlySet<number>;
   private readonly repeatedCalls = new Map<string, number>();
 
-  constructor(options: GuardPolicyOptions) {
-    this.maxTotalTokens = options.maxTotalTokens;
-    this.maxElapsedSeconds = options.maxElapsedSeconds;
-    this.repeatedToolCallLimit = options.repeatedToolCallLimit;
+  constructor(reminderThresholds: readonly number[]) {
+    this.reminderThresholds = new Set(reminderThresholds);
   }
 
-  budgetReason(totalTokens: number, elapsedSeconds: number): string | null {
-    if (totalTokens >= this.maxTotalTokens) {
-      return `token budget reached (${this.maxTotalTokens})`;
-    }
-    if (elapsedSeconds >= this.maxElapsedSeconds) {
-      return `elapsed time budget reached (${String(this.maxElapsedSeconds)} seconds)`;
-    }
-    return null;
-  }
-
-  recordRepeatedToolCalls(
+  record(
     toolCalls: readonly ToolCall[],
     toolResults: readonly ToolResult[],
   ): RepeatedToolCall | null {
@@ -68,10 +48,17 @@ export class GuardPolicy {
         this.repeatedCalls.delete(fingerprint);
       }
     }
-    return repeated !== null && repeated.count >= this.repeatedToolCallLimit
+    return repeated !== null && this.reminderThresholds.has(repeated.count)
       ? repeated
       : null;
   }
+}
+
+export function repeatToolReminder(repeated: RepeatedToolCall): string {
+  return `<system-reminder>Tool ${JSON.stringify(repeated.name)} has been called ` +
+    `${repeated.count} consecutive times with the same arguments and result. ` +
+    "Reconsider the approach before repeating it again. Tool use remains available." +
+    "</system-reminder>";
 }
 
 function stableToolResult(value: unknown): unknown {

@@ -86,7 +86,6 @@ function toolRequest(providerId: string, modelId: string): ModelRuntimeRequest {
       },
       promptGuidelines: [],
     }],
-    toolChoice: "auto",
   };
 }
 
@@ -116,7 +115,6 @@ function toolResultRequest(
       },
     ],
     tools: [],
-    toolChoice: "none",
   };
 }
 

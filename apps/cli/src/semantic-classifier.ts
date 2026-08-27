@@ -95,7 +95,6 @@ export class SmallModelSemanticClassifier {
         },
       ],
       tools: [],
-      toolChoice: "none",
       reasoningEffort: "off",
       temperature: 0,
       timeoutMs: Math.round(this.timeout * 1000),
