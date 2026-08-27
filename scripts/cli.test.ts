@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   VERSION,
   main as cliMain,
+  runInitialModelSelection,
 } from "../apps/cli/src/main.ts";
 import { parseArgs } from "../apps/cli/src/args.ts";
 import {
@@ -18,7 +19,6 @@ import {
   runRepl,
   runSessionRepl,
   supportsTerminalUI,
-  terminalUiPrompts,
   type SessionReplSession,
 } from "../apps/cli/src/repl.ts";
 import { ConfigManager, CredentialStore } from "@laohuang/local-config";
@@ -26,9 +26,12 @@ import { EventKind, EventProjector } from "../packages/core/runtime-protocol/src
 import {
   ModelSelector,
 } from "../apps/cli/src/model-selection.ts";
-import type { ModelCatalog, ModelInfo, ModelProviderInfo } from "@laohuang/llm";
-import type { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
-import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
+import type { ModelInfo, ModelProviderInfo } from "@laohuang/llm";
+import { PlainCommandPresenter } from "../apps/cli/src/plain-command-presenter.ts";
+import {
+  FakeCatalog,
+  FakeProviderAuth,
+} from "./helpers/session-command-fixture.ts";
 import { AgentSession } from "@laohuang/session-runtime";
 import {
   MemoryTerminalDriver,
@@ -61,22 +64,6 @@ const modelInfos: readonly ModelInfo[] = [{
   contextWindow: 8192,
   maxTokens: 2048,
 }];
-const catalog: ModelCatalog = {
-  listProviders: () => providerInfos,
-  getProvider: (provider) =>
-    providerInfos.find((item) => item.id === provider),
-  listModels: (provider) =>
-    modelInfos.filter((item) => item.provider === provider),
-  listAvailableModels: async (provider) =>
-    modelInfos.filter((item) => item.provider === provider),
-  getModel: (provider, model) =>
-    modelInfos.find((item) => item.provider === provider && item.id === model),
-  refresh: async () => {},
-};
-const providerAuth = {
-  ensureConfigured: async () => true,
-} satisfies Pick<ProviderAuthController, "ensureConfigured">;
-
 async function withTempDir(run: (directory: string) => Promise<void>): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "laohuang-cli-test-"));
   try {
@@ -517,60 +504,28 @@ test("parseArgs accepts provider identifiers without a built-in catalog", () => 
   }
 });
 
-test("tty wiring asks model selection through the running terminal ui", async () => {
-  // Regression: inside a running TUI session the selector's questions must
-  // come from the injected TerminalUI prompts (which coordinate with the
-  // interactive loop), never from a blocking read of fd 0.
-  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const ui = new TerminalUI({ driver: terminal });
-  ui.startLoop(() => {});
-  const prompts = terminalUiPrompts(ui);
-  const presenter = new RecordingPresenter();
-  const selector = new ModelSelector({
-    catalog,
-    providerAuth,
-    input: prompts.input,
-    output: () => {},
-    presenter,
+test("startup model selection uses the plain presenter and shared selector service", async () => {
+  const catalog = new FakeCatalog(providerInfos);
+  catalog.models.set("deepseek", modelInfos);
+  const auth = new FakeProviderAuth(new Set(["deepseek"]));
+  const selector = new ModelSelector({ catalog, providerAuth: auth });
+  const answers = ["1", "1"];
+  const output: string[] = [];
+  const presenter = new PlainCommandPresenter({
+    output: (text) => output.push(text),
+    input: async () => answers.shift() ?? "",
+    secretInput: async () => "unused-secret",
   });
 
-  assert.equal(selector.presenter, presenter);
+  const selection = await runInitialModelSelection({ selector, presenter, providerAuth: auth });
 
-  const pending = selector.select({ providerName: "deepseek" });
-  try {
-    // The model selector question is rendered by the terminal UI itself.
-    for (let index = 0; index < 20; index += 1) {
-      ui.drainLoop();
-      if (terminal.writes().includes("Select model or search:")) {
-        break;
-      }
-      await delay(1);
-    }
-    assert.ok(terminal.writes().includes("Select model or search:"));
-
-    ui.feedInputBytes(textEncoder.encode("deepseek\r"));
-    ui.drainLoop();
-    for (let index = 0; index < 20; index += 1) {
-      await delay(1);
-      ui.drainLoop();
-      if (terminal.writes().includes("Select model:")) {
-        break;
-      }
-    }
-    assert.ok(terminal.writes().includes("Select model:"));
-
-    ui.feedInputBytes(textEncoder.encode("1\r"));
-    ui.drainLoop();
-
-    const selection = await pending;
-    assert.ok(selection);
-    assert.equal(
-      selection.config.model,
-      modelInfos[0]?.id,
-    );
-  } finally {
-    ui.close();
-  }
+  assert.equal(selection?.config.provider, "deepseek");
+  assert.equal(selection?.config.model, "deepseek-v4-flash");
+  assert.deepEqual(auth.ensureConfiguredCalls, [
+    { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
+    { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
+  ]);
+  assert.ok(output.includes("Select model provider"));
 });
 
 test("user can chat until exit", async () => {
@@ -631,7 +586,7 @@ test("first start collects provider key and model in the terminal", async () => 
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const credentialsPath = join(directory, "credentials.json");
-    const answers = ["7", "deepseek-v4-flash", "1", "/exit"];
+    const answers = ["7", "1", "/exit"];
     const outputs: string[] = [];
 
     const status = await cliMain([], {
@@ -662,7 +617,7 @@ test("config command saves a provider profile without starting agent", async () 
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const credentialsPath = join(directory, "credentials.json");
-    const answers = ["deepseek-v4-flash", "1"];
+    const answers = ["1"];
     const outputs: string[] = [];
 
     const status = await cliMain(
@@ -689,13 +644,13 @@ test("config command saves a provider profile without starting agent", async () 
   });
 });
 
-test("config command reports invalid interactive provider", async () => {
+test("config command cancels an invalid interactive provider choice", async () => {
   await withTempDir(async (directory) => {
     const outputs: string[] = [];
     const status = await cliMain(["config"], {
       environ: {},
       configPath: join(directory, "config.json"),
-      inputFn: () => "invalid-provider",
+      inputFn: () => "999",
       secretInputFn: () => {
         throw new Error("no key expected");
       },
@@ -705,7 +660,7 @@ test("config command reports invalid interactive provider", async () => {
     });
 
     assert.equal(status, 2);
-    assert.ok(outputs.some((line) => line.includes("invalid provider")));
+    assert.ok(outputs.some((line) => line.includes("Select model provider")));
   });
 });
 

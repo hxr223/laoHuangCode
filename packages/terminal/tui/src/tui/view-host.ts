@@ -111,10 +111,14 @@ export class ViewHost {
       onSelect: (value: string) => this.#close(request.id, value),
       onCancel: () => this.#close(request.id, null),
     };
-    if (request.id === "model") {
+    if (
+      request.id === "model" ||
+      request.id === "model-name" ||
+      request.searchable === true
+    ) {
       return new ModelSelectorView(options);
     }
-    if (request.id === "provider") {
+    if (request.id === "provider" || request.id === "model-provider") {
       return new ProviderSelectorView(options);
     }
     return new EffortSelectorView(options);

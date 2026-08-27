@@ -659,27 +659,84 @@ export class SessionCommands {
 
   private async handleModel(args: string[]): Promise<boolean> {
     if (args.length === 1 && args[0] === "current") {
-      this.#output(
+      this.notice(
         `Current model: ${this.#currentConfig.provider} / ` +
           `${this.#currentConfig.model}`,
+        "info",
       );
       return true;
     }
     if (args.length > 2) {
-      this.#output("Usage: /model [provider|model] [model]");
+      this.notice("Usage: /model [provider|model] [model]", "error");
       return true;
     }
 
-    const route = this.resolveModelRoute(args);
+    let provider: string;
+    let modelName: string | undefined;
+    if (args.length === 0) {
+      const selectedProvider = await this.selectModelProvider();
+      if (selectedProvider === null) {
+        return true;
+      }
+      provider = selectedProvider;
+    } else if (args.length === 2) {
+      provider = args[0]!;
+      modelName = args[1];
+    } else {
+      const argument = args[0]!;
+      if (this.#catalog.getProvider(argument) !== undefined) {
+        provider = argument;
+      } else {
+        provider = this.#currentConfig.provider;
+        modelName = argument;
+      }
+    }
+
+    if (modelName === undefined) {
+      try {
+        const models = await this.#selector.listModels(provider, "");
+        if (models.length === 0) {
+          this.notice(`No models available for provider: ${provider}`, "error");
+          return true;
+        }
+        if (this.#presenter === null) {
+          this.notice("Model selection is unavailable.", "error");
+          return true;
+        }
+        const selected = await this.#presenter.select({
+          id: "model-name",
+          title: `Select model for ${provider}`,
+          items: models.map((model) => ({
+            value: `${provider}/${model.id}`,
+            label: model.name,
+            description: provider,
+          })),
+          currentValue: this.#currentConfig.provider === provider
+            ? `${provider}/${this.#currentConfig.model}`
+            : undefined,
+          searchable: true,
+          maxVisible: 20,
+        });
+        if (selected === null) {
+          return true;
+        }
+        const prefix = `${provider}/`;
+        modelName = selected.startsWith(prefix) ? selected.slice(prefix.length) : selected;
+      } catch (error) {
+        this.notice(`Could not list models: ${errorMessage(error)}`, "error");
+        return true;
+      }
+    }
+
     let selection: ModelSelection | null;
     try {
-      selection = await this.#selector.select({
-        providerName: route.provider,
-        modelName: route.model,
+      selection = await this.#selector.selectExact({
+        providerName: provider,
+        modelName,
         promptForMissingKey: false,
       });
     } catch (error) {
-      this.#output(`Could not switch model: ${errorMessage(error)}`);
+      this.notice(`Could not switch model: ${errorMessage(error)}`, "error");
       return true;
     }
     if (selection === null) {
@@ -696,39 +753,74 @@ export class SessionCommands {
     this.#currentConfig = selection.config;
     this.adjustReasoningEffortForCurrentModel({ emitNotice: true });
     this.publishModelSwitched(previousProvider, previousModel);
-    this.#output(
+    this.notice(
       `Switched to ${selection.config.provider} / ${selection.config.model}`,
+      "success",
     );
     return true;
   }
 
   private async handleEffort(args: string[]): Promise<boolean> {
     if (args.length > 1) {
-      this.#output("Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]");
+      this.notice(
+        "Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]",
+        "error",
+      );
       return true;
     }
     const requested = args[0];
     if (requested === "current") {
-      this.#output(`Current effort: ${this.currentReasoningEffort()}`);
+      this.notice(`Current effort: ${this.currentReasoningEffort()}`, "info");
       return true;
     }
     if (requested === undefined) {
-      const selected = await this.chooseEffort();
+      if (this.#presenter === null) {
+        this.notice("Effort selection is unavailable.", "error");
+        return true;
+      }
+      const selected = await this.#presenter.select({
+        id: "model-effort",
+        title: `Reasoning effort for ${this.#currentConfig.provider} / ${this.#currentConfig.model}`,
+        items: this.supportedReasoningEfforts().map((effort) => ({
+          value: effort,
+          label: effort,
+          description: effort === "off" ? "Disable reasoning" : undefined,
+        })),
+        currentValue: this.currentReasoningEffort(),
+      });
       if (selected !== null) {
+        if (!isReasoningEffort(selected)) {
+          this.notice(`Invalid effort selection: ${selected}`, "error");
+          return true;
+        }
+        const supported = this.supportedReasoningEfforts();
+        if (!supported.includes(selected)) {
+          this.notice(
+            `Effort ${selected} is not supported by ` +
+              `${this.#currentConfig.provider} / ${this.#currentConfig.model}. ` +
+              `Supported: ${supported.join(", ")}`,
+            "error",
+          );
+          return true;
+        }
         this.setReasoningEffort(selected);
       }
       return true;
     }
     if (!isReasoningEffort(requested)) {
-      this.#output("Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]");
+      this.notice(
+        "Usage: /effort [current|off|minimal|low|medium|high|xhigh|max]",
+        "error",
+      );
       return true;
     }
     const supported = this.supportedReasoningEfforts();
     if (!supported.includes(requested)) {
-      this.#output(
+      this.notice(
         `Effort ${requested} is not supported by ` +
           `${this.#currentConfig.provider} / ${this.#currentConfig.model}. ` +
           `Supported: ${supported.join(", ")}`,
+        "error",
       );
       return true;
     }
@@ -878,6 +970,24 @@ export class SessionCommands {
     return selected;
   }
 
+  private async selectModelProvider(): Promise<string | null> {
+    if (this.#presenter === null) {
+      this.notice("Model provider selection is unavailable.", "error");
+      return null;
+    }
+    const selected = await this.#presenter.select({
+      id: "model-provider",
+      title: "Select model provider",
+      items: this.#selector.listProviders().map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: provider.id,
+      })),
+      currentValue: this.#currentConfig.provider,
+    });
+    return selected;
+  }
+
   private *modelCompletions(
     args: readonly string[],
   ): Iterable<readonly [string, string]> {
@@ -902,23 +1012,6 @@ export class SessionCommands {
     }
   }
 
-  private resolveModelRoute(args: readonly string[]): {
-    readonly provider: string;
-    readonly model: string | undefined;
-  } {
-    if (args.length === 0) {
-      return { provider: this.#currentConfig.provider, model: undefined };
-    }
-    if (args.length === 2) {
-      return { provider: args[0]!, model: args[1] };
-    }
-    const argument = args[0]!;
-    if (this.#catalog.getProvider(argument) !== undefined) {
-      return { provider: argument, model: undefined };
-    }
-    return { provider: this.#currentConfig.provider, model: argument };
-  }
-
   private *effortCompletions(
     args: readonly string[],
   ): Iterable<readonly [string, string]> {
@@ -931,46 +1024,16 @@ export class SessionCommands {
     }
   }
 
-  private async chooseEffort(): Promise<ReasoningEffort | null> {
-    const supported = this.supportedReasoningEfforts();
-    this.#output(
-      `Reasoning efforts for ${this.#currentConfig.provider} / ` +
-        `${this.#currentConfig.model}:`,
-    );
-    supported.forEach((effort, index) => {
-      this.#output(`  ${index + 1}. ${effort}`);
-    });
-    const answer = await this.readInput("Select effort: ");
-    if (answer === null) {
-      return null;
-    }
-    const choice = Number(answer);
-    const selected = Number.isInteger(choice)
-      ? supported[choice - 1]
-      : undefined;
-    if (selected === undefined) {
-      this.#output("Effort selection cancelled: invalid choice.");
-      return null;
-    }
-    return selected;
-  }
-
-  private async readInput(prompt: string): Promise<string | null> {
-    try {
-      return (await this.#input(prompt)).trim();
-    } catch {
-      this.#output("Effort selection cancelled.");
-      return null;
-    }
-  }
-
   private currentReasoningEffort(): ReasoningEffort {
     return this.#agent.getReasoningEffort?.() ?? "high";
   }
 
   private setReasoningEffort(effort: ReasoningEffort): void {
     this.#agent.setReasoningEffort?.(effort);
-    this.#output(`Effort set to ${effort}. Applies to the next model request.`);
+    this.notice(
+      `Effort set to ${effort}. Applies to the next model request.`,
+      "success",
+    );
   }
 
   private adjustReasoningEffortForCurrentModel(options: {
@@ -983,9 +1046,10 @@ export class SessionCommands {
     }
     this.#agent.setReasoningEffort?.(adjusted);
     if (options.emitNotice) {
-      this.#output(
+      this.notice(
         `Reasoning effort adjusted to ${adjusted} for ` +
           `${this.#currentConfig.provider} / ${this.#currentConfig.model}.`,
+        "info",
       );
     }
   }
@@ -1030,6 +1094,17 @@ export class SessionCommands {
     } catch {
       return { configured: false };
     }
+  }
+
+  private notice(
+    text: string,
+    tone: "info" | "success" | "warning" | "error",
+  ): void {
+    if (this.#presenter !== null) {
+      this.#presenter.notice({ text, tone });
+      return;
+    }
+    this.#output(text);
   }
 }
 

@@ -30,10 +30,20 @@ import {
   type CommandResult,
   type QueueStatus,
 } from "./commands.ts";
-import type { CommandPresenter } from "./command-presentation.ts";
-import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
+import type {
+  CommandPresenter,
+  PromptPresentation,
+} from "./command-presentation.ts";
+import {
+  ModelSelector,
+  type InputFn as PromptFn,
+  type ModelSelection,
+} from "./model-selection.ts";
 import { PlainCommandPresenter } from "./plain-command-presenter.ts";
-import { ProviderAuthController } from "./provider-auth.ts";
+import {
+  ProviderAuthController,
+  type AuthPromptHandler,
+} from "./provider-auth.ts";
 import {
   EXCLUDED_PROVIDER_IDS,
   VERIFIED_PROVIDER_IDS,
@@ -152,11 +162,9 @@ export async function main(
     verifiedProviderIds: VERIFIED_PROVIDER_IDS,
   });
   const modelRuntime = new ModelRuntime(modelPlatform.adapter);
-  // The selector's input/output targets are rewired once the session exists,
-  // mirroring the Python original which mutated selector.input_fn/output_fn.
-  // Like the Python original, the selector's own secret prompts (first-run
-  // setup, `config` subcommand) always use the default secret reader — only
-  // the session commands switch to the terminal UI's secret prompt.
+  // Authentication and the remaining Task 10 commands still use prompt
+  // callbacks. Model selection itself is UI-neutral and receives a presenter
+  // only in the startup/session flow that owns the interaction.
   let selectorInput: PromptFn = async (prompt) => inputFn(prompt);
   const selectorSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
   let authSecretInput: PromptFn = selectorSecretInput;
@@ -172,10 +180,11 @@ export async function main(
   const selector = new ModelSelector({
     catalog: modelPlatform.catalog,
     providerAuth,
-    input: (prompt) => selectorInput(prompt),
-    output: (message) => {
-      selectorOutput(message);
-    },
+  });
+  const startupPresenter = new PlainCommandPresenter({
+    output: outputFn,
+    input: async (prompt) => inputFn(prompt),
+    secretInput: async (prompt) => secretInputFn(prompt),
   });
 
   if (args.command === "config") {
@@ -212,7 +221,10 @@ export async function main(
     }
 
     try {
-      const selection = await selector.select({
+      const selection = await runInitialModelSelection({
+        selector,
+        presenter: startupPresenter,
+        providerAuth,
         providerName: args.provider ?? undefined,
         modelName: args.configModel ?? undefined,
       });
@@ -295,7 +307,11 @@ export async function main(
         return 2;
       }
     } else {
-      const selection = await selector.select();
+      const selection = await runInitialModelSelection({
+        selector,
+        presenter: startupPresenter,
+        providerAuth,
+      });
       if (selection === null) {
         return 2;
       }
@@ -403,7 +419,6 @@ export async function main(
     ? new PlainCommandPresenter({ output: outputFn, input: selectorInput, secretInput: authSecretInput })
     : new TerminalCommandPresenter(terminalUi);
   providerAuth.setPresenter(commandPresenter);
-  selector.setPresenter(commandPresenter);
   selectorOutput = (message) => {
     commandPresenter.notice({ text: message, tone: "info" });
   };
@@ -506,6 +521,91 @@ export async function main(
     }
   }
   return cleanShutdown ? 0 : 1;
+}
+
+export async function runInitialModelSelection(options: {
+  readonly selector: ModelSelector;
+  readonly presenter: PlainCommandPresenter;
+  readonly providerAuth: Pick<ProviderAuthController, "ensureConfigured">;
+  readonly providerName?: string;
+  readonly modelName?: string;
+}): Promise<ModelSelection | null> {
+  let providerName = options.providerName;
+  if (providerName === undefined) {
+    providerName = await options.presenter.select({
+      id: "model-provider",
+      title: "Select model provider",
+      items: options.selector.listProviders().map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: provider.id,
+      })),
+    }) ?? undefined;
+    if (providerName === undefined) {
+      return null;
+    }
+  }
+
+  const authPrompts: AuthPromptHandler = {
+    prompt: (request) => options.presenter.prompt(
+      request.kind === "select"
+        ? {
+            id: `auth-${providerName}`,
+            kind: "select",
+            message: request.message,
+            items: (request.options ?? []).map((item) => ({
+              value: item.id,
+              label: item.label,
+              ...(item.description === undefined
+                ? {}
+                : { description: item.description }),
+            })),
+          }
+        : {
+            id: `auth-${providerName}`,
+            kind: request.kind,
+            message: request.message,
+          } as PromptPresentation,
+    ),
+  };
+
+  let modelName = options.modelName;
+  if (modelName === undefined) {
+    const configured = await options.providerAuth.ensureConfigured(providerName, {
+      promptIfMissing: true,
+      prompts: authPrompts,
+    });
+    if (!configured) {
+      return null;
+    }
+    const models = await options.selector.listModels(providerName, "");
+    if (models.length === 0) {
+      throw new Error(`No models available for provider: ${providerName}`);
+    }
+    const selected = await options.presenter.select({
+      id: "model-name",
+      title: `Select model for ${providerName}`,
+      items: models.map((model) => ({
+        value: `${providerName}/${model.id}`,
+        label: model.name,
+        description: providerName,
+      })),
+      searchable: true,
+      maxVisible: 20,
+    });
+    if (selected === null) {
+      return null;
+    }
+    const prefix = `${providerName}/`;
+    modelName = selected.startsWith(prefix) ? selected.slice(prefix.length) : selected;
+  }
+
+  return options.selector.selectExact({
+    providerName,
+    modelName,
+    promptForMissingKey: true,
+    authPrompts,
+  });
 }
 
 async function validateConfiguredSelection(options: {

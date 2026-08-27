@@ -31,18 +31,28 @@ import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-
 import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
 import { ToolOutputRedactor } from "../packages/terminal/tui/src/tui/display-policy.ts";
+import { TerminalCommandPresenter } from "../apps/cli/src/terminal-command-presenter.ts";
 import {
   MemoryTerminalDriver,
   PiMainScreenRenderer,
   stripTerminalControls,
   visibleWidth,
 } from "../packages/terminal/tui/src/tui/screen.ts";
+import { createSessionCommandFixture } from "./helpers/session-command-fixture.ts";
 import { TerminalEmulator } from "./helpers/terminal-emulator.ts";
 
 const encoder = new TextEncoder();
 
 function bytes(text: string): Uint8Array {
   return encoder.encode(text);
+}
+
+async function drainUntil(ui: TerminalUI, predicate: () => boolean): Promise<void> {
+  for (let index = 0; index < 30 && !predicate(); index += 1) {
+    ui.drainLoop();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  ui.drainLoop();
 }
 
 function event(
@@ -1223,6 +1233,93 @@ test("selector cancellation resolves null without submitting composer input", as
   assert.deepEqual(submitted, []);
   assert.equal(emulator.logicalLines.filter((line) => line.startsWith("❯")).length, 1);
   assert.ok(emulator.viewportLines.some((line) => line === "❯"));
+});
+
+test("task 9 selection ids route provider and searchable model views", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 12 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  const provider = ui.select({
+    id: "model-provider",
+    title: "Select model provider",
+    items: [{ value: "deepseek", label: "DeepSeek" }],
+  });
+  ui.drainLoop();
+  assert.ok(terminal.writes().includes("Select model provider"));
+  assert.equal(terminal.writes().includes("Search models"), false);
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  assert.equal(await provider, null);
+
+  terminal.clearWrites();
+  const model = ui.select({
+    id: "model-name",
+    title: "Select model",
+    searchable: true,
+    items: [{ value: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash" }],
+  });
+  ui.drainLoop();
+  assert.ok(terminal.writes().includes("Search models"));
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  assert.equal(await model, null);
+});
+
+test("model command uses persistent selectors for submit and cancellation", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 16 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const presenter = new TerminalCommandPresenter(ui);
+  const { commands, agent } = createSessionCommandFixture({ presenter });
+
+  const cancelled = commands.execute("/model");
+  await drainUntil(ui, () => terminal.writes().includes("Select model provider"));
+  assert.ok(terminal.writes().includes("Select model provider"));
+  assert.equal(terminal.writes().includes("Select provider: "), false);
+  ui.feedInputBytes(bytes("\r"));
+  await drainUntil(ui, () => terminal.writes().includes("Search models"));
+  assert.ok(terminal.writes().includes("deepseek-v4-flash"));
+  assert.equal(terminal.writes().includes("Select model or search: "), false);
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  await cancelled;
+  assert.equal(agent.model, "deepseek-v4-flash");
+
+  const selected = commands.execute("/model");
+  await drainUntil(ui, () => ui.focusedComponentId() === "model-provider");
+  ui.feedInputBytes(bytes("\r"));
+  await drainUntil(ui, () => ui.focusedComponentId() === "model-name");
+  ui.feedInputBytes(bytes("\x1b[B\r"));
+  ui.drainLoop();
+  await selected;
+
+  assert.equal(agent.model, "deepseek-v4-pro");
+});
+
+test("effort command uses persistent selector submit and cancellation", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 12 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const presenter = new TerminalCommandPresenter(ui);
+  const { commands, agent } = createSessionCommandFixture({ presenter });
+
+  const cancelled = commands.execute("/effort");
+  await drainUntil(ui, () => terminal.writes().includes("Reasoning effort"));
+  assert.equal(terminal.writes().includes("Select effort: "), false);
+  assert.equal(terminal.writes().includes("  1. off"), false);
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+  await cancelled;
+  assert.equal(agent.reasoningEffort, "high");
+
+  const selected = commands.execute("/effort");
+  await drainUntil(ui, () => ui.focusedComponentId() === "model-effort");
+  ui.feedInputBytes(bytes("\x1b[A\r"));
+  ui.drainLoop();
+  await selected;
+
+  assert.equal(agent.reasoningEffort, "medium");
 });
 
 test("prompt modal takes priority over an active selector", async () => {
