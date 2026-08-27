@@ -19,7 +19,21 @@ test("text wraps CJK by terminal cells", () => {
 
   const rendered = component.render({ width: 4, theme: PI_DARK });
 
-  assert.deepEqual(rendered.lines.map(lineText), ["中文", "ab"]);
+  assert.deepEqual(rendered.lines.map(lineText), ["中文", "ab  "]);
+});
+
+test("text fills unstyled content and vertical padding to its width", () => {
+  const component = new Text({ text: "x", paddingY: 1 });
+
+  const rendered = component.render({ width: 5, theme: PI_DARK });
+
+  assert.deepEqual(rendered.lines.map(lineText), ["     ", "x    ", "     "]);
+  assert.equal(
+    rendered.lines.every((renderedLine) =>
+      renderedLine.spans.every((item) => item.style === undefined),
+    ),
+    true,
+  );
 });
 
 test("text applies padding and background through structured spans", () => {
@@ -52,6 +66,24 @@ test("stack gaps and boxes preserve child content with background padding", () =
   assert.deepEqual(rendered.lines.map(lineText), [" one   ", "       ", "       ", " two   "]);
   assert.deepEqual(rendered.lines[0]?.spans[0], span(" ", { background: "card" }));
   assert.equal(rendered.lines[0]?.spans.at(-1)?.style?.background, "card");
+});
+
+test("box renders background padding for an empty child", () => {
+  const box = new Box({
+    child: new VStack({ children: [] }),
+    paddingY: 1,
+    background: "card",
+  });
+
+  const rendered = box.render({ width: 5, theme: PI_DARK });
+
+  assert.deepEqual(rendered.lines.map(lineText), ["     ", "     "]);
+  assert.equal(
+    rendered.lines.every((renderedLine) =>
+      renderedLine.spans.every((item) => item.style?.background === "card"),
+    ),
+    true,
+  );
 });
 
 test("select list wraps, selects, and cancels", () => {
