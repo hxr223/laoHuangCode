@@ -1,4 +1,4 @@
-import type { TuiComponent } from "../component.ts";
+import type { LegacyTuiComponent } from "../component.ts";
 import { renderMarkdownLines } from "../markdown.ts";
 import type { TerminalTheme } from "../theme.ts";
 import type { TranscriptBlock } from "../transcript-store.ts";
@@ -16,7 +16,7 @@ export interface TranscriptRenderResult {
 }
 
 /** Renders append-only transcript blocks and reports the mutable region start. */
-export class Transcript implements TuiComponent {
+export class Transcript implements LegacyTuiComponent {
   readonly #blocks: readonly TranscriptBlock[];
   readonly #theme: TerminalTheme;
 

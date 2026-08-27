@@ -1,4 +1,4 @@
-import type { TuiComponent } from "../component.ts";
+import type { LegacyTuiComponent } from "../component.ts";
 import type { TerminalTheme } from "../theme.ts";
 import type { TranscriptBlock } from "../transcript-store.ts";
 import { clip, styledBackgroundLines } from "./rendering.ts";
@@ -9,7 +9,7 @@ export interface ToolCardOptions {
 }
 
 /** Render one tool transcript block as a compact status card. */
-export class ToolCard implements TuiComponent {
+export class ToolCard implements LegacyTuiComponent {
   readonly #block: TranscriptBlock;
   readonly #theme: TerminalTheme;
 
