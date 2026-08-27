@@ -5,10 +5,8 @@ import { makeCancelAction } from "@laohuang/runtime-protocol";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
 import type {
-  InputFn,
   ModelSelection,
   ModelSelector,
-  OutputFn,
   SelectionConfig,
 } from "./model-selection.ts";
 import type { CommandPresenter } from "./command-presentation.ts";
@@ -405,9 +403,7 @@ export interface SessionCommandsOptions {
     "status" | "login" | "logout" | "ensureConfigured"
   >;
   readonly currentConfig: SelectionConfig;
-  readonly input?: InputFn | undefined;
-  readonly output?: OutputFn | undefined;
-  readonly presenter?: CommandPresenter | undefined;
+  readonly presenter: CommandPresenter;
   readonly session?: SessionLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
 }
@@ -456,15 +452,7 @@ export class SessionCommands {
     this.#catalog = options.catalog;
     this.#providerAuth = options.providerAuth;
     this.#currentConfig = options.currentConfig;
-    this.#presenter = options.presenter ?? {
-      notice: ({ text }) => options.output?.(text),
-      help: () => {},
-      providers: () => {},
-      providerDetail: () => {},
-      queue: () => {},
-      select: async () => null,
-      prompt: async () => null,
-    };
+    this.#presenter = options.presenter;
     this.#session = options.session ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
     this.registry = new CommandRegistry([

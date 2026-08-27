@@ -313,17 +313,14 @@ export interface SessionReplSession {
   submitAction(action: SessionAction): Promise<Submission | CommandResult | boolean>;
   promotePendingToSteer(): number;
   queueStatus(): QueueStatus;
-  publishNotice(text: string, options?: { style?: string }): unknown;
   waitForIdle(timeoutMs?: number): Promise<boolean>;
   close(options?: { wait?: boolean; timeoutMs?: number }): Promise<boolean>;
 }
 
 export interface SessionUiLike {
-  commandRegistry?: unknown;
   renderError?: unknown;
   showWelcome?(): void;
   showGoodbye?(): void;
-  showError?(message: string): void;
   prompt?: unknown;
   run?(onSubmit: (text: string, options?: SubmitOptions) => void): void | Promise<void>;
   requestExit?(): void;
@@ -334,35 +331,19 @@ export interface SessionUiLike {
 }
 
 export type CommandHandler = (command: string) => CommandResult | Promise<CommandResult>;
+export type CommandSuggester = (command: string) => string | null;
 
 interface SubmissionRequest {
   readonly text: string;
   readonly options?: SubmitOptions;
 }
 
-function suggestCommand(ui: SessionUiLike | null, name: string): string | null {
-  const registry = ui?.commandRegistry as
-    | { suggest?: (command: string) => string | null }
-    | null
-    | undefined;
-  return typeof registry?.suggest === "function" ? registry.suggest(name) : null;
-}
-
 function presentNotice(
-  session: SessionReplSession,
-  presenter: CommandPresenter | undefined,
+  presenter: CommandPresenter,
   text: string,
   tone: "info" | "success" | "warning" | "error",
-  legacyStyle?: string,
 ): void {
-  if (presenter !== undefined) {
-    presenter.notice({ text, tone });
-    return;
-  }
-  session.publishNotice(
-    text,
-    legacyStyle === undefined ? undefined : { style: legacyStyle },
-  );
+  presenter.notice({ text, tone });
 }
 
 /**
@@ -372,8 +353,8 @@ function presentNotice(
 async function handleSessionInput(
   session: SessionReplSession,
   commandHandler: CommandHandler | undefined,
-  ui: SessionUiLike | null,
-  presenter: CommandPresenter | undefined,
+  presenter: CommandPresenter,
+  suggestCommand: CommandSuggester,
   userInput: string,
   options: SubmitOptions = {},
 ): Promise<boolean> {
@@ -383,7 +364,6 @@ async function handleSessionInput(
   if (!userInput) {
     const promoted = session.promotePendingToSteer();
     presentNotice(
-      session,
       presenter,
       promoted > 0
         ? `Steered ${promoted} queued message(s).`
@@ -408,16 +388,14 @@ async function handleSessionInput(
     result = await session.submitAction(action);
   } catch (error) {
     presentNotice(
-      session,
       presenter,
       `Error: ${errorMessage(error)}`,
       "error",
-      "bold red",
     );
     return true;
   }
   if (isCommandResult(result)) {
-    return handleCommandResult(session, ui, presenter, result);
+    return handleCommandResult(presenter, suggestCommand, result);
   }
   if (typeof result === "boolean") {
     if (action.type === "command") {
@@ -426,7 +404,7 @@ async function handleSessionInput(
         : commandHandler === undefined
           ? { status: "not_found", command: action.name } as const
           : await commandHandler(action.text ?? [action.name, ...action.arguments].join(" "));
-      return handleCommandResult(session, ui, presenter, commandResult);
+      return handleCommandResult(presenter, suggestCommand, commandResult);
     }
     return true;
   }
@@ -434,7 +412,6 @@ async function handleSessionInput(
   if (submission.queued) {
     const status = session.queueStatus();
     presentNotice(
-      session,
       presenter,
       options.strategy === "steer"
         ? `Message steered (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`
@@ -443,11 +420,9 @@ async function handleSessionInput(
     );
   } else if (submission.rejected) {
     presentNotice(
-      session,
       presenter,
       `Message rejected: ${submission.reason}`,
       "error",
-      "bold red",
     );
   }
   return true;
@@ -463,9 +438,8 @@ function isCommandResult(value: unknown): value is CommandResult {
 }
 
 async function handleCommandResult(
-  session: SessionReplSession,
-  ui: SessionUiLike | null,
-  presenter: CommandPresenter | undefined,
+  presenter: CommandPresenter,
+  suggestCommand: CommandSuggester,
   result: CommandResult,
 ): Promise<boolean> {
   if (result.status === "handled" || result.status === "blocked") {
@@ -476,18 +450,15 @@ async function handleCommandResult(
   }
   if (result.status === "error") {
     presentNotice(
-      session,
       presenter,
       `Invalid command: ${errorMessage(result.error)}`,
       "error",
-      "bold red",
     );
     return true;
   }
-  const suggestion = suggestCommand(ui, result.command);
+  const suggestion = suggestCommand(result.command);
   const suffix = suggestion ? ` Did you mean ${suggestion}?` : "";
   presentNotice(
-    session,
     presenter,
     `Unknown command: ${result.command}.${suffix}`,
     "info",
@@ -500,7 +471,8 @@ export async function runSessionRepl(
   session: SessionReplSession,
   options: {
     commandHandler?: CommandHandler | undefined;
-    presenter?: CommandPresenter | undefined;
+    presenter: CommandPresenter;
+    suggestCommand: CommandSuggester;
     ui: SessionUiLike;
     /** Override for driving a UI whose run() does not read real stdin. */
     runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
@@ -516,11 +488,12 @@ async function runClassicSessionRepl(
   session: SessionReplSession,
   options: {
     commandHandler?: CommandHandler | undefined;
-    presenter?: CommandPresenter | undefined;
+    presenter: CommandPresenter;
+    suggestCommand: CommandSuggester;
     ui: SessionUiLike;
   },
 ): Promise<boolean> {
-  const { commandHandler, presenter, ui } = options;
+  const { commandHandler, presenter, suggestCommand, ui } = options;
   ui.startEventRenderer?.();
   ui.showWelcome?.();
   let cleanShutdown = false;
@@ -538,7 +511,7 @@ async function runClassicSessionRepl(
           break;
         }
         if (isInterruptedError(error)) {
-          presentNotice(session, presenter, "Interrupted.", "warning", "yellow");
+          presentNotice(presenter, "Interrupted.", "warning");
           continue;
         }
         throw error;
@@ -546,8 +519,8 @@ async function runClassicSessionRepl(
       const keepGoing = await handleSessionInput(
         session,
         commandHandler,
-        ui,
         presenter,
+        suggestCommand,
         userInput,
       );
       if (!keepGoing) {
@@ -565,14 +538,10 @@ async function runClassicSessionRepl(
   if (cleanShutdown) {
     ui.showGoodbye?.();
   } else {
-    if (options.presenter !== undefined) {
-      options.presenter.notice({
-        text: "Task worker did not stop before the shutdown timeout.",
-        tone: "error",
-      });
-    } else {
-      ui.showError?.("Task worker did not stop before the shutdown timeout.");
-    }
+    presenter.notice({
+      text: "Task worker did not stop before the shutdown timeout.",
+      tone: "error",
+    });
   }
   return cleanShutdown;
 }
@@ -593,8 +562,8 @@ interface Coordinator {
 function startCoordinator(
   session: SessionReplSession,
   commandHandler: CommandHandler | undefined,
-  ui: SessionUiLike,
-  presenter: CommandPresenter | undefined,
+  presenter: CommandPresenter,
+  suggestCommand: CommandSuggester,
 ): Coordinator {
   const queue: Array<SubmissionRequest | null> = [];
   let wake: (() => void) | null = null;
@@ -620,8 +589,8 @@ function startCoordinator(
         await handleSessionInput(
           session,
           commandHandler,
-          ui,
           presenter,
+          suggestCommand,
           item.text,
           item.options ?? {},
         );
@@ -697,17 +666,23 @@ async function runPersistentSessionRepl(
   session: SessionReplSession,
   options: {
     commandHandler?: CommandHandler | undefined;
-    presenter?: CommandPresenter | undefined;
+    presenter: CommandPresenter;
+    suggestCommand: CommandSuggester;
     ui: SessionUiLike;
     runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
   },
 ): Promise<boolean> {
-  const { commandHandler, presenter, ui } = options;
+  const { commandHandler, presenter, suggestCommand, ui } = options;
   const runUi =
     options.runUi ??
     ((onSubmit: (text: string, options?: SubmitOptions) => void) => ui.run!(onSubmit));
   ui.showWelcome?.();
-  const coordinator = startCoordinator(session, commandHandler, ui, presenter);
+  const coordinator = startCoordinator(
+    session,
+    commandHandler,
+    presenter,
+    suggestCommand,
+  );
   let cleanShutdown = false;
   try {
     const enqueue = (userInput: string, submitOptions: SubmitOptions = {}): void => {
@@ -719,22 +694,20 @@ async function runPersistentSessionRepl(
             await handleSessionInput(
               session,
               commandHandler,
-              ui,
               presenter,
+              suggestCommand,
               userInput,
               submitOptions,
             );
           } catch (error) {
             try {
               presentNotice(
-                session,
                 presenter,
                 `Error: ${errorMessage(error)}`,
                 "error",
-                "bold red",
               );
             } catch {
-              // The event bus may already be closed during shutdown.
+              // The presenter may already be closed during shutdown.
             }
           }
         })();
@@ -771,11 +744,7 @@ async function runPersistentSessionRepl(
           : coordinator.errors.length > 0
             ? "Input coordinator failed during shutdown."
             : "Task worker did not stop before the shutdown timeout.";
-        if (presenter !== undefined) {
-          presenter.notice({ text: shutdownMessage, tone: "error" });
-        } else {
-          ui.showError?.(shutdownMessage);
-        }
+        presenter.notice({ text: shutdownMessage, tone: "error" });
       }
     } finally {
       ui.close?.();
@@ -791,15 +760,17 @@ export async function runPlainSessionRepl(
   options: {
     commandHandler?: CommandHandler | undefined;
     inputFn?: ((prompt: string) => string | Promise<string>) | undefined;
-    presenter?: CommandPresenter | undefined;
+    presenter: CommandPresenter;
+    suggestCommand: CommandSuggester;
     sink: PlainEventSink;
   },
 ): Promise<boolean> {
   const inputFn = options.inputFn ?? defaultInputFn;
-  const { commandHandler, sink } = options;
-  session.publishNotice(
-    "laoHuangCode is ready. Type /help for commands or /exit to quit.",
-  );
+  const { commandHandler, presenter, sink, suggestCommand } = options;
+  presenter.notice({
+    text: "laoHuangCode is ready. Type /help for commands or /exit to quit.",
+    tone: "info",
+  });
   await session.eventBus.flush();
   sink.flush();
   let cleanShutdown = false;
@@ -816,7 +787,10 @@ export async function runPlainSessionRepl(
           break;
         }
         if (isInterruptedError(error)) {
-          session.publishNotice("Interrupted. Type /exit to quit.");
+          presenter.notice({
+            text: "Interrupted. Type /exit to quit.",
+            tone: "warning",
+          });
           continue;
         }
         throw error;
@@ -824,8 +798,8 @@ export async function runPlainSessionRepl(
       const keepGoing = await handleSessionInput(
         session,
         commandHandler,
-        null,
-        options.presenter,
+        presenter,
+        suggestCommand,
         userInput,
       );
       if (!keepGoing) {
@@ -840,11 +814,13 @@ export async function runPlainSessionRepl(
     }
     sink.stop({ drain: cleanShutdown });
   }
-  const output = sink.outputFn;
   if (cleanShutdown) {
-    output("Goodbye.");
+    sink.outputFn("Goodbye.");
   } else {
-    output("Error: Task worker did not stop before the shutdown timeout.");
+    presenter.notice({
+      text: "Task worker did not stop before the shutdown timeout.",
+      tone: "error",
+    });
   }
   return cleanShutdown;
 }

@@ -6,6 +6,7 @@ import type {
   ModelAuthService,
   ModelAuthStatus,
 } from "@laohuang/llm";
+import { ModelError } from "@laohuang/llm";
 import type { PromptPresentation } from "../apps/cli/src/command-presentation.ts";
 import {
   type AuthPromptHandler,
@@ -147,6 +148,28 @@ test("login returns null when any presenter prompt is cancelled", async (t) => {
       }), null);
     });
   }
+});
+
+test("login preserves cancellation when the adapter wraps the prompt error", async () => {
+  const auth = new FakeAuthService(async (interaction) => {
+    try {
+      await interaction.prompt({
+        type: "secret",
+        message: "Enter API key",
+      });
+    } catch (error) {
+      throw new ModelError("pi-ai authentication failed", {
+        kind: "retryable",
+        cause: error,
+      });
+    }
+    throw new Error("cancelled authentication unexpectedly continued");
+  });
+  const controller = new ProviderAuthController({ auth });
+
+  assert.equal(await controller.login("deepseek", {
+    prompt: async () => null,
+  }), null);
 });
 
 test("login propagates auth service failures to the command layer", async () => {

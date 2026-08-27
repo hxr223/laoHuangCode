@@ -258,6 +258,14 @@ test("interactive commands own no string output or numbered prompt rendering", (
     join(repositoryRoot, "apps", "cli", "src", "provider-auth.ts"),
     "utf8",
   );
+  const main = readFileSync(
+    join(repositoryRoot, "apps", "cli", "src", "main.ts"),
+    "utf8",
+  );
+  const repl = readFileSync(
+    join(repositoryRoot, "apps", "cli", "src", "repl.ts"),
+    "utf8",
+  );
   const displayActions = readFileSync(
     join(repositoryRoot, "packages", "terminal", "tui", "src", "tui", "display-actions.ts"),
     "utf8",
@@ -266,12 +274,27 @@ test("interactive commands own no string output or numbered prompt rendering", (
   assert.equal(commands.includes("readonly #output"), false);
   assert.equal(commands.includes("readonly #input"), false);
   assert.equal(commands.includes("this.#output("), false);
+  assert.equal(commands.includes("readonly input?: InputFn"), false);
+  assert.equal(commands.includes("readonly output?: OutputFn"), false);
+  assert.equal(commands.includes("readonly presenter?: CommandPresenter"), false);
+  assert.equal(commands.includes("readonly presenter: CommandPresenter"), true);
+  assert.equal(commands.includes("options.presenter ??"), false);
   assert.equal(commands.includes(".padEnd("), false);
   assert.equal(modelSelection.includes("console.log"), false);
   assert.equal(modelSelection.includes("index + 1"), false);
   assert.equal(providerAuth.includes("console.log"), false);
   assert.equal(providerAuth.includes("index + 1"), false);
   assert.equal(providerAuth.includes("Select option:"), false);
+  assert.equal(repl.includes("session.publishNotice("), false);
+  assert.equal(repl.includes("ui?.commandRegistry"), false);
+  assert.equal(
+    repl.includes('output("Error: Task worker did not stop before the shutdown timeout.")'),
+    false,
+  );
+  assert.equal(
+    main.includes("runtime.publishNotice(`Key action is unavailable: ${action}.`);"),
+    false,
+  );
   assert.equal(displayActions.includes('type: "text"'), false);
   assert.equal(displayActions.includes('type: "status"'), false);
   assert.equal(displayActions.includes('type: "error"'), false);
