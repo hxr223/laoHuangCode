@@ -1416,14 +1416,12 @@ function replSession(options: {
 test("unknown commands use typed info notices with suggestions", async () => {
   const presenter = new RecordingPresenter();
   const runtimeNotices: string[] = [];
-  const ui: SessionUiLike = {
-    commandRegistry: { suggest: () => "/help" },
-    close: () => {},
-  };
+  const ui: SessionUiLike = { close: () => {} };
 
   await runSessionRepl(replSession({ runtimeNotices }), {
     ui,
     presenter,
+    suggestCommand: () => "/help",
     commandHandler: async () => ({ status: "not_found", command: "/hep" }),
     runUi: (submit) => {
       submit("/hep");
@@ -1456,6 +1454,7 @@ test("rejected messages use typed error notices", async () => {
   await runSessionRepl(session, {
     ui: { close: () => {} },
     presenter,
+    suggestCommand: () => null,
     runUi: (submit) => {
       submit("blocked content");
     },
@@ -1481,6 +1480,7 @@ test("shutdown errors use typed error notices", async () => {
       close: () => {},
     },
     presenter,
+    suggestCommand: () => null,
     runUi: () => {},
   });
 

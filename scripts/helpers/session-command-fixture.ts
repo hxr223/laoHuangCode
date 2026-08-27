@@ -234,8 +234,6 @@ export function createSessionCommandFixture(
       baseUrl: null,
       provider: "deepseek",
     },
-    input: async () => "1",
-    output: (text) => options.presenter.notice({ text, tone: "info" }),
     presenter: options.presenter,
     session: options.session ?? null,
   });

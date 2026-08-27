@@ -463,7 +463,10 @@ export async function main(
         terminalUi.toggleReasoningFromKeybinding();
         return;
       }
-      runtime.publishNotice(`Key action is unavailable: ${action}.`);
+      commandPresenter.notice({
+        text: `Key action is unavailable: ${action}.`,
+        tone: "warning",
+      });
     });
     terminalUi.setRuntimeRunningCallback(() => runtime.activeTask !== null);
   }
@@ -482,6 +485,7 @@ export async function main(
       cleanShutdown = await runSessionRepl(runtime, {
         commandHandler: handleCommand,
         presenter: commandPresenter,
+        suggestCommand: (command) => commands.registry.suggest(command),
         ui,
         runUi: (enqueue) => runTerminalUi(ui, driver, enqueue),
       });
@@ -490,6 +494,7 @@ export async function main(
         commandHandler: handleCommand,
         inputFn: replInputFn,
         presenter: commandPresenter,
+        suggestCommand: (command) => commands.registry.suggest(command),
         sink: plainSink!,
       });
     }

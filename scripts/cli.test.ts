@@ -36,9 +36,11 @@ import { AgentSession } from "@laohuang/session-runtime";
 import {
   MemoryTerminalDriver,
   PlainEventSink,
+  PromptCancelledError,
   PromptEofError,
   TerminalUI,
 } from "../packages/terminal/tui/src/index.ts";
+import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
 
 const textEncoder = new TextEncoder();
 
@@ -124,16 +126,23 @@ test("session repl keeps prompting while the worker runs", async () => {
   }
 
   const ui = new FakeUI();
+  const presenter = new RecordingPresenter();
   session.eventBus.subscribe((event) => {
     if (event.kind === EventKind.UiMessage) {
       ui.messages.push(String((event.payload as { text?: unknown }).text ?? ""));
     }
   });
 
-  await runSessionRepl(session, { ui });
+  await runSessionRepl(session, {
+    ui,
+    presenter,
+    suggestCommand: () => null,
+  });
 
   assert.equal(started[0], "first");
-  assert.ok(ui.messages.some((item) => item.includes("Message queued")));
+  assert.ok(presenter.notices.some((notice) =>
+    notice.text.includes("Message queued")
+  ));
   assert.ok(ui.messages.includes("goodbye"));
 });
 
@@ -170,7 +179,11 @@ test("persistent terminal repl exits without leaving its queue blocked", async (
   const ui = new PersistentUI();
   const session = new AgentSession(() => "unused");
 
-  assert.equal(await runSessionRepl(session, { ui }), true);
+  assert.equal(await runSessionRepl(session, {
+    ui,
+    presenter: new RecordingPresenter(),
+    suggestCommand: () => null,
+  }), true);
   assert.equal(ui.exitRequests, 1);
   assert.ok(ui.messages.includes("closed"));
 });
@@ -200,7 +213,11 @@ test("persistent repl sends two inputs then exits cleanly", async () => {
   const session = new AgentSession(async () => "done");
   const ui = new FakePiLoopUI();
 
-  const clean = await runSessionRepl(session, { ui });
+  const clean = await runSessionRepl(session, {
+    ui,
+    presenter: new RecordingPresenter(),
+    suggestCommand: () => null,
+  });
 
   assert.equal(clean, true);
   assert.equal(ui.closed, true);
@@ -222,10 +239,14 @@ test("persistent repl returns false for terminal write failure", async () => {
 
   const session = new AgentSession(async () => "done");
 
-  assert.equal(await runSessionRepl(session, { ui: new FakePiLoopUI() }), false);
+  assert.equal(await runSessionRepl(session, {
+    ui: new FakePiLoopUI(),
+    presenter: new RecordingPresenter(),
+    suggestCommand: () => null,
+  }), false);
 });
 
-test("persistent exit does not wait for slow prior routing", async () => {
+test("persistent exit reports slow prior routing failures through presenter", async () => {
   class FakeSession {
     closed = false;
     eventBus = { flush: async (): Promise<void> => {} };
@@ -311,14 +332,19 @@ test("persistent exit does not wait for slow prior routing", async () => {
   }
 
   const ui = new FakePiLoopUI();
+  const presenter = new RecordingPresenter();
   const result = await runSessionRepl(
     session as unknown as SessionReplSession,
-    { ui },
+    { ui, presenter, suggestCommand: () => null },
   );
 
-  assert.equal(result, false);
+  assert.equal(result, true);
   assert.equal(session.closed, true);
-  assert.deepEqual(ui.messages, ["Input coordinator failed during shutdown."]);
+  assert.deepEqual(ui.messages, []);
+  assert.deepEqual(presenter.notices, [{
+    text: "Error: event bus is closed",
+    tone: "error",
+  }]);
 });
 
 test("persistent repl reports unclean shutdown before ui close", async () => {
@@ -344,16 +370,22 @@ test("persistent repl reports unclean shutdown before ui close", async () => {
     }
   }
 
+  const presenter = new RecordingPresenter();
   const clean = await runSessionRepl(
     new FakeSession() as unknown as SessionReplSession,
-    { ui: new FakePiLoopUI() },
+    {
+      ui: new FakePiLoopUI(),
+      presenter,
+      suggestCommand: () => null,
+    },
   );
 
   assert.equal(clean, false);
-  assert.deepEqual(events, [
-    "error:Task worker did not stop before the shutdown timeout.",
-    "close",
-  ]);
+  assert.deepEqual(events, ["close"]);
+  assert.deepEqual(presenter.notices, [{
+    text: "Task worker did not stop before the shutdown timeout.",
+    tone: "error",
+  }]);
 });
 
 test("plain repl uses agent session and waits for pipe eof", async () => {
@@ -379,11 +411,103 @@ test("plain repl uses agent session and waits for pipe eof", async () => {
     sink.publishEvent(projector.project(event, "terminal"));
   });
 
-  await runPlainSessionRepl(session, { inputFn: readInput, sink });
+  await runPlainSessionRepl(session, {
+    inputFn: readInput,
+    presenter: new PlainCommandPresenter({
+      output: (text) => outputs.push(text),
+      input: async () => "",
+      secretInput: async () => "",
+    }),
+    suggestCommand: () => null,
+    sink,
+  });
 
   assert.deepEqual(calls, ["hello"]);
   assert.ok(outputs.some((output) => output.includes("ready")));
   assert.equal(outputs.at(-1), "Goodbye.");
+});
+
+test("plain repl routes interruption through typed presenter notices", async () => {
+  const presenter = new RecordingPresenter();
+  const runtimeNotices: string[] = [];
+  const session = new AgentSession(async () => "unused");
+  session.eventBus.subscribe((event) => {
+    if (event.kind === EventKind.UiMessage) {
+      runtimeNotices.push(String((event.payload as { text?: unknown }).text ?? ""));
+    }
+  });
+  let interrupted = false;
+
+  await runPlainSessionRepl(session, {
+    inputFn: () => {
+      if (!interrupted) {
+        interrupted = true;
+        throw new PromptCancelledError();
+      }
+      return "/exit";
+    },
+    presenter,
+    suggestCommand: () => null,
+    sink: new PlainEventSink(() => {}),
+  });
+
+  assert.deepEqual(presenter.notices, [
+    {
+      text: "laoHuangCode is ready. Type /help for commands or /exit to quit.",
+      tone: "info",
+    },
+    { text: "Interrupted. Type /exit to quit.", tone: "warning" },
+  ]);
+  assert.deepEqual(runtimeNotices, []);
+});
+
+test("plain repl routes shutdown failures through typed presenter notices", async () => {
+  const presenter = new RecordingPresenter();
+  const output: string[] = [];
+  const session = {
+    state: "idle",
+    eventBus: { flush: async () => {} },
+    submitInput: async () => ({ queued: false, rejected: false }),
+    submitAction: async () => false,
+    promotePendingToSteer: () => 0,
+    queueStatus: () => ({}),
+    publishNotice: () => {},
+    waitForIdle: async () => true,
+    close: async () => false,
+  } as unknown as SessionReplSession;
+
+  const clean = await runPlainSessionRepl(session, {
+    inputFn: () => "/exit",
+    presenter,
+    suggestCommand: () => null,
+    sink: new PlainEventSink((text) => output.push(text)),
+  });
+
+  assert.equal(clean, false);
+  assert.deepEqual(presenter.notices.at(-1), {
+    text: "Task worker did not stop before the shutdown timeout.",
+    tone: "error",
+  });
+  assert.equal(output.includes("Error: Task worker did not stop before the shutdown timeout."), false);
+});
+
+test("plain repl receives unknown-command suggestions without terminal UI", async () => {
+  const presenter = new RecordingPresenter();
+  const session = new AgentSession(async () => "unused");
+  const inputs = ["/hep", "/exit"];
+
+  await runPlainSessionRepl(session, {
+    commandHandler: async () => ({ status: "not_found", command: "/hep" }),
+    inputFn: () => inputs.shift() ?? "/exit",
+    presenter,
+    suggestCommand: () => "/help",
+    sink: new PlainEventSink(() => {}),
+  });
+
+  assert.ok(presenter.notices.some((notice) =>
+    notice.text === "Unknown command: /hep. Did you mean /help?" &&
+    notice.tone === "info"
+  ));
 });
 
 test("session repl routes submitted text through neutral session actions", async () => {
@@ -411,19 +535,18 @@ test("session repl routes submitted text through neutral session actions", async
     stopEventRenderer(): void {}
   }
 
-  await runSessionRepl(session, { ui: new FakeUI() });
+  await runSessionRepl(session, {
+    ui: new FakeUI(),
+    presenter: new RecordingPresenter(),
+    suggestCommand: () => null,
+  });
 
   assert.deepEqual(actions, ["prompt"]);
 });
 
 test("session repl reports malformed slash input without exiting", async () => {
-  const notices: string[] = [];
+  const presenter = new RecordingPresenter();
   const session = new AgentSession(async () => "unused");
-  session.eventBus.subscribe((event) => {
-    if (event.kind === EventKind.UiMessage) {
-      notices.push(String((event.payload as { text?: unknown }).text ?? ""));
-    }
-  });
 
   class FakeUI {
     commandRegistry = null;
@@ -441,9 +564,15 @@ test("session repl reports malformed slash input without exiting", async () => {
     stopEventRenderer(): void {}
   }
 
-  await runSessionRepl(session, { ui: new FakeUI() });
+  await runSessionRepl(session, {
+    ui: new FakeUI(),
+    presenter,
+    suggestCommand: () => null,
+  });
 
-  assert.ok(notices.some((notice) => notice.includes("No closing quotation")));
+  assert.ok(presenter.notices.some((notice) =>
+    notice.text.includes("No closing quotation")
+  ));
 });
 
 test("persistent repl preserves follow-up submit metadata", async () => {
@@ -472,7 +601,11 @@ test("persistent repl preserves follow-up submit metadata", async () => {
     }
   }
 
-  await runSessionRepl(session, { ui: new FakePiLoopUI() });
+  await runSessionRepl(session, {
+    ui: new FakePiLoopUI(),
+    presenter: new RecordingPresenter(),
+    suggestCommand: () => null,
+  });
 
   assert.deepEqual(actions, [{ type: "follow_up", text: "later" }]);
 });

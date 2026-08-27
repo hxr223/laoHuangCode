@@ -57,10 +57,15 @@ export class ProviderAuthController {
     provider: string,
     prompts: AuthPromptHandler,
   ): Promise<ModelAuthStatus | null> {
+    const cancellation = { requested: false };
     try {
-      return await this.#auth.loginApiKey(provider, this.#interaction(prompts));
+      const status = await this.#auth.loginApiKey(
+        provider,
+        this.#interaction(prompts, cancellation),
+      );
+      return cancellation.requested ? null : status;
     } catch (error) {
-      if (error instanceof ProviderLoginCancelledError) {
+      if (cancellation.requested) {
         return null;
       }
       throw error;
@@ -71,9 +76,12 @@ export class ProviderAuthController {
     return this.#auth.logout(provider);
   }
 
-  #interaction(prompts: AuthPromptHandler): ApiKeySetupInteraction {
+  #interaction(
+    prompts: AuthPromptHandler,
+    cancellation: { requested: boolean },
+  ): ApiKeySetupInteraction {
     return {
-      prompt: (prompt) => this.#prompt(prompt, prompts),
+      prompt: (prompt) => this.#prompt(prompt, prompts, cancellation),
       notify: () => {},
     };
   }
@@ -81,6 +89,7 @@ export class ProviderAuthController {
   async #prompt(
     prompt: ApiKeySetupPrompt,
     prompts: AuthPromptHandler,
+    cancellation: { requested: boolean },
   ): Promise<string> {
     const answer = await prompts.prompt(
       prompt.type === "select"
@@ -95,6 +104,7 @@ export class ProviderAuthController {
           },
     );
     if (answer === null) {
+      cancellation.requested = true;
       throw new ProviderLoginCancelledError();
     }
     return answer;
