@@ -132,7 +132,7 @@ tmux send-keys -t laohuang-component-test Escape
 tmux kill-session -t laohuang-component-test
 ```
 
-捕获结果应显示无全局外框的 `/help` 结构化命令列表、单一输入提示符和保留的原生
+捕获结果应显示 Kimi 风格的 welcome/input 边框、`/help` 结构化命令列表、单一输入提示符和保留的原生
 scrollback，不应出现编号交互列表或终端协商片段。供应商支持的模型选择和认证操作
 需要已配置凭据，不属于自动 `smoke:tui` 验证。
 

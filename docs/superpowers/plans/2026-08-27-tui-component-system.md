@@ -1136,16 +1136,16 @@ git commit -m "feat(tui): host focused interactive views"
 
 **Interfaces:**
 - Consumes: Tasks 1-6 components/compiler/view host; existing editor render metadata and `PiMainScreenRenderer` `ScreenFrame` contract.
-- Produces: `MainScreen`, unframed `FrameBuilder.build()`, structured `CompletionPopup`, and structured `StatusLine`.
+- Produces: `MainScreen`, framed `FrameBuilder.build()`, structured `CompletionPopup`, and structured `StatusLine`.
 
-- [ ] **Step 1: Write failing unframed-layout tests**
+- [ ] **Step 1: Write failing root-layout tests**
 
 ```ts
 function stripAnsi(value: string): string {
   return value.replace(/\x1b\[[0-9;]*m/gu, "");
 }
 
-test("main screen has no global decorative frame", () => {
+test("main screen keeps transcript unframed while composer owns the input frame", () => {
   const state = createUIState();
   const transcript = new TranscriptStore();
   transcript.append(createAssistantBlock("answer-1", "answer", false));
@@ -1153,9 +1153,9 @@ test("main screen has no global decorative frame", () => {
   editor.text = "abc";
   editor.cursor = 3;
   const frame = new FrameBuilder({ state, transcript }).build({ width: 40, editor });
-  assert.equal(frame.screen.lines.some((value) => /[╭╮╰╯│]/u.test(stripAnsi(value))), false);
+  assert.equal(frame.screen.lines.some((value) => /[╭╮╰╯│]/u.test(stripAnsi(value))), true);
   assert.ok(frame.screen.lines.some((value) => stripAnsi(value).includes("answer")));
-  assert.ok(frame.screen.lines.some((value) => stripAnsi(value).includes("❯ abc")));
+  assert.ok(frame.screen.lines.some((value) => stripAnsi(value).includes("> abc")));
 });
 
 test("completion height follows actual candidates", () => {
@@ -1215,11 +1215,12 @@ renderStyledLines(
 `Composer` delegates to this method, styles only the prompt as `accent`, leaves
 typed text uncolored, and reports the same cursor metadata in
 `ComponentRenderResult`. Add an editor regression asserting `中文abc` places the
-cursor after nine cells in the unframed editor.
+cursor after the expected terminal cell in the framed editor.
 
 - [ ] **Step 5: Implement `MainScreen`**
 
-Compose logical sections without global border:
+Compose logical sections without a global frame; welcome and composer provide
+their own Kimi-style bordered panels:
 
 ```ts
 const dock = activeView !== null
@@ -1234,9 +1235,9 @@ const lines = [
 ```
 
 Use explicit one-line gaps only where transcript block boundaries require them.
-Cursor row is `transcript.lines.length + dock.cursor.row`; cursor column is the
-dock cursor column. `activeStart` is the first mutable transcript line or the
-start of the dock.
+Cursor row is `transcript.lines.length + dock.cursor.row + 1`; cursor column is
+the dock cursor column plus the left border. `activeStart` is the first mutable
+transcript line or the start of the dock, offset by the top border.
 
 - [ ] **Step 6: Replace hard-coded frame assembly**
 
@@ -1267,7 +1268,7 @@ Expected: all commands PASS and existing native-scrollback tests remain green.
 ```bash
 git add packages/terminal/tui/src/tui/main-screen.ts packages/terminal/tui/src/tui/components/composer.ts packages/terminal/tui/src/tui/components/status-line.ts packages/terminal/tui/src/tui/components/completion-list.ts packages/terminal/tui/src/tui/component.ts packages/terminal/tui/src/tui/contracts.ts packages/terminal/tui/src/tui/editor.ts packages/terminal/tui/src/tui/frame-builder.ts packages/terminal/tui/src/tui/ui.ts packages/terminal/tui/src/tui/components.ts scripts/frame-builder.test.ts scripts/tui-editor.test.ts scripts/tui-ui.test.ts scripts/tui-screen.test.ts
 git diff --cached --check
-git commit -m "refactor(tui): compose unframed main screen"
+git commit -m "refactor(tui): compose framed main screen"
 ```
 
 ---
@@ -1852,8 +1853,8 @@ test("interactive command component journey preserves scrollback and cursor", as
   const screen = terminal.logicalLines.join("\n");
   assert.ok(screen.includes("/model [provider] [model]"));
   assert.equal(screen.includes("Model providers:\n  1."), false);
-  assert.equal(screen.split("❯ 中文abc").length - 1, 1);
-  assert.equal(terminal.cursorColumn, visibleWidth("❯ 中文abc"));
+  assert.equal(screen.split("> 中文abc").length - 1, 1);
+  assert.equal(terminal.cursorColumn, visibleWidth("│> 中文abc"));
 });
 ```
 
@@ -1872,8 +1873,8 @@ and answer spans have no foreground token.
 
 Update `scripts/tui-smoke.sh` to start the built CLI in tmux without provider
 calls, open slash completion/help, type three characters, dismiss with Escape,
-and capture the pane. Fail on global frame glyphs, numbered interactive model
-lists, duplicated prompts, or literal terminal negotiation fragments.
+and capture the pane. Require Kimi-style framed welcome/input surfaces and fail on numbered interactive
+model lists, duplicated prompts, or literal terminal negotiation fragments.
 
 - [ ] **Step 4: Document exact manual verification**
 
@@ -1909,7 +1910,7 @@ Build first, then exercise `/`, `/help`, `/model`, `/effort`, `/providers`, thre
 ASCII characters, CJK input, Escape, terminal resize, reasoning display, and a
 fake/local tool display. Capture the pane after each surface and verify:
 
-- no global frame;
+- Kimi-style welcome/input framed surfaces are visible;
 - no all-grey command/provider list;
 - selected row uses accent and descriptions use muted;
 - input and ordinary answers use terminal default foreground;
@@ -1991,13 +1992,14 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
 - Startup, slash completion, `/help`, `/providers`, `/model`, `/effort`,
   Escape cancellation, mixed `abc` plus CJK input, resize, and login masking
   rendered through the built CLI using isolated local configuration.
-- No capture contained a global frame, numbered interactive list, duplicate
-  prompt, stale completion row, or literal terminal negotiation fragment.
+- Captures contained the Kimi-style welcome/input framed surfaces and did not contain numbered
+  interactive lists, duplicate prompts, stale completion rows, or literal
+  terminal negotiation fragments.
 - Help descriptions and selector descriptions used muted styling; selected
   model and effort rows used accent styling. Provider states used distinct
   semantic status colors rather than an all-grey view.
 - Mixed ASCII/CJK input used the terminal default foreground. The terminal
-  cursor was at column 9 for `❯ abc` plus two CJK characters before resize and
+  cursor was at column 9 for `> abc` plus two CJK characters before resize and
   remained at column 9 after resize.
 - The authentication dialog displayed bullets only. The supplied local test
   value did not appear in capture or scrollback, and authentication was
@@ -2020,6 +2022,6 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
 Fix round 1 replaced fixed 200ms smoke delays with bounded polling. Fix round 2
 wires `npm run smoke:tui` to run both the built-CLI tmux smoke and the committed
 offline transcript tmux verifier. `/help` must still appear before any
-subsequent key, and the transcript verifier rejects global frames, numbered
-lists, duplicated prompts, terminal negotiation fragments, late reasoning text,
-and the local secret fixture.
+subsequent key, and the transcript verifier requires Kimi-style framed
+welcome/input surfaces while rejecting numbered lists, duplicated prompts, terminal negotiation
+fragments, late reasoning text, and the local secret fixture.

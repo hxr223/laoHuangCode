@@ -41,9 +41,9 @@ In an interactive TTY session:
 - The terminal uses native scrollback for frozen transcript content and redraws
   only the active region. Components may not bypass `InteractiveTerminalLoop` or
   `PiMainScreenRenderer` to write interactive stdout.
-- The root layout is unframed. The current full-screen `╭─╮` frame is removed;
-  borders and backgrounds are used only for genuinely bounded surfaces such as
-  tool cards and authentication dialogs.
+- The root layout keeps the native full-screen `╭─╮` frame as a componentized
+  shell around transcript, composer, completion, and status. Interior command
+  views, tool cards, and authentication dialogs still use dedicated components.
 
 In a non-interactive session:
 
@@ -88,12 +88,12 @@ business data.
 | `HelpView` | Pi list styling; Codex structured lines | Command usage in default foreground and description in muted foreground. |
 | `ProviderStatusView` | Codex history-cell composition | Typed key/value rows and semantic state colors; LaoHuang provider state semantics. |
 | `QueueStatusView` | Codex status/history cells | Typed queue fields and compact responsive layout. |
-| `UserMessage` | Pi `user-message.ts` | Full-width user background with padding. |
+| `UserMessage` | Kimi-style transcript marker plus Pi text colors | `✨` marker plus unboxed terminal-default text; no full-line user background. |
 | `AssistantMessage`, `ThinkingMessage` | Pi `assistant-message.ts` | Markdown answer, muted italic reasoning, independent visibility/freeze lifecycle. |
 | `ToolMessage`, `BashMessage` | Pi `tool-execution.ts`, `bash-execution.ts` | Semantic status background/title/output, expansion, exit code and duration. |
 | `NoticeMessage`, `ErrorMessage` | Codex `history_cell/notices.rs` | Typed tone, prefix, wrapped body; no arbitrary style strings from callers. |
 | `StatusLine` | Pi `footer.ts` | Responsive left/right fields for cwd, queue, token counts, provider/model, and effort. |
-| Root layout | Pi main-screen composition | Transcript plus active dock; no global frame; renderer remains regular-screen append/diff engine. |
+| Root layout | Kimi-style welcome/input panels plus Pi main-screen composition | Transcript stays unboxed; welcome and composer own their borders; renderer remains regular-screen append/diff engine. |
 
 ## Architecture
 
@@ -339,9 +339,10 @@ MainScreen
 ```
 
 Frozen transcript lines precede the mutable active region. `FrameBuilder`
-computes cursor coordinates from the selected dock component's reported cursor
-and concatenates lines without a global frame. Full-width backgrounds are
-padded to `width - 1` when required by terminal autowrap safety.
+computes cursor coordinates from the selected dock component's reported cursor.
+Welcome and composer panels provide Kimi-style borders while transcript content
+stays unboxed. Full-width backgrounds are padded to the active panel width when
+required by terminal autowrap safety.
 
 ## Visual Contract
 
@@ -453,7 +454,7 @@ erasable TypeScript syntax.
 2. No interactive command handler prints numbered options or preformatted ANSI.
 3. No business component emits ANSI directly.
 4. `PiMainScreenRenderer` and raw terminal input behavior remain intact.
-5. The full-screen decorative frame is removed without regressing native
+5. The full-screen decorative frame is preserved without regressing native
    scrollback, cursor placement, completion shrink, resize, or frozen-history
    behavior.
 6. Interactive and plain presenters report equivalent domain facts.
@@ -498,13 +499,14 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
 - Startup, slash completion, `/help`, `/providers`, `/model`, `/effort`,
   Escape cancellation, mixed `abc` plus CJK input, resize, and login masking
   rendered through the built CLI using isolated local configuration.
-- No capture contained a global frame, numbered interactive list, duplicate
-  prompt, stale completion row, or literal terminal negotiation fragment.
+- Captures contained the Kimi-style welcome/input framed surfaces and did not contain numbered
+  interactive lists, duplicate prompts, stale completion rows, or literal
+  terminal negotiation fragments.
 - Help descriptions and selector descriptions used muted styling; selected
   model and effort rows used accent styling. Provider states used distinct
   semantic status colors rather than an all-grey view.
 - Mixed ASCII/CJK input used the terminal default foreground. The terminal
-  cursor was at column 9 for `❯ abc` plus two CJK characters before resize and
+  cursor was at column 9 for `> abc` plus two CJK characters before resize and
   remained at column 9 after resize.
 - The authentication dialog displayed bullets only. The supplied local test
   value did not appear in capture or scrollback, and authentication was
@@ -527,6 +529,6 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
 Fix round 1 replaced fixed 200ms smoke delays with bounded polling. Fix round 2
 wires `npm run smoke:tui` to run both the built-CLI tmux smoke and the committed
 offline transcript tmux verifier. `/help` must still appear before any
-subsequent key, and the transcript verifier rejects global frames, numbered
-lists, duplicated prompts, terminal negotiation fragments, late reasoning text,
-and the local secret fixture.
+subsequent key, and the transcript verifier requires the Kimi-style framed
+welcome/input surfaces while rejecting numbered lists, duplicated prompts, terminal negotiation
+fragments, late reasoning text, and the local secret fixture.

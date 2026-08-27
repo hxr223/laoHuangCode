@@ -1,6 +1,15 @@
 import type { TuiComponent } from "../component.ts";
 import type { EditorLike } from "../contracts.ts";
-import type { ComponentRenderResult, RenderContext } from "../render-model.ts";
+import {
+  line,
+  padStyledLine,
+  span,
+  truncateStyledLine,
+  type ComponentRenderResult,
+  type RenderContext,
+  type SpanStyle,
+  type StyledLine,
+} from "../render-model.ts";
 
 export interface ComposerOptions {
   readonly editor: EditorLike;
@@ -16,20 +25,55 @@ export class Composer implements TuiComponent {
 
   constructor(options: ComposerOptions) {
     this.#editor = options.editor;
-    this.#prompt = options.prompt ?? "❯ ";
+    this.#prompt = options.prompt ?? "> ";
     this.#mask = options.mask ?? false;
   }
 
   render(context: RenderContext): ComponentRenderResult {
-    const rendered = this.#editor.renderStyledLines(context.width, {
+    const width = Math.max(1, context.width);
+    if (width < 4) {
+      const rendered = this.#editor.renderStyledLines(width, {
+        prompt: this.#prompt,
+        mask: this.#mask,
+      });
+      return {
+        lines: rendered.lines,
+        cursor: {
+          row: rendered.cursorRow,
+          column: rendered.cursorColumn,
+        },
+      };
+    }
+    const innerWidth = width - 2;
+    const rendered = this.#editor.renderStyledLines(innerWidth, {
       prompt: this.#prompt,
       mask: this.#mask,
     });
+    const borderStyle: SpanStyle = { foreground: "dim" };
+    const lines: StyledLine[] = [
+      line(
+        span("╭", borderStyle),
+        span("─".repeat(innerWidth), borderStyle),
+        span("╮", borderStyle),
+      ),
+      ...rendered.lines.map((value) =>
+        line(
+          span("│", borderStyle),
+          ...padStyledLine(truncateStyledLine(value, innerWidth, ""), innerWidth).spans,
+          span("│", borderStyle),
+        )
+      ),
+      line(
+        span("╰", borderStyle),
+        span("─".repeat(innerWidth), borderStyle),
+        span("╯", borderStyle),
+      ),
+    ];
     return {
-      lines: rendered.lines,
+      lines,
       cursor: {
-        row: rendered.cursorRow,
-        column: rendered.cursorColumn,
+        row: rendered.cursorRow + 1,
+        column: rendered.cursorColumn + 1,
       },
     };
   }

@@ -179,7 +179,7 @@ function countNeedles(value: string, needle: string): number {
 
 function validatePlainCapture(label: string, value: string): void {
   const plain = stripAnsi(value);
-  assert.equal(/[╭╮╰╯│]/u.test(plain), false, `${label}: global frame glyph detected`);
+  assert.equal(/[╭╮╰╯│]/u.test(plain), true, `${label}: framed tui surface missing`);
   assert.equal(
     /^[ \t]+[0-9]+[.)][ \t]/mu.test(plain),
     false,
@@ -190,7 +190,7 @@ function validatePlainCapture(label: string, value: string): void {
     false,
     `${label}: terminal negotiation fragment detected`,
   );
-  assert.ok(countNeedles(plain, "❯") <= 1, `${label}: duplicated prompt detected`);
+  assert.ok(countNeedles(plain, "│> ") <= 1, `${label}: duplicated prompt detected`);
   assert.equal(plain.includes(OFFLINE_SECRET), false, `${label}: secret leaked`);
 }
 
@@ -200,8 +200,9 @@ function assertDefaultForegroundAnswer(styledCapture: string): void {
     .find((value) => value.includes("offline ordinary answer"));
   assert.ok(line, "styled capture did not include the ordinary answer");
   const beforeAnswer = line.slice(0, line.indexOf("offline ordinary answer"));
+  const contentPrefix = beforeAnswer.slice(beforeAnswer.lastIndexOf("│") + 1);
   assert.equal(
-    /\x1b\[(?:3[0-7]|9[0-7]|38[;:])/u.test(beforeAnswer),
+    /\x1b\[(?:3[0-7]|9[0-7]|38[;:])/u.test(contentPrefix),
     false,
     "ordinary answer used an explicit foreground style",
   );
@@ -251,7 +252,7 @@ async function runVerifier(): Promise<void> {
     ]);
 
     await waitForCapture(session, "startup", (value) =>
-      value.includes("hello, welcome to laoHuang")
+      value.includes("Welcome to LaoHuang Code!")
     );
     runTmux(["send-keys", "-t", session, "first offline prompt", "Enter"]);
     const collapsed = await waitForCapture(session, "collapsed first turn", (value) =>

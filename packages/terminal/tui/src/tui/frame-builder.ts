@@ -5,17 +5,16 @@ import type { EditorLike } from "./contracts.ts";
 import { CompletionPopup } from "./components/completion-list.ts";
 import { Composer } from "./components/composer.ts";
 import { StatusLine } from "./components/status-line.ts";
+import { Transcript } from "./components/transcript.ts";
 import {
   lineText,
-  plainLine,
-  wrapStyledSpans,
   type StyledLine,
 } from "./render-model.ts";
 import type { ScreenFrame } from "./screen.ts";
 import { truncateToWidth, visibleWidth } from "./screen.ts";
 import type { UIState } from "./state.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
-import type { TranscriptBlock, TranscriptStore } from "./transcript-store.ts";
+import type { TranscriptStore } from "./transcript-store.ts";
 
 export interface FrameBuilderOptions {
   state: UIState;
@@ -50,7 +49,7 @@ export interface DisplayFrame {
   readonly screen: ScreenFrame;
 }
 
-/** Adapts compiled unframed main-screen lines to the renderer's screen contract. */
+/** Adapts compiled main-screen lines to the renderer's screen contract. */
 export class FrameBuilder {
   readonly #state: UIState;
   readonly #transcript: TranscriptStore;
@@ -103,17 +102,13 @@ export class FrameBuilder {
   }
 
   #fallbackMainScreen(options: BuildFrameOptions, width: number): CompiledMainScreen {
-    const transcriptLines: StyledLine[] = [];
-    let activeStart: number | null = null;
-    for (const block of this.#transcript.blocks()) {
-      if (block.mutable && activeStart === null) activeStart = transcriptLines.length;
-      for (const row of fallbackText(block).split(/\r\n|\n|\r/u)) {
-        transcriptLines.push(...wrapStyledSpans(plainLine(row).spans, width));
-      }
-    }
+    const transcript = new Transcript({
+      blocks: this.#transcript.blocks(),
+    }).renderWithMetadata({ width, theme: this.#theme });
+    const transcriptLines = transcript.lines;
     const composer = new Composer({
       editor: options.editor,
-      prompt: options.prompt ?? "❯ ",
+      prompt: options.prompt ?? "> ",
       mask: options.secret ?? false,
     }).render({ width, theme: this.#theme });
     const completion = new CompletionPopup({
@@ -129,7 +124,7 @@ export class FrameBuilder {
         row: transcriptLines.length + cursor.row,
         column: cursor.column,
       },
-      activeStart: activeStart ?? transcriptLines.length,
+      activeStart: transcript.activeStart ?? transcriptLines.length,
     };
   }
 
@@ -151,59 +146,4 @@ export class FrameBuilder {
         return [];
       });
   }
-}
-
-function fallbackText(block: TranscriptBlock): string {
-  switch (block.kind) {
-    case "user":
-    case "assistant":
-    case "thinking":
-    case "notice":
-      return block.text;
-    case "tool":
-      return [`● ${block.name}`, block.subject, block.status].filter(Boolean).join("  ");
-    case "welcome":
-      return [block.title, ...block.details].join("\n");
-    case "help":
-      return block.commands.map((command) =>
-        `${command.usage}  ${command.description}`).join("\n");
-    case "provider_list":
-      return block.providers.map(providerFallbackText).join("\n");
-    case "provider_detail":
-      return [
-        providerFallbackText(block.provider),
-        `${block.provider.dynamicModels ? "dynamic" : "static"} models  ` +
-          `${block.provider.modelCount} ${block.provider.modelCount === 1 ? "model" : "models"}`,
-      ].join("\n");
-    case "queue_status":
-      return [
-        `pending ${block.queue.pending}`,
-        `pending tokens ${block.queue.pendingTokens}`,
-        `held ${block.queue.held}`,
-        `held tokens ${block.queue.heldTokens}`,
-        `dead letters ${block.queue.deadLetters}`,
-      ].join("  ");
-    default:
-      return assertNever(block);
-  }
-}
-
-function providerFallbackText(provider: {
-  readonly name: string;
-  readonly available: boolean;
-  readonly configured: boolean;
-  readonly verified: boolean;
-  readonly source: string | null;
-}): string {
-  return [
-    provider.name,
-    provider.available ? "available" : "unavailable",
-    provider.configured ? "configured" : "unconfigured",
-    provider.verified ? "verified" : "unverified",
-    provider.source ?? "",
-  ].filter(Boolean).join("  ");
-}
-
-function assertNever(value: never): never {
-  throw new Error(`unknown transcript block: ${String(value)}`);
 }

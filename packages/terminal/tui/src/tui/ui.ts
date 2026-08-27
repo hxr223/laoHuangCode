@@ -111,7 +111,8 @@ import { OverlayManager } from "./overlay-manager.ts";
 import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
 import { ViewHost } from "./view-host.ts";
 
-const WELCOME_TEXT = "hello, welcome to laoHuang";
+const WELCOME_TEXT = "Welcome to LaoHuang Code!";
+const WELCOME_HELP_TEXT = "Send /help for help information.";
 
 /** Slash-command completion source supplied by the host application. */
 export interface CommandRegistryLike {
@@ -267,7 +268,10 @@ export interface LoopInputSource {
 }
 
 /** A terminal driver that may support raw-mode entry (POSIX TTY). */
-export type RawTerminalDriver = TerminalDriver & { enterRawMode?: () => void };
+export type RawTerminalDriver = TerminalDriver & {
+  enterRawMode?: () => void;
+  onResize?: (callback: () => void) => () => void;
+};
 
 function editorActionForKey(key: KeyInput): InputAction | null {
   if (key.id === "enter") return inputAction(InputActionKind.Submit);
@@ -307,6 +311,7 @@ export class InteractiveTerminalLoop {
   #escapeTimer: ReturnType<typeof setTimeout> | null = null;
   #wakeupEnabled = false;
   #wakeupScheduled = false;
+  #disposeResize: (() => void) | null = null;
   writeError: unknown = null;
 
   constructor(
@@ -345,6 +350,7 @@ export class InteractiveTerminalLoop {
     this.#onSubmit = onSubmit;
     this.#exitRequested = false;
     this.#running = true;
+    this.#startResizeWatcher();
   }
 
   publishEvent(event: unknown): void {
@@ -428,6 +434,7 @@ export class InteractiveTerminalLoop {
       clearTimeout(this.#escapeTimer);
       this.#escapeTimer = null;
     }
+    this.#stopResizeWatcher();
     this.#stopTerminalModes();
     try {
       this.#renderer.close();
@@ -496,6 +503,21 @@ export class InteractiveTerminalLoop {
     this.#keyboardProtocolPushed = true;
     this.#driver.write("\x1b[>7u\x1b[?u\x1b[c");
     this.#driver.flush();
+  }
+
+  #startResizeWatcher(): void {
+    if (this.#disposeResize !== null) {
+      return;
+    }
+    this.#disposeResize = this.#driver.onResize?.(() => {
+      this.requestRender();
+    }) ?? null;
+  }
+
+  #stopResizeWatcher(): void {
+    const dispose = this.#disposeResize;
+    this.#disposeResize = null;
+    dispose?.();
   }
 
   #stopTerminalModes(): void {
@@ -859,6 +881,8 @@ export interface TerminalUIOptions {
   provider?: string;
   model?: string;
   effort?: string;
+  version?: string;
+  sessionId?: string;
   commandRegistry?: CommandRegistryLike | null;
   cancelCallback?: (() => void) | null;
   theme?: string | null;
@@ -912,6 +936,8 @@ export class TerminalUI {
   readonly provider: string | null;
   readonly model: string | null;
   readonly effort: string | null;
+  readonly #version: string;
+  #sessionId: string | null;
   readonly capabilities: RuntimeCapabilities;
   readonly keybindings: KeybindingsManager;
 
@@ -935,6 +961,8 @@ export class TerminalUI {
     this.provider = options.provider ?? null;
     this.model = options.model ?? null;
     this.effort = options.effort ?? null;
+    this.#version = options.version ?? "0.0.0";
+    this.#sessionId = options.sessionId ?? null;
     this.capabilities = { ...DEFAULT_RUNTIME_CAPABILITIES, ...options.capabilities };
     this.keybindings = new KeybindingsManager(
       DEFAULT_KEYBINDINGS,
@@ -1075,6 +1103,11 @@ export class TerminalUI {
 
   setRuntimeCapabilities(capabilities: Partial<RuntimeCapabilities>): void {
     Object.assign(this.capabilities as MutableRuntimeCapabilities, capabilities);
+  }
+
+  setSessionId(sessionId: string): void {
+    this.#sessionId = sessionId;
+    this.#loop?.requestRender();
   }
 
   setKeyActionCallback(
@@ -1234,7 +1267,7 @@ export class TerminalUI {
       transcript: new Transcript({ blocks: this.#transcript.blocks() }),
       composer: new Composer({
         editor,
-        prompt: options.prompt ?? "❯ ",
+        prompt: options.prompt ?? "> ",
         mask: options.secret ?? false,
       }),
       activeView: activeView !== undefined && activeView.lines.length > 0
@@ -1361,27 +1394,25 @@ export class TerminalUI {
   }
 
   showWelcome(): void {
-    const details: string[] = [];
-    if (this.projectRoot !== null) {
-      details.push(this.projectRoot);
-    }
-    if (this.provider && this.model) {
-      details.push(`${this.provider}/${this.model}`);
-    }
+    const details = [
+      WELCOME_HELP_TEXT,
+      `Directory: ${this.projectRoot ?? process.cwd()}`,
+      `Session: ${this.#sessionId ?? "pending"}`,
+      `Model: ${this.provider && this.model ? `${this.provider}/${this.model}` : "unconfigured"}`,
+      `Version: ${this.#version}`,
+    ];
     if (this.#loop !== null) {
       this.appendTranscript(
-        createWelcomeBlock(WELCOME_TEXT, ["/help for commands", ...details]),
+        createWelcomeBlock(WELCOME_TEXT, details),
       );
       return;
     }
     this.#output(
       ansiStyledText(`bold ${this.theme.color("accent")}`, WELCOME_TEXT) +
         "  " +
-        ansiStyledText(this.theme.color("dim"), "/help for commands"),
+        ansiStyledText(this.theme.color("dim"), WELCOME_HELP_TEXT),
     );
-    if (details.length > 0) {
-      this.#output(ansiStyledText(this.theme.color("dim"), details.join(" · ")));
-    }
+    this.#output(ansiStyledText(this.theme.color("dim"), details.slice(1).join(" · ")));
   }
 
   #writeLocal(message: string, tone: NoticeTone = "info"): void {
@@ -1588,6 +1619,13 @@ export class StdTerminalDriver implements RawTerminalDriver {
     return {
       columns: process.stdout.columns || 80,
       rows: process.stdout.rows || 24,
+    };
+  }
+
+  onResize(callback: () => void): () => void {
+    process.stdout.on("resize", callback);
+    return () => {
+      process.stdout.off("resize", callback);
     };
   }
 

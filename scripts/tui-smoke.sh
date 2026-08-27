@@ -54,8 +54,9 @@ validate_capture() {
   local capture="$2"
   local prompt_count
 
-  if printf '%s\n' "$capture" | grep -Eq '[╭╮╰╯│]'; then
-    echo "terminal smoke ($label): global frame glyph detected" >&2
+  if [[ "$INTERACTIVE_SMOKE" == "1" ]] &&
+    ! printf '%s\n' "$capture" | grep -Eq '[╭╮╰╯│]'; then
+    echo "terminal smoke ($label): framed tui surface missing" >&2
     return 1
   fi
   if printf '%s\n' "$capture" | grep -Eq '^[[:space:]]+[0-9]+[.)][[:space:]]'; then
@@ -66,7 +67,7 @@ validate_capture() {
     echo "terminal smoke ($label): terminal negotiation fragment detected" >&2
     return 1
   fi
-  prompt_count="$(printf '%s\n' "$capture" | grep -o '❯' | wc -l | tr -d ' ' || true)"
+  prompt_count="$(printf '%s\n' "$capture" | grep -o '│> ' | wc -l | tr -d ' ' || true)"
   if [[ "${prompt_count:-0}" -gt 1 ]]; then
     echo "terminal smoke ($label): duplicated prompt detected" >&2
     return 1
@@ -105,16 +106,16 @@ tmux new-session -d -s "$SESSION_NAME" -x 80 -y 24 \
   bash -lc "{ $SMOKE_COMMAND; }; status=\$?; printf '%s' \"\$status\" > $status_file_quoted; sleep $smoke_hold_quoted"
 
 if [[ "$INTERACTIVE_SMOKE" == "1" ]]; then
-  capture_and_validate "startup" "hello, welcome to laoHuang"
+  capture_and_validate "startup" "Welcome to LaoHuang Code!"
   tmux send-keys -t "$SESSION_NAME" "/"
   capture_and_validate "slash completion" "/help  查看命令帮助"
   tmux send-keys -t "$SESSION_NAME" Escape
-  capture_and_validate "dismiss slash completion" "❯ /" "› /apikey"
+  capture_and_validate "dismiss slash completion" "│> /" "› /apikey"
   tmux send-keys -t "$SESSION_NAME" BSpace
   tmux send-keys -t "$SESSION_NAME" "/help" Enter
   capture_and_validate "help" "/model [provider|model] [model]"
   tmux send-keys -t "$SESSION_NAME" "abc"
-  capture_and_validate "ascii input" "❯ abc"
+  capture_and_validate "ascii input" "│> abc"
   tmux send-keys -t "$SESSION_NAME" BSpace BSpace BSpace
   tmux send-keys -t "$SESSION_NAME" "/exit" Enter
   exit_deadline=$((SECONDS + SMOKE_TIMEOUT_SECONDS))

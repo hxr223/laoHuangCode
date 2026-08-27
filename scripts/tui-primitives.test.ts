@@ -49,7 +49,7 @@ test("text applies padding and background through structured spans", () => {
   assert.deepEqual(rendered.lines.map(lineText), ["     ", " x   ", "     "]);
   assert.equal(rendered.lines[1]?.spans.some((item) => item.style?.foreground !== undefined), false);
   assert.equal(
-    rendered.lines[1]?.spans.filter((item) => item.text.includes(" ")).every((item) => item.style?.background === "card"),
+    rendered.lines[1]?.spans.every((item) => item.style?.background === "card"),
     true,
   );
 });

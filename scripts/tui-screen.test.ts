@@ -164,7 +164,7 @@ test("editor only change does not repaint unchanged footer rows", () => {
   assert.ok(!terminal.writes().includes("─".repeat(80)));
 });
 
-test("unframed editor updates do not duplicate prompts semantically", () => {
+test("framed editor updates do not duplicate prompts semantically", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
   const emulator = new TerminalEmulator({ columns: 80, rows: 4 });
   const renderer = new PiMainScreenRenderer(terminal);
