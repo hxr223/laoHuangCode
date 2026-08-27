@@ -339,6 +339,38 @@ test("auth dialog clears secret input after submission", () => {
   assert.equal(output.includes("•"), false);
 });
 
+test("auth dialog clears secret input before cancellation", () => {
+  let cancellations = 0;
+  const view = new AuthDialog({
+    request: { id: "key", kind: "secret", message: "Enter API key" },
+    onSubmit: () => {},
+    onCancel: () => { cancellations += 1; },
+  });
+  view.focused = true;
+
+  view.handleInput({ type: "text", text: "secret-value" });
+  view.handleInput(keyEvent("escape"));
+  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+
+  assert.equal(cancellations, 1);
+  assert.equal(output.includes("•"), false);
+});
+
+test("auth dialog disposal clears secret input", () => {
+  const view = new AuthDialog({
+    request: { id: "key", kind: "secret", message: "Enter API key" },
+    onSubmit: () => {},
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput({ type: "text", text: "secret-value" });
+  view.dispose();
+  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+
+  assert.equal(output.includes("•"), false);
+});
+
 test("auth dialog submits select request values", () => {
   const submitted: string[] = [];
   const view = new AuthDialog({

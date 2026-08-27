@@ -31,7 +31,7 @@ export class AuthDialog implements FocusableComponent {
       ? new SelectList({
         items: this.#request.items,
         onSelect: (item) => this.#complete(item.value),
-        onCancel: this.#onCancel,
+        onCancel: () => this.#cancel(),
       })
       : null;
     this.#syncFocus();
@@ -72,7 +72,7 @@ export class AuthDialog implements FocusableComponent {
       return false;
     }
     if (event.type === "key" && event.key.id === "ctrl_c") {
-      this.#onCancel();
+      this.#cancel();
       return true;
     }
     return (this.#input ?? this.#selectList)?.handleInput(event) ?? false;
@@ -83,6 +83,14 @@ export class AuthDialog implements FocusableComponent {
     this.#selectList?.invalidate();
   }
 
+  dispose(): void {
+    this.#input?.dispose();
+    if (this.#selectList !== null) {
+      this.#selectList.focused = false;
+    }
+    this.#focused = false;
+  }
+
   #createInput(): SearchInput {
     if (this.#request.kind === "select") {
       throw new Error("select authentication requests do not use text input");
@@ -91,16 +99,22 @@ export class AuthDialog implements FocusableComponent {
       placeholder: this.#request.placeholder,
       secret: this.#request.kind === "secret",
       onSubmit: (value) => this.#complete(value),
-      onCancel: this.#onCancel,
+      onCancel: () => this.#cancel(),
     });
   }
 
   #complete(value: string): void {
     if (this.#input !== null) {
+      this.#input.dispose();
       this.#input = this.#createInput();
       this.#syncFocus();
     }
     this.#onSubmit(value);
+  }
+
+  #cancel(): void {
+    this.dispose();
+    this.#onCancel();
   }
 
   #syncFocus(): void {

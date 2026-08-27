@@ -407,10 +407,6 @@ export class InteractiveTerminalLoop {
     return this.#viewHost.render(context);
   }
 
-  handleActiveViewInput(event: TuiInputEvent): boolean {
-    return this.#viewHost.handleInput(event);
-  }
-
   requestExit(): void {
     this.#exitRequested = true;
     this.#exitResolve?.();
@@ -612,6 +608,11 @@ export class InteractiveTerminalLoop {
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
       if (action.kind === InputActionKind.Newline) {
+        if (this.#viewHost.activeId() !== null) {
+          this.#viewHost.handleInput({ type: "text", text: "\n" });
+          this.#needsRender = true;
+          continue;
+        }
         this.#applyEditorAction(action);
         continue;
       }
@@ -620,7 +621,7 @@ export class InteractiveTerminalLoop {
   }
 
   #applyInputEvent(event: TuiInputEvent): void {
-    if (this.#ui.handleActiveViewInput(event)) {
+    if (this.#viewHost.handleInput(event)) {
       this.#needsRender = true;
       return;
     }
@@ -1047,10 +1048,6 @@ export class TerminalUI {
 
   focusedComponentId(): string {
     return this.#loop?.focusedComponentId() ?? COMPOSER_COMPONENT;
-  }
-
-  handleActiveViewInput(event: TuiInputEvent): boolean {
-    return this.#loop?.handleActiveViewInput(event) ?? false;
   }
 
   // -- callbacks ----------------------------------------------------------

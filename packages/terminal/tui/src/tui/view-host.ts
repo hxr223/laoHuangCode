@@ -85,6 +85,9 @@ export class ViewHost {
       return;
     }
     this.#views = this.#views.filter((view) => view.id !== id);
+    for (const view of views) {
+      view.component.dispose?.();
+    }
     this.#overlays.close(id);
     for (const view of views) {
       view.resolve(value);

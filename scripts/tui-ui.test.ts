@@ -1239,6 +1239,43 @@ test("secret prompt values never reach terminal writes", async () => {
   assert.equal(terminal.writes().includes(secret), false);
 });
 
+test("closing a loop disposes a pending secret prompt before resolving null", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  const secret = "task6-close-secret";
+  const prompt = ui.prompt({ id: "api-key", kind: "secret", message: "Enter API key" });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes(secret));
+  ui.drainLoop();
+  ui.close();
+
+  assert.equal(await prompt, null);
+  assert.equal(terminal.writes().includes(secret), false);
+});
+
+test("raw newline input stays out of the hidden composer while a selector is active", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  const selection = ui.select({
+    id: "effort",
+    title: "Reasoning effort",
+    items: [{ value: "low", label: "low" }],
+  });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("\x1b[13;2u"));
+  ui.drainLoop();
+
+  assert.equal(ui.interactiveLoop?.editor.text, "");
+  assert.equal(ui.focusedComponentId(), "effort");
+  ui.close();
+  assert.equal(await selection, null);
+});
+
 test("single renderer keeps stream text across tool boundaries", () => {
   const ui = new TerminalUI({ theme: "light" });
   ui.applyProjectedEvent(event("model.reasoning_delta", "r1", { text: "thinking" }));

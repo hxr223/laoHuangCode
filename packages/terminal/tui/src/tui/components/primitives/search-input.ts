@@ -94,6 +94,18 @@ export class SearchInput implements FocusableComponent {
     return true;
   }
 
+  clear(): void {
+    this.#editor.text = "";
+    this.#editor.cursor = 0;
+    this.#editor.historyIndex = null;
+    this.#editor.setCompletions([]);
+  }
+
+  dispose(): void {
+    this.clear();
+    this.focused = false;
+  }
+
   invalidate(): void {}
 }
 
