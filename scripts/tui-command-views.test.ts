@@ -1,7 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { AuthDialog } from "../packages/terminal/tui/src/tui/components/views/auth-dialog.ts";
+import { EffortSelectorView, ProviderSelectorView } from "../packages/terminal/tui/src/tui/components/views/effort-selector.ts";
 import { HelpView } from "../packages/terminal/tui/src/tui/components/views/help-view.ts";
+import { ModelSelectorView } from "../packages/terminal/tui/src/tui/components/views/model-selector.ts";
 import {
   ProviderDetailView,
   ProviderStatusView,
@@ -20,6 +23,11 @@ import {
   TranscriptStore,
 } from "../packages/terminal/tui/src/tui/transcript-store.ts";
 import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
+import { makeKeyInput, type KeyId, type TuiInputEvent } from "../packages/terminal/tui/src/keybindings/key-id.ts";
+
+function keyEvent(id: KeyId): TuiInputEvent {
+  return { type: "key", key: makeKeyInput(id) };
+}
 
 test("help keeps command names default and descriptions muted", () => {
   const view = new HelpView({
@@ -199,4 +207,157 @@ test("frame fallback projects every static command result variant", () => {
   assert.ok(text.includes("stored credential"));
   assert.ok(text.includes("dynamic models"));
   assert.ok(text.includes("pending 12"));
+});
+
+test("model selector filters and returns the highlighted model", () => {
+  const selections: string[] = [];
+  const view = new ModelSelectorView({
+    title: "Models",
+    currentValue: "deepseek/deepseek-v4-flash",
+    items: [
+      { value: "deepseek/deepseek-v4-flash", label: "deepseek-v4-flash", description: "DeepSeek" },
+      { value: "anthropic/claude-sonnet", label: "claude-sonnet", description: "Anthropic" },
+    ],
+    onSelect: (value) => selections.push(value),
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput({ type: "text", text: "clau" });
+  view.handleInput(keyEvent("enter"));
+
+  assert.deepEqual(selections, ["anthropic/claude-sonnet"]);
+});
+
+test("model selector renders its empty filter state", () => {
+  const view = new ModelSelectorView({
+    title: "Models",
+    items: [{ value: "anthropic/claude-sonnet", label: "claude-sonnet" }],
+    onSelect: () => {},
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput({ type: "text", text: "missing" });
+
+  assert.ok(view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n").includes("No matching commands"));
+});
+
+test("effort selector highlights the current effort before selection", () => {
+  const selections: string[] = [];
+  const view = new EffortSelectorView({
+    title: "Effort",
+    currentValue: "high",
+    items: [
+      { value: "low", label: "Low" },
+      { value: "high", label: "High" },
+    ],
+    onSelect: (value) => selections.push(value),
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  assert.ok(view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).includes("→ High"));
+  view.handleInput(keyEvent("enter"));
+
+  assert.deepEqual(selections, ["high"]);
+});
+
+test("provider selector returns the selected provider", () => {
+  const selections: string[] = [];
+  const view = new ProviderSelectorView({
+    title: "Providers",
+    items: [
+      { value: "anthropic", label: "Anthropic" },
+      { value: "deepseek", label: "DeepSeek" },
+    ],
+    onSelect: (value) => selections.push(value),
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput(keyEvent("down"));
+  view.handleInput(keyEvent("enter"));
+
+  assert.deepEqual(selections, ["deepseek"]);
+});
+
+test("selectors cancel on Escape and Ctrl+C", () => {
+  let modelCancelled = 0;
+  let effortCancelled = 0;
+  const model = new ModelSelectorView({
+    title: "Models",
+    items: [],
+    onSelect: () => {},
+    onCancel: () => { modelCancelled += 1; },
+  });
+  const effort = new EffortSelectorView({
+    title: "Effort",
+    items: [],
+    onSelect: () => {},
+    onCancel: () => { effortCancelled += 1; },
+  });
+  model.focused = true;
+  effort.focused = true;
+
+  model.handleInput(keyEvent("escape"));
+  effort.handleInput(keyEvent("ctrl_c"));
+
+  assert.equal(modelCancelled, 1);
+  assert.equal(effortCancelled, 1);
+});
+
+test("auth dialog masks secret input and never renders the value", () => {
+  const view = new AuthDialog({
+    request: { id: "key", kind: "secret", message: "Enter API key" },
+    onSubmit: () => {},
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput({ type: "text", text: "secret-value" });
+  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+
+  assert.equal(output.includes("secret-value"), false);
+  assert.equal(output.includes("••••••••••••"), true);
+});
+
+test("auth dialog clears secret input after submission", () => {
+  const submittedLengths: number[] = [];
+  const view = new AuthDialog({
+    request: { id: "key", kind: "secret", message: "Enter API key" },
+    onSubmit: (value) => submittedLengths.push(value.length),
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput({ type: "text", text: "secret-value" });
+  view.handleInput(keyEvent("enter"));
+  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+
+  assert.deepEqual(submittedLengths, [12]);
+  assert.equal(output.includes("•"), false);
+});
+
+test("auth dialog submits select request values", () => {
+  const submitted: string[] = [];
+  const view = new AuthDialog({
+    request: {
+      id: "provider",
+      kind: "select",
+      message: "Choose provider",
+      items: [
+        { value: "anthropic", label: "Anthropic" },
+        { value: "deepseek", label: "DeepSeek" },
+      ],
+    },
+    onSubmit: (value) => submitted.push(value),
+    onCancel: () => {},
+  });
+  view.focused = true;
+
+  view.handleInput(keyEvent("down"));
+  view.handleInput(keyEvent("enter"));
+
+  assert.deepEqual(submitted, ["deepseek"]);
 });

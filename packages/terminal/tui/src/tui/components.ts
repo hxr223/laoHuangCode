@@ -26,11 +26,20 @@ export { UserMessage, type UserMessageOptions } from "./components/messages/user
 export { WelcomeMessage, type WelcomeMessageOptions } from "./components/messages/welcome-message.ts";
 export {
   type HelpCommandViewModel,
+  type PromptRequest,
   type ProviderDetailViewModel,
   type ProviderSummaryViewModel,
   type QueueStatusViewModel,
+  type SelectionRequest,
 } from "./components/views/contracts.ts";
+export { AuthDialog, type AuthDialogOptions } from "./components/views/auth-dialog.ts";
+export {
+  EffortSelectorView,
+  ProviderSelectorView,
+  type SelectionViewOptions,
+} from "./components/views/effort-selector.ts";
 export { HelpView, type HelpViewOptions } from "./components/views/help-view.ts";
+export { ModelSelectorView, type ModelSelectorViewOptions } from "./components/views/model-selector.ts";
 export {
   ProviderDetailView,
   ProviderStatusView,
