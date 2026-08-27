@@ -1,7 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
-import { renderMarkdownLines, visibleWidth } from "../packages/terminal/tui/src/tui/markdown.ts";
+import {
+  renderMarkdownLines,
+  renderMarkdownStyledLines,
+  visibleWidth,
+} from "../packages/terminal/tui/src/tui/markdown.ts";
 import { PI_DARK, TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
 
 test("plain assistant text uses terminal default foreground", () => {
@@ -22,7 +26,7 @@ test("markdown lines fit requested visible width", () => {
   assert.ok(lines.every((line) => visibleWidth(line) <= 12));
 });
 
-test("markdown truncation closes open sgr style", () => {
+test("markdown truncation preserves the semantic span through the compiler", () => {
   const lines = renderMarkdownLines("**你好abcdef**", 5, PI_DARK);
 
   assert.deepEqual(lines, ["\x1b[1m你好a\x1b[0m"]);
@@ -50,28 +54,22 @@ test("markdown links render the url in parentheses", () => {
   ]);
 });
 
-test("markdown tables render as a grid", () => {
-  const lines = renderMarkdownLines(
+test("markdown tables render as a semantic grid", () => {
+  const lines = renderMarkdownStyledLines(
     "| A | B |\n|---|---|\n| 1 | 2 |",
     40,
-    PI_DARK,
   );
 
-  assert.deepEqual(lines, [
-    "",
-    "\x1b[38;2;80;80;80m      \x1b[0m",
-    "\x1b[38;2;80;80;80m \x1b[0m\x1b[1;38;2;240;198;116mA \x1b[0m\x1b[38;2;80;80;80m \x1b[0m\x1b[1;38;2;240;198;116mB\x1b[0m\x1b[38;2;80;80;80m \x1b[0m",
-    "\x1b[38;2;80;80;80m ──── \x1b[0m",
-    "\x1b[38;2;80;80;80m \x1b[0m1 \x1b[38;2;80;80;80m \x1b[0m2\x1b[38;2;80;80;80m \x1b[0m",
-    "\x1b[38;2;80;80;80m      \x1b[0m",
-  ]);
+  const spans = lines.flatMap((line) => line.spans);
+  assert.ok(spans.some((span) => span.style?.foreground === "border_muted"));
+  assert.ok(spans.some((span) => span.style?.foreground === "heading" && span.style.bold));
 });
 
-test("markdown tables consume markdown.table theme tokens when present", () => {
+test("markdown table semantics compile through the active theme", () => {
   const theme = new TerminalTheme("dark", {
     ...PI_DARK.colors,
-    "markdown.table.header": "#ff0000",
-    "markdown.table.border": "#00ff00",
+    heading: "#ff0000",
+    border_muted: "#00ff00",
   });
   const lines = renderMarkdownLines("| A |\n|---|\n| 1 |", 40, theme);
 

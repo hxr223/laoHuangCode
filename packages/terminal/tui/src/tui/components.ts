@@ -18,6 +18,12 @@ export {
 } from "./components/primitives/select-list.ts";
 export { Text, type TextOptions } from "./components/primitives/text.ts";
 export { VStack, type VStackOptions } from "./components/primitives/v-stack.ts";
+export { AssistantMessage, type AssistantMessageOptions } from "./components/messages/assistant-message.ts";
+export { NoticeMessage, type NoticeMessageOptions } from "./components/messages/notice-message.ts";
+export { ThinkingMessage, type ThinkingMessageOptions } from "./components/messages/thinking-message.ts";
+export { ToolMessage, type ToolMessageOptions } from "./components/messages/tool-message.ts";
+export { UserMessage, type UserMessageOptions } from "./components/messages/user-message.ts";
+export { WelcomeMessage, type WelcomeMessageOptions } from "./components/messages/welcome-message.ts";
 
 export const COMPOSER_COMPONENT = "composer";
 
