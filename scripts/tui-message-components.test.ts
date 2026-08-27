@@ -186,3 +186,25 @@ test("expanded tool messages redact command and output secrets", () => {
   assert.ok(rendered.includes("[REDACTED]"));
   assert.ok(!rendered.includes(privateValue));
 });
+
+test("expanded tool messages redact credential aliases", () => {
+  const clientSecret = "task3-client-secret-fixture";
+  const privateKey = "task3-private-key-fixture";
+  const authorization = "task3-authorization-fixture";
+  const rendered = new ToolMessage({
+    name: "bash",
+    subject: `$ deploy client_secret=${clientSecret}`,
+    status: "completed",
+    exitCode: 0,
+    durationMs: 1,
+    stdout: `private_key=${privateKey}`,
+    stderr: `authorization=${authorization}`,
+    expanded: true,
+  }).render({ width: 80, theme: PI_DARK }).lines.flatMap((line) => line.spans)
+    .map((span) => span.text).join("\n");
+
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(clientSecret));
+  assert.ok(!rendered.includes(privateKey));
+  assert.ok(!rendered.includes(authorization));
+});

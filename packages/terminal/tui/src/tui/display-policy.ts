@@ -51,15 +51,17 @@ const SENSITIVE_FIELDS = new Set([
   "token",
   "access_token",
   "refresh_token",
+  "client_secret",
+  "private_key",
   "secret",
   "password",
 ]);
 const SENSITIVE_TEXT_PATTERNS = [
   /(authorization\s*:\s*bearer\s+)([^\s'"]+)/giu,
-  /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s'"]+)/giu,
-  /(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s+)(?:"[^"]*"|'[^']*'|\S+)/giu,
+  /(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s'"]+)/giu,
+  /(--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s+)(?:"[^"]*"|'[^']*'|\S+)/giu,
 ];
-const SENSITIVE_VALUE_AT_END = /(?:authorization\s*:\s*bearer\s+|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s*[:=]\s*|--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)\s+)(?:"[^"]*"|'[^']*'|[^\s'"]*)$/iu;
+const SENSITIVE_VALUE_AT_END = /(?:authorization\s*:\s*bearer\s+|\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s*[:=]\s*|--(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|authorization|token|password|secret)\s+)(?:"[^"]+"|'[^']+'|[^\s'"]+)$/iu;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
