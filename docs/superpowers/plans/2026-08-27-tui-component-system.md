@@ -1136,9 +1136,9 @@ git commit -m "feat(tui): host focused interactive views"
 
 **Interfaces:**
 - Consumes: Tasks 1-6 components/compiler/view host; existing editor render metadata and `PiMainScreenRenderer` `ScreenFrame` contract.
-- Produces: `MainScreen`, framed `FrameBuilder.build()`, structured `CompletionPopup`, and structured `StatusLine`.
+- Produces: `MainScreen`, unframed transcript composition, Kimi-style `Composer`, structured `CompletionPopup`, and structured `StatusLine`.
 
-- [ ] **Step 1: Write failing root-layout tests**
+- [ ] **Step 1: Write failing Kimi-style shell tests**
 
 ```ts
 function stripAnsi(value: string): string {
@@ -1177,7 +1177,7 @@ CJK cursor column, and selector close without duplicate prompt rows.
 
 Run: `node --test scripts/frame-builder.test.ts scripts/tui-ui.test.ts scripts/tui-screen.test.ts`
 
-Expected: FAIL because `FrameBuilder` still emits the global frame and fixed
+Expected: FAIL because `FrameBuilder` still emits the old shell layout and fixed
 separator rows.
 
 - [ ] **Step 3: Migrate completion to structured selection styling**
@@ -1268,7 +1268,7 @@ Expected: all commands PASS and existing native-scrollback tests remain green.
 ```bash
 git add packages/terminal/tui/src/tui/main-screen.ts packages/terminal/tui/src/tui/components/composer.ts packages/terminal/tui/src/tui/components/status-line.ts packages/terminal/tui/src/tui/components/completion-list.ts packages/terminal/tui/src/tui/component.ts packages/terminal/tui/src/tui/contracts.ts packages/terminal/tui/src/tui/editor.ts packages/terminal/tui/src/tui/frame-builder.ts packages/terminal/tui/src/tui/ui.ts packages/terminal/tui/src/tui/components.ts scripts/frame-builder.test.ts scripts/tui-editor.test.ts scripts/tui-ui.test.ts scripts/tui-screen.test.ts
 git diff --cached --check
-git commit -m "refactor(tui): compose framed main screen"
+git commit -m "refactor(tui): compose kimi-style main screen"
 ```
 
 ---
