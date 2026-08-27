@@ -456,6 +456,48 @@ test("tool output is folded by default and shown by a local display toggle", () 
   assert.ok(ui.buildHistoryLines(80).join("\n").includes("full tool output"));
 });
 
+test("terminal transcript redacts tool command and output before storage", () => {
+  const privateValue = "task3-redaction-fixture";
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-secret", {
+    name: "bash",
+    arguments: { command: `$ deploy --api-key ${privateValue}` },
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stdout",
+    text: "token=task3-",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stdout",
+    text: "redaction-fixture\n",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stderr",
+    text: "Authorization: Bearer task3-",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-secret", {
+    stream: "stderr",
+    text: "redaction-fixture\n",
+  }));
+
+  const block = ui.blockFor("tool", "call-secret");
+  assert.equal(block.kind, "tool");
+  assert.ok(block.subject.includes("[REDACTED]"));
+  assert.ok(block.stdout.includes("[REDACTED]"));
+  assert.ok(block.stderr.includes("[REDACTED]"));
+  assert.ok(!block.subject.includes(privateValue));
+  assert.ok(!block.stdout.includes(privateValue));
+  assert.ok(!block.stderr.includes(privateValue));
+  assert.ok(!block.stdout.includes("redaction-fixture"));
+  assert.ok(!block.stderr.includes("redaction-fixture"));
+
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  const rendered = ui.buildHistoryLines(80).join("\n");
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(privateValue));
+  assert.ok(!rendered.includes("redaction-fixture"));
+});
+
 test("input bytes do not mutate before loop drains", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
@@ -809,6 +851,20 @@ test("raw loop goodbye uses loop writer not fallback output", () => {
 
   assert.deepEqual(stream, []);
   assert.ok(terminal.writes().includes("Goodbye."));
+});
+
+test("raw loop error keeps its semantic notice tone", () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  ui.showError("shutdown failed");
+  ui.drainLoop();
+
+  const block = ui.blockFor("notice", "local-1");
+  assert.equal(block.kind, "notice");
+  assert.equal(block.tone, "error");
 });
 
 test("closed raw loop error falls back to plain output", () => {

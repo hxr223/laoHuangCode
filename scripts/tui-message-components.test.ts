@@ -168,3 +168,21 @@ test("typed transcript constructors produce every current block variant", () => 
   assert.equal(blocks[2]!.mutable, true);
   assert.equal(blocks[3]!.expanded, false);
 });
+
+test("expanded tool messages redact command and output secrets", () => {
+  const privateValue = "task3-redaction-fixture";
+  const rendered = new ToolMessage({
+    name: "bash",
+    subject: `$ deploy --api-key ${privateValue}`,
+    status: "completed",
+    exitCode: 0,
+    durationMs: 1,
+    stdout: `token=${privateValue}`,
+    stderr: `Authorization: Bearer ${privateValue}`,
+    expanded: true,
+  }).render({ width: 80, theme: PI_DARK }).lines.flatMap((line) => line.spans)
+    .map((span) => span.text).join("\n");
+
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(privateValue));
+});
