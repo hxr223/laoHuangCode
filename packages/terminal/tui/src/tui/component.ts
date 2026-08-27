@@ -9,12 +9,6 @@ export interface TuiComponent {
   dispose?(): void;
 }
 
-/** Temporary string-rendering contract for components pending migration. */
-export interface LegacyTuiComponent {
-  render(width: number): readonly string[];
-  invalidate(): void;
-}
-
 /** Component that can be targeted by focus management. */
 export interface FocusableComponent extends TuiComponent {
   focused: boolean;

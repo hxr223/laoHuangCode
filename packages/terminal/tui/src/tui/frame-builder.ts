@@ -1,9 +1,20 @@
 /** Terminal frame data assembly, separate from terminal paint mechanics. */
 
+import { compileStyledLines } from "./ansi-renderer.ts";
 import type { EditorLike } from "./contracts.ts";
+import { CompletionPopup } from "./components/completion-list.ts";
+import { Composer } from "./components/composer.ts";
+import { StatusLine } from "./components/status-line.ts";
+import {
+  lineText,
+  plainLine,
+  wrapStyledSpans,
+  type StyledLine,
+} from "./render-model.ts";
 import type { ScreenFrame } from "./screen.ts";
 import { truncateToWidth, visibleWidth } from "./screen.ts";
 import type { UIState } from "./state.ts";
+import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import type { TranscriptBlock, TranscriptStore } from "./transcript-store.ts";
 
 export interface FrameBuilderOptions {
@@ -12,7 +23,15 @@ export interface FrameBuilderOptions {
   projectRoot?: string | null;
   provider?: string | null;
   model?: string | null;
+  effort?: string | null;
   title?: string;
+  theme?: TerminalTheme;
+}
+
+export interface CompiledMainScreen {
+  readonly lines: readonly string[];
+  readonly cursor: { readonly row: number; readonly column: number };
+  readonly activeStart: number;
 }
 
 export interface BuildFrameOptions {
@@ -20,13 +39,7 @@ export interface BuildFrameOptions {
   editor: EditorLike;
   prompt?: string;
   secret?: boolean;
-  editorStyles?: {
-    readonly prompt?: (text: string) => string;
-    readonly text?: (text: string) => string;
-  };
-  historyLines?: readonly string[];
-  activeStart?: number | null;
-  completionLines?: readonly string[];
+  compiledMainScreen?: CompiledMainScreen;
 }
 
 export interface DisplayFrame {
@@ -37,41 +50,16 @@ export interface DisplayFrame {
   readonly screen: ScreenFrame;
 }
 
-function clippedCwd(path: string): string {
-  return path.length <= 40 ? path : `…${path.slice(-39)}`;
-}
-
-function rule(width: number, left: string, right: string, title?: string): string {
-  if (width < 2) {
-    return truncateToWidth(left, width);
-  }
-  const innerWidth = width - 2;
-  if (title === undefined || title === "") {
-    return `${left}${"─".repeat(innerWidth)}${right}`;
-  }
-  const titlePrefix = `─ ${truncateToWidth(title, Math.max(1, innerWidth - 3))} `;
-  const fillWidth = Math.max(0, innerWidth - visibleWidth(titlePrefix));
-  return `${left}${titlePrefix}${"─".repeat(fillWidth)}${right}`;
-}
-
-function frameLine(text: string, width: number): string {
-  if (width < 4) {
-    return truncateToWidth(text, width);
-  }
-  const innerWidth = width - 4;
-  const clipped = truncateToWidth(text, innerWidth);
-  const padding = " ".repeat(Math.max(0, innerWidth - visibleWidth(clipped)));
-  return `│ ${clipped}${padding} │`;
-}
-
-/** Builds frame data while leaving ANSI styling and terminal diffs to the renderer. */
+/** Adapts compiled unframed main-screen lines to the renderer's screen contract. */
 export class FrameBuilder {
   readonly #state: UIState;
   readonly #transcript: TranscriptStore;
   readonly #projectRoot: string | null;
   readonly #provider: string | null;
   readonly #model: string | null;
+  readonly #effort: string | null;
   readonly #title: string;
+  readonly #theme: TerminalTheme;
 
   constructor(options: FrameBuilderOptions) {
     this.#state = options.state;
@@ -79,74 +67,80 @@ export class FrameBuilder {
     this.#projectRoot = options.projectRoot ?? null;
     this.#provider = options.provider ?? null;
     this.#model = options.model ?? null;
+    this.#effort = options.effort ?? null;
     this.#title = options.title ?? "laoHuang";
+    this.#theme = options.theme ?? resolveTerminalTheme();
   }
 
   build(options: BuildFrameOptions): DisplayFrame {
-    const width = Math.max(1, options.width);
-    const contentWidth = width >= 4 ? width - 4 : width;
-    const editorResult = options.editor.renderLines(contentWidth, {
-      prompt: options.prompt ?? "❯ ",
-      mask: options.secret ?? false,
-      styles: options.editorStyles,
-    });
-    const history = options.historyLines ?? this.#fallbackHistory();
-    const completion = options.completionLines ?? [];
-    const statusBar = truncateToWidth(this.statusBar(), contentWidth);
-    const rows = [
-      rule(width, "╭", "╮", this.#title),
-      ...history.map((line) => frameLine(line, width)),
-      rule(width, "├", "┤"),
-      ...editorResult.lines.map((line) => frameLine(line, width)),
-      rule(width, "├", "┤"),
-      ...completion.map((line) => frameLine(line, width)),
-      ...(statusBar ? [frameLine(statusBar, width)] : []),
-      rule(width, "╰", "╯"),
-    ];
-    const editorStart = 1 + history.length + 1;
+    const terminalWidth = Math.max(1, options.width);
+    const width = Math.max(1, terminalWidth - 1);
+    const mainScreen = options.compiledMainScreen ?? this.#fallbackMainScreen(options, width);
+    const lines = mainScreen.lines.map((value) =>
+      visibleWidth(value) <= width ? value : truncateToWidth(value, width));
     const cursor = {
-      row: editorStart + editorResult.cursorRow,
-      col: (width >= 4 ? 2 : 0) + editorResult.cursorColumn,
+      row: Math.max(0, Math.min(mainScreen.cursor.row, Math.max(0, lines.length - 1))),
+      col: Math.max(0, Math.min(mainScreen.cursor.column, width - 1)),
     };
-    const activeStart = options.activeStart === null || options.activeStart === undefined
-      ? editorStart
-      : 1 + options.activeStart;
     return {
       titleBar: this.#title,
       welcomeBlock: this.#welcomeBlock(),
-      statusBar,
+      statusBar: this.statusBar(width),
       cursor,
       screen: {
-        lines: rows,
-        activeStart,
+        lines,
+        activeStart: Math.max(0, Math.min(mainScreen.activeStart, lines.length)),
         cursorRow: cursor.row,
         cursorCol: cursor.col,
       },
     };
   }
 
-  statusBar(): string {
-    const details: string[] = [];
-    if (this.#projectRoot !== null) {
-      details.push(clippedCwd(this.#projectRoot));
-    }
-    if (this.#state.pendingCount || this.#state.heldCount) {
-      details.push(`queue ${this.#state.pendingCount} pending / ${this.#state.heldCount} held`);
-    }
-    if (this.#state.totalTokens) {
-      details.push(`↑${this.#state.inputTokens} ↓${this.#state.outputTokens}`);
-    }
-    const model = this.#state.model || this.#model || "";
-    if (model) {
-      const provider = this.#state.provider || this.#provider || "";
-      details.push(provider ? `${provider}/${model}` : model);
-    }
-    return details.join(" · ");
+  statusBar(width = 79): string {
+    return this.#status().render({ width: Math.max(1, width), theme: this.#theme }).lines
+      .map(lineText)
+      .join("\n");
   }
 
-  #fallbackHistory(): string[] {
-    return this.#transcript.blocks().flatMap((block) =>
-      fallbackText(block).split(/\r\n|\n|\r/));
+  #fallbackMainScreen(options: BuildFrameOptions, width: number): CompiledMainScreen {
+    const transcriptLines: StyledLine[] = [];
+    let activeStart: number | null = null;
+    for (const block of this.#transcript.blocks()) {
+      if (block.mutable && activeStart === null) activeStart = transcriptLines.length;
+      for (const row of fallbackText(block).split(/\r\n|\n|\r/u)) {
+        transcriptLines.push(...wrapStyledSpans(plainLine(row).spans, width));
+      }
+    }
+    const composer = new Composer({
+      editor: options.editor,
+      prompt: options.prompt ?? "❯ ",
+      mask: options.secret ?? false,
+    }).render({ width, theme: this.#theme });
+    const completion = new CompletionPopup({
+      items: options.editor.completions,
+      selectedIndex: options.editor.selectedCompletion,
+    }).render({ width, theme: this.#theme });
+    const status = this.#status().render({ width, theme: this.#theme });
+    const cursor = composer.cursor ?? { row: Math.max(0, composer.lines.length - 1), column: 0 };
+    const lines = [...transcriptLines, ...composer.lines, ...completion.lines, ...status.lines];
+    return {
+      lines: compileStyledLines(lines, width, this.#theme),
+      cursor: {
+        row: transcriptLines.length + cursor.row,
+        column: cursor.column,
+      },
+      activeStart: activeStart ?? transcriptLines.length,
+    };
+  }
+
+  #status(): StatusLine {
+    return new StatusLine({
+      state: this.#state,
+      cwd: this.#projectRoot,
+      provider: this.#provider,
+      model: this.#model,
+      effort: this.#effort,
+    });
   }
 
   #welcomeBlock(): string[] {
@@ -167,11 +161,7 @@ function fallbackText(block: TranscriptBlock): string {
     case "notice":
       return block.text;
     case "tool":
-      return [
-        `● ${block.name}`,
-        block.subject,
-        block.status,
-      ].filter(Boolean).join("  ");
+      return [`● ${block.name}`, block.subject, block.status].filter(Boolean).join("  ");
     case "welcome":
       return [block.title, ...block.details].join("\n");
     case "help":

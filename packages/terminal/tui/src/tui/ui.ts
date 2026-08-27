@@ -88,6 +88,11 @@ import type {
 import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
 import { compileStyledLines } from "./ansi-renderer.ts";
+import { CompletionPopup } from "./components/completion-list.ts";
+import { Composer } from "./components/composer.ts";
+import { StatusLine } from "./components/status-line.ts";
+import { MainScreen } from "./main-screen.ts";
+import { truncateStyledLine } from "./render-model.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
   PiMainScreenRenderer,
@@ -100,7 +105,6 @@ import {
 } from "./screen.ts";
 import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "./components.ts";
 import type { PromptRequest, SelectionRequest } from "./components/views/contracts.ts";
-import { CompletionList } from "./components/completion-list.ts";
 import { Transcript } from "./components/transcript.ts";
 import { FocusManager } from "./focus-manager.ts";
 import { OverlayManager } from "./overlay-manager.ts";
@@ -854,6 +858,7 @@ export interface TerminalUIOptions {
   projectRoot?: string;
   provider?: string;
   model?: string;
+  effort?: string;
   commandRegistry?: CommandRegistryLike | null;
   cancelCallback?: (() => void) | null;
   theme?: string | null;
@@ -906,6 +911,7 @@ export class TerminalUI {
   readonly projectRoot: string | null;
   readonly provider: string | null;
   readonly model: string | null;
+  readonly effort: string | null;
   readonly capabilities: RuntimeCapabilities;
   readonly keybindings: KeybindingsManager;
 
@@ -928,6 +934,7 @@ export class TerminalUI {
     this.projectRoot = options.projectRoot ?? null;
     this.provider = options.provider ?? null;
     this.model = options.model ?? null;
+    this.effort = options.effort ?? null;
     this.capabilities = { ...DEFAULT_RUNTIME_CAPABILITIES, ...options.capabilities };
     this.keybindings = new KeybindingsManager(
       DEFAULT_KEYBINDINGS,
@@ -951,6 +958,8 @@ export class TerminalUI {
       projectRoot: this.projectRoot,
       provider: this.provider,
       model: this.model,
+      effort: this.effort,
+      theme: this.theme,
     });
     if (options.driver) {
       const editorFactory = options.editorFactory ?? (() => new EditorState());
@@ -1215,46 +1224,46 @@ export class TerminalUI {
     secret?: boolean;
   }): ScreenFrame {
     const { width, editor } = options;
-    const contentWidth = width >= 4 ? width - 4 : width;
-    const { lines: history, activeStart } = this.#buildHistoryFrameParts(contentWidth);
-    const completion = [
-      ...this.#completionLines(contentWidth, editor),
-      ...this.#activeViewLines(contentWidth),
-    ];
-    return this.#frameBuilder.build({
-      ...options,
-      editorStyles: this.#editorStyles(),
-      historyLines: history,
-      activeStart,
-      completionLines: completion,
-    }).screen;
-  }
-
-  #editorStyles(): {
-    readonly prompt: (text: string) => string;
-    readonly text: (text: string) => string;
-  } {
-    return {
-      prompt: (text) => text ? `${this.theme.sgr("accent")}${text}\x1b[0m` : text,
-      text: (text) => text,
-    };
-  }
-
-  #completionLines(width: number, editor: EditorLike): string[] {
-    return [
-      ...new CompletionList({
+    const contentWidth = Math.max(1, width - 1);
+    const activeView = this.#loop?.renderActiveView({
+      width: contentWidth,
+      theme: this.theme,
+    });
+    const rendered = new MainScreen({
+      transcript: new Transcript({ blocks: this.#transcript.blocks() }),
+      composer: new Composer({
+        editor,
+        prompt: options.prompt ?? "❯ ",
+        mask: options.secret ?? false,
+      }),
+      activeView: activeView !== undefined && activeView.lines.length > 0
+        ? activeView
+        : null,
+      completion: new CompletionPopup({
         items: editor.completions,
         selectedIndex: editor.selectedCompletion,
-        theme: this.theme,
-      }).render(width),
-    ];
-  }
-
-  #activeViewLines(width: number): string[] {
-    const rendered = this.#loop?.renderActiveView({ width, theme: this.theme });
-    return rendered === undefined
-      ? []
-      : compileStyledLines(rendered.lines, width, this.theme);
+      }),
+      status: new StatusLine({
+        state: this.state,
+        cwd: this.projectRoot,
+        provider: this.provider,
+        model: this.model,
+        effort: this.effort,
+      }),
+    }).renderWithMetadata({ width: contentWidth, theme: this.theme });
+    const lines = compileStyledLines(
+      rendered.lines.map((line) => truncateStyledLine(line, contentWidth, "")),
+      contentWidth,
+      this.theme,
+    );
+    return this.#frameBuilder.build({
+      ...options,
+      compiledMainScreen: {
+        lines,
+        cursor: rendered.cursor ?? { row: 0, column: 0 },
+        activeStart: rendered.activeStart,
+      },
+    }).screen;
   }
 
   // -- events ---------------------------------------------------------------

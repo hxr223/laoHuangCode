@@ -48,6 +48,15 @@ export {
   type ProviderStatusViewOptions,
 } from "./components/views/provider-status-view.ts";
 export { QueueStatusView, type QueueStatusViewOptions } from "./components/views/queue-status-view.ts";
+export {
+  CompletionList,
+  CompletionPopup,
+  type CompletionListOptions,
+  type CompletionPopupOptions,
+} from "./components/completion-list.ts";
+export { Composer, type ComposerOptions } from "./components/composer.ts";
+export { StatusLine, type StatusLineOptions } from "./components/status-line.ts";
+export { MainScreen, type MainScreenOptions, type MainScreenRenderResult } from "./main-screen.ts";
 export { ViewHost } from "./view-host.ts";
 
 export const COMPOSER_COMPONENT = "composer";
