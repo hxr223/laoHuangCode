@@ -533,15 +533,15 @@ test("tty wiring asks model selection through the running terminal ui", async ()
 
   const pending = selector.select({ providerName: "deepseek" });
   try {
-    // The model search question is rendered by the terminal UI itself.
+    // The model selector question is rendered by the terminal UI itself.
     for (let index = 0; index < 20; index += 1) {
       ui.drainLoop();
-      if (terminal.writes().includes("Search models:")) {
+      if (terminal.writes().includes("Select model or search:")) {
         break;
       }
       await delay(1);
     }
-    assert.ok(terminal.writes().includes("Search models:"));
+    assert.ok(terminal.writes().includes("Select model or search:"));
 
     ui.feedInputBytes(textEncoder.encode("deepseek\r"));
     ui.drainLoop();

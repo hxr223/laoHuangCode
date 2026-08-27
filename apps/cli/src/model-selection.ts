@@ -129,38 +129,39 @@ export class ModelSelector {
   }
 
   async #chooseModel(models: readonly ModelInfo[]): Promise<ModelInfo | null> {
+    let currentMatches = filterModels(models, "", Number.MAX_SAFE_INTEGER);
+    let prompt = "Select model or search: ";
     for (;;) {
-      const query = await this.#readInput("Search models: ");
-      if (query === null) {
-        return null;
-      }
-      const allMatches = filterModels(models, query, Number.MAX_SAFE_INTEGER);
-      const matches = allMatches.slice(0, 20);
-      if (matches.length === 0) {
-        this.#output("No models matched. Try another search.");
-        continue;
-      }
+      const visibleMatches = currentMatches.slice(0, 20);
       this.#output("Available models:");
-      matches.forEach((model, index) => {
+      visibleMatches.forEach((model, index) => {
         this.#output(`  ${index + 1}. ${model.id} - ${model.name}`);
       });
-      if (matches.length < allMatches.length) {
-        this.#output(`Showing ${matches.length} of ${allMatches.length}`);
+      if (visibleMatches.length < currentMatches.length) {
+        this.#output(`Showing ${visibleMatches.length} of ${currentMatches.length}`);
       }
-      const answer = await this.#readInput("Select model: ");
+
+      const answer = await this.#readInput(prompt);
       if (answer === null) {
         return null;
       }
       const choice = Number(answer);
       const selected = Number.isInteger(choice)
-        ? matches[choice - 1]
+        ? visibleMatches[choice - 1]
         : undefined;
       if (selected !== undefined) {
         return selected;
       }
       if (answer.length > 0) {
-        this.#output("Model selection cancelled: invalid choice.");
-        return null;
+        const matches = filterModels(models, answer, Number.MAX_SAFE_INTEGER);
+        if (matches.length === 0) {
+          this.#output("No models matched. Try another search.");
+          currentMatches = filterModels(models, "", Number.MAX_SAFE_INTEGER);
+          prompt = "Select model or search: ";
+          continue;
+        }
+        currentMatches = matches;
+        prompt = "Select model: ";
       }
     }
   }
