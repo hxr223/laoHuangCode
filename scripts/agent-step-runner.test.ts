@@ -16,7 +16,7 @@ import {
   type AgentStepRunnerContext,
 } from "../packages/core/agent-runtime/src/core/agent-step-runner.ts";
 import { HistoryCommitter } from "../packages/core/agent-runtime/src/core/history-committer.ts";
-import { GuardPolicy } from "../packages/core/agent-runtime/src/core/guard-policy.ts";
+import { RepeatToolPolicy } from "../packages/core/agent-runtime/src/core/repeat-tool-policy.ts";
 import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
 
@@ -116,11 +116,7 @@ function createRunner(options: {
     toolDefinitions: [],
     toolExecution: "parallel",
     history: committer,
-    guardPolicy: new GuardPolicy({
-      maxTotalTokens: 100_000,
-      maxElapsedSeconds: 300,
-      repeatedToolCallLimit: 3,
-    }),
+    repeatToolPolicy: new RepeatToolPolicy([3, 5, 8]),
     userInput: "first user message",
     context,
     cancelToken: token,

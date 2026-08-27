@@ -8,7 +8,7 @@ import type { ToolSpec } from "@laohuang/tools";
 import { toPiAssistant } from "./replay.ts";
 
 function toolsOf(request: ModelRequest): PiTool[] | undefined {
-  if (request.toolChoice === "none" || request.tools.length === 0) {
+  if (request.tools.length === 0) {
     return undefined;
   }
   return request.tools.map(toolOf);

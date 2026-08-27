@@ -6,10 +6,9 @@
  * only fully validated attempts to history (atomically, via the owning
  * session's commit hooks when present), executes tool-call batches
  * (read-only tools and multiple bash calls concurrently; any write/edit or
- * sequential-mode tool makes the whole batch serial), and enforces the
- * runtime guard rails: repeated-identical-tool-call detection plus token and
- * duration budgets. A triggered guard disables tools and asks the model for
- * one final answer from the information already gathered.
+ * sequential-mode tool makes the whole batch serial), and injects advisory
+ * reminders when identical tool calls repeat. The runtime does not impose a
+ * whole-turn token or elapsed-time budget and never disables model tool use.
  */
 
 import path from "node:path";
@@ -49,15 +48,12 @@ import {
 } from "@laohuang/project-instructions";
 import {
   AgentStepRunner,
-  FORCED_FINAL_PROMPT,
   type AgentStepRunnerContext,
 } from "./core/agent-step-runner.ts";
-import { GuardPolicy } from "./core/guard-policy.ts";
+import { RepeatToolPolicy } from "./core/repeat-tool-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
 import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime } from "@laohuang/tools";
-
-export { FORCED_FINAL_PROMPT };
 
 /** Raised when the model response cannot drive the agent loop. */
 export class AgentError extends Error {
@@ -114,9 +110,7 @@ export interface CodingAgentOptions {
   modelAdapter: ModelAdapter;
   model: string;
   tools: AgentToolRegistry;
-  maxTotalTokens?: number;
-  maxElapsedSeconds?: number;
-  repeatedToolCallLimit?: number;
+  repeatToolReminderThresholds?: readonly number[];
   onToolEvent?: ToolEventCallback | null;
   onAgentEvent?: AgentEventCallback | null;
   provider: string;
@@ -153,8 +147,7 @@ const RUNTIME_EVENT_KINDS: Record<string, EventKind> = {
   model_response: EventKind.ModelResponseSummary,
   tool_start: EventKind.ToolStarted,
   tool_result: EventKind.ToolFinished,
-  agent_guard_triggered: EventKind.AgentGuardTriggered,
-  agent_guard_failed: EventKind.AgentGuardFailed,
+  agent_repeat_warning: EventKind.AgentRepeatWarning,
 };
 
 export class CodingAgent {
@@ -167,9 +160,7 @@ export class CodingAgent {
   private reasoningEffort: ReasoningEffort;
   private readonly toolRuntime: ToolRuntime;
   readonly tools: AgentToolRegistry;
-  readonly maxTotalTokens: number;
-  readonly maxElapsedSeconds: number;
-  readonly repeatedToolCallLimit: number;
+  readonly repeatToolReminderThresholds: readonly number[];
   readonly toolExecution: ToolExecutionMode;
   /** Conversation history in LaoHuang model-message shape. */
   messages: ModelMessage[];
@@ -184,18 +175,9 @@ export class CodingAgent {
   private activeRequestId: string | null = null;
 
   constructor(options: CodingAgentOptions) {
-    this.maxTotalTokens = options.maxTotalTokens ?? 100_000;
-    this.maxElapsedSeconds = options.maxElapsedSeconds ?? 300;
-    this.repeatedToolCallLimit = options.repeatedToolCallLimit ?? 3;
-    for (const [name, value] of [
-      ["maxTotalTokens", this.maxTotalTokens],
-      ["maxElapsedSeconds", this.maxElapsedSeconds],
-      ["repeatedToolCallLimit", this.repeatedToolCallLimit],
-    ] as const) {
-      if (value <= 0) {
-        throw new RangeError(`${name} must be positive`);
-      }
-    }
+    this.repeatToolReminderThresholds = normalizeReminderThresholds(
+      options.repeatToolReminderThresholds ?? [3, 5, 8],
+    );
     this.model = options.model;
     this.tools = options.tools;
     this.onToolEvent = options.onToolEvent ?? null;
@@ -279,11 +261,7 @@ export class CodingAgent {
           cancelToken,
           createCancelled: (message) => new AgentCancelled(message),
         }),
-        guardPolicy: new GuardPolicy({
-          maxTotalTokens: this.maxTotalTokens,
-          maxElapsedSeconds: this.maxElapsedSeconds,
-          repeatedToolCallLimit: this.repeatedToolCallLimit,
-        }),
+        repeatToolPolicy: new RepeatToolPolicy(this.repeatToolReminderThresholds),
         userInput,
         context,
         cancelToken,
@@ -415,20 +393,18 @@ export class CodingAgent {
     // Streaming Bash owns its own start/output/finish events. The agent
     // supplies lifecycle events for the three synchronous file tools.
     const isToolEvent = eventType === "tool_start" || eventType === "tool_result";
-    const isGuardEvent =
-      eventType === "agent_guard_triggered" ||
-      eventType === "agent_guard_failed";
+    const isRepeatWarning = eventType === "agent_repeat_warning";
     if (isToolEvent && payload["name"] === "bash") {
       return;
     }
     const source = isToolEvent
       ? EventSource.Tool
-      : isGuardEvent
+      : isRepeatWarning
         ? EventSource.System
         : EventSource.Model;
     const correlationId = isToolEvent
       ? ((payload["toolCallId"] as string | undefined) ?? null)
-      : isGuardEvent
+      : isRepeatWarning
         ? null
         : ((payload["request_id"] as string | undefined) ?? null);
     if (typeof publisher === "function") {
@@ -518,4 +494,17 @@ function raiseIfCancelled(token: CancelToken | null): void {
   if (isCancelled(token)) {
     throw new AgentCancelled(token?.reason || "cancelled");
   }
+}
+
+function normalizeReminderThresholds(values: readonly number[]): readonly number[] {
+  const unique = new Set<number>();
+  for (const value of values) {
+    if (!Number.isInteger(value) || value < 2 || unique.has(value)) {
+      throw new RangeError(
+        "repeatToolReminderThresholds must contain unique integers of at least 2",
+      );
+    }
+    unique.add(value);
+  }
+  return [...unique].sort((left, right) => left - right);
 }

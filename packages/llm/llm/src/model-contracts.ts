@@ -170,7 +170,6 @@ export interface ModelRequest {
   readonly baseUrl?: string;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ToolSpec[];
-  readonly toolChoice: "auto" | "none";
   readonly reasoningEffort?: ReasoningEffort;
   readonly temperature?: number;
   readonly timeoutMs?: number;
