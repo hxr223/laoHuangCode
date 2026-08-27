@@ -1,5 +1,5 @@
 /**
- * Convert Markdown into styled ANSI logical lines without terminal I/O.
+ * Convert Markdown into semantic styled logical lines without terminal I/O.
  *
  * Hand-written replacement for the Python version's Rich + prompt_toolkit
  * pipeline: a small block/inline Markdown parser emits styled segments,
@@ -15,12 +15,21 @@
  * rule emits its own trailing blank line).
  */
 
+import { compileStyledLines } from "./ansi-renderer.ts";
+import {
+  line,
+  span,
+  type SpanStyle,
+  type StyledLine,
+  type StyledSpan,
+  type StyleToken,
+} from "./render-model.ts";
 import type { TerminalTheme } from "./theme.ts";
 import {
   clusterWidth,
+  charCellWidth,
   graphemeClusters,
   stripTerminalControls,
-  truncateToWidth,
 } from "./screen.ts";
 
 // The visible-width/escape-sequence helpers are owned by terminal/screen.ts;
@@ -33,6 +42,11 @@ export function renderMarkdownLines(
   width: number,
   theme: TerminalTheme,
 ): string[] {
+  return compileStyledLines(renderMarkdownStyledLines(text, width), width, theme);
+}
+
+/** Render Markdown as structured lines with semantic style tokens. */
+export function renderMarkdownStyledLines(text: string, width: number): StyledLine[] {
   const clean = stripTerminalControls(text);
   if (!clean.trim()) {
     return [];
@@ -40,9 +54,9 @@ export function renderMarkdownLines(
   // Rich lays out at max(12, width) and each line is then truncated to the
   // requested width; keep the same two-step behavior.
   const layoutWidth = Math.max(12, width);
-  const lines: string[] = [];
+  const lines: StyledLine[] = [];
   let previous: BlockKind | null = null;
-  for (const block of renderBlocks(clean, theme, layoutWidth)) {
+  for (const block of renderBlocks(clean, layoutWidth)) {
     // Rich yields one blank line before each block-level element whose
     // predecessor sets new_line (every element except a horizontal rule).
     // Container blocks nest paragraph children, so the flag is already set
@@ -54,14 +68,14 @@ export function renderMarkdownLines(
           block.kind === "quote"
         : previous !== "hr";
     if (leadingBlank) {
-      lines.push("");
+      lines.push(line());
     }
     for (const line of block.lines) {
-      lines.push(truncateToWidth(serializeLine(line), width));
+      lines.push(truncateMarkdownLine(serializeLine(line), width));
     }
     // Rich's HorizontalRule yields an empty Text after the rule itself.
     if (block.kind === "hr") {
-      lines.push("");
+      lines.push(line());
     }
     previous = block.kind;
   }
@@ -87,65 +101,25 @@ interface Block {
   lines: Segment[][];
 }
 
-interface InlineStyle {
-  bold?: boolean;
-  italic?: boolean;
-  strike?: boolean;
-  underline?: boolean;
-  fg?: string;
-  bg?: string;
-}
-
+type InlineStyle = SpanStyle;
 interface Segment {
-  style: InlineStyle;
   text: string;
+  style: InlineStyle;
 }
 
 function styleKey(style: InlineStyle): string {
   return [
     style.bold ? "b" : "",
     style.italic ? "i" : "",
-    style.strike ? "s" : "",
     style.underline ? "u" : "",
-    style.fg ?? "",
-    style.bg ?? "",
+    style.foreground ?? "",
+    style.background ?? "",
   ].join("|");
-}
-
-function styleCodes(style: InlineStyle): string {
-  const codes: string[] = [];
-  if (style.bold) {
-    codes.push("1");
-  }
-  if (style.italic) {
-    codes.push("3");
-  }
-  if (style.underline) {
-    codes.push("4");
-  }
-  if (style.strike) {
-    codes.push("9");
-  }
-  if (style.fg) {
-    codes.push(`38;2;${hexToRgb(style.fg)}`);
-  }
-  if (style.bg) {
-    codes.push(`48;2;${hexToRgb(style.bg)}`);
-  }
-  return codes.join(";");
-}
-
-function hexToRgb(hex: string): string {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `${r};${g};${b}`;
 }
 
 /** Parse the document into blocks with pre-wrapped styled lines. */
 function renderBlocks(
   text: string,
-  theme: TerminalTheme,
   layoutWidth: number,
 ): Block[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
@@ -159,7 +133,7 @@ function renderBlocks(
     if (content) {
       blocks.push({
         kind: "paragraph",
-        lines: wrapSegments(parseInline(content, {}, theme), layoutWidth),
+        lines: wrapSegments(parseInline(content, {}), layoutWidth),
       });
     }
   };
@@ -173,8 +147,8 @@ function renderBlocks(
       const fence = trimmed.slice(0, 3);
       index += 1;
       const codeStyle: InlineStyle = {
-        fg: theme.color("code"),
-        bg: theme.color("card"),
+        foreground: "code",
+        background: "card",
       };
       const codeLines: Segment[][] = [];
       while (index < lines.length) {
@@ -227,7 +201,7 @@ function renderBlocks(
         }
         blocks.push({
           kind: "table",
-          lines: renderTable(header, rows, theme, layoutWidth),
+          lines: renderTable(header, rows, layoutWidth),
         });
         continue;
       }
@@ -241,8 +215,7 @@ function renderBlocks(
         lines: wrapSegments(
           parseInline(
             (heading[2] as string).replace(/\s+#+\s*$/, ""),
-            { bold: true, fg: theme.color("heading") },
-            theme,
+            { bold: true, foreground: "heading" },
           ),
           layoutWidth,
         ),
@@ -258,7 +231,7 @@ function renderBlocks(
         lines: [
           [
             {
-              style: { fg: theme.color("border_muted") },
+              style: { foreground: "border_muted" as StyleToken },
               text: "─".repeat(layoutWidth),
             },
           ],
@@ -286,8 +259,7 @@ function renderBlocks(
           lines: wrapSegments(
             parseInline(
               quote,
-              { italic: true, fg: theme.color("thinking") },
-              theme,
+              { italic: true, foreground: "thinking" },
             ),
             layoutWidth,
           ),
@@ -304,12 +276,12 @@ function renderBlocks(
         if (!match) {
           break;
         }
-        items.push(parseInline(match[1] as string, {}, theme));
+        items.push(parseInline(match[1] as string, {}));
         index += 1;
       }
       blocks.push({
         kind: "list",
-        lines: renderListItems(items, () => " • ", theme, layoutWidth),
+        lines: renderListItems(items, () => " • ", layoutWidth),
       });
       continue;
     }
@@ -318,14 +290,14 @@ function renderBlocks(
     if (numbered) {
       flushParagraph();
       const start = parseInt(numbered[1] as string, 10);
-      const items: Segment[][] = [parseInline(numbered[2] as string, {}, theme)];
+      const items: Segment[][] = [parseInline(numbered[2] as string, {})];
       index += 1;
       while (index < lines.length) {
         const match = /^(\d+)[.)]\s+(.*)$/.exec((lines[index] as string).trim());
         if (!match) {
           break;
         }
-        items.push(parseInline(match[2] as string, {}, theme));
+        items.push(parseInline(match[2] as string, {}));
         index += 1;
       }
       // Rich sizes the number column from start + item count, right-aligns
@@ -336,7 +308,6 @@ function renderBlocks(
         lines: renderListItems(
           items,
           (item) => String(start + item).padStart(numberWidth - 1) + " ",
-          theme,
           layoutWidth,
         ),
       });
@@ -354,10 +325,9 @@ function renderBlocks(
 function renderListItems(
   items: Segment[][],
   prefixFor: (index: number) => string,
-  theme: TerminalTheme,
   layoutWidth: number,
 ): Segment[][] {
-  const marker: InlineStyle = { fg: theme.color("accent") };
+  const marker: InlineStyle = { foreground: "accent" };
   const lines: Segment[][] = [];
   for (let index = 0; index < items.length; index += 1) {
     const prefix = prefixFor(index);
@@ -385,18 +355,6 @@ function renderListItems(
 // ---------------------------------------------------------------------------
 // Tables (Rich's SIMPLE box: blank edges, dashed header separator)
 // ---------------------------------------------------------------------------
-
-/** Theme token lookup that tolerates missing or malformed entries. */
-function tableColor(
-  theme: TerminalTheme,
-  token: string,
-  fallback: string,
-): string {
-  const value = theme.colors[token];
-  return value !== undefined && /^#[0-9a-fA-F]{6}$/.test(value)
-    ? value
-    : theme.color(fallback);
-}
 
 /** Split a pipe-delimited table row into trimmed cells. */
 function splitTableRow(line: string): string[] | null {
@@ -428,24 +386,23 @@ function segmentsWidth(segments: Segment[]): number {
 function renderTable(
   header: string[],
   rows: string[][],
-  theme: TerminalTheme,
   layoutWidth: number,
 ): Segment[][] {
   const columnCount = header.length;
   const borderStyle: InlineStyle = {
-    fg: tableColor(theme, "markdown.table.border", "border_muted"),
+    foreground: "border_muted" as StyleToken,
   };
   const headerStyle: InlineStyle = {
     bold: true,
-    fg: tableColor(theme, "markdown.table.header", "heading"),
+    foreground: "heading",
   };
   const normalize = (cells: string[]): string[] =>
     Array.from({ length: columnCount }, (_, i) => cells[i] ?? "");
   const headerCells = normalize(header).map((cell) =>
-    parseInline(cell, headerStyle, theme),
+    parseInline(cell, headerStyle),
   );
   const bodyCells = rows.map((row) =>
-    normalize(row).map((cell) => parseInline(cell, {}, theme)),
+    normalize(row).map((cell) => parseInline(cell, {})),
   );
 
   const widths = Array.from({ length: columnCount }, (_, i) =>
@@ -522,10 +479,9 @@ function renderTableRows(
 
 interface InlinePattern {
   pattern: RegExp;
-  style?: (theme: TerminalTheme, base: InlineStyle) => InlineStyle;
+  style?: (base: InlineStyle) => InlineStyle;
   /** Produce replacement segments directly, bypassing delimiter stripping. */
   expand?: (
-    theme: TerminalTheme,
     base: InlineStyle,
     match: RegExpExecArray,
   ) => Segment[];
@@ -535,45 +491,45 @@ const INLINE_PATTERNS: InlinePattern[] = [
   {
     // Inline code: no further parsing inside backticks.
     pattern: /`([^`]+)`/,
-    style: (theme) => ({ fg: theme.color("code"), bg: theme.color("card") }),
+    style: () => ({ foreground: "code", background: "card" }),
   },
   {
     pattern: /\*\*([^*]+)\*\*/,
-    style: (_theme, base) => ({ ...base, bold: true }),
+    style: (base) => ({ ...base, bold: true }),
   },
   {
     pattern: /__([^_]+)__/,
-    style: (_theme, base) => ({ ...base, bold: true }),
+    style: (base) => ({ ...base, bold: true }),
   },
   {
     pattern: /~~([^~]+)~~/,
-    style: (theme, base) => ({
+    style: (base) => ({
       ...base,
-      strike: true,
-      fg: theme.color("muted"),
+      dim: true,
+      foreground: "muted",
     }),
   },
   {
     pattern: /\*([^*]+)\*/,
-    style: (_theme, base) => ({ ...base, italic: true }),
+    style: (base) => ({ ...base, italic: true }),
   },
   {
     pattern: /(?<![A-Za-z0-9])_([^_]+)_(?![A-Za-z0-9])/,
-    style: (_theme, base) => ({ ...base, italic: true }),
+    style: (base) => ({ ...base, italic: true }),
   },
   {
     // Links and images: visible text plus the URL in parentheses, matching
     // Rich's hyperlinks=False output, never OSC-8 controls. Rich renders
     // the link text as plain (unparsed) content.
     pattern: /!?\[([^\]]*)\]\(([^)\s]+)\)/,
-    expand: (theme, base, match) => [
+    expand: (base, match) => [
       {
-        style: { ...base, underline: true, fg: theme.color("link") },
+        style: { ...base, underline: true, foreground: "link" },
         text: match[1] as string,
       },
       { style: base, text: " (" },
       {
-        style: { ...base, fg: theme.color("muted") },
+        style: { ...base, foreground: "muted" },
         text: match[2] as string,
       },
       { style: base, text: ")" },
@@ -584,7 +540,6 @@ const INLINE_PATTERNS: InlinePattern[] = [
 function parseInline(
   text: string,
   base: InlineStyle,
-  theme: TerminalTheme,
 ): Segment[] {
   const segments: Segment[] = [];
   let rest = text;
@@ -607,11 +562,11 @@ function parseInline(
         best = {
           start: match.index,
           end: match.index + match[0].length,
-          expanded: expand(theme, base, match),
+          expanded: expand(base, match),
         };
         continue;
       }
-      const next = (style as NonNullable<typeof style>)(theme, base);
+      const next = (style as NonNullable<typeof style>)(base);
       best = {
         start: match.index,
         end: match.index + match[0].length,
@@ -630,7 +585,7 @@ function parseInline(
     } else {
       const inner = rest.slice(best.start, best.end);
       const content = inlineContent(inner);
-      segments.push(...parseInline(content, best.next as InlineStyle, theme));
+      segments.push(...parseInline(content, best.next as InlineStyle));
     }
     rest = rest.slice(best.end);
   }
@@ -780,16 +735,26 @@ function regroup(clusters: StyledCluster[]): Segment[] {
   return segments;
 }
 
-/** Serialize one wrapped line as an ANSI string; plain text stays raw. */
-function serializeLine(segments: Segment[]): string {
-  let out = "";
-  for (const segment of segments) {
-    const codes = styleCodes(segment.style);
-    if (!codes) {
-      out += segment.text;
-      continue;
+/** Convert one wrapped parser row into a structured render line. */
+function serializeLine(segments: Segment[]): StyledLine {
+  return line(...segments.map((segment) => span(segment.text, segment.style)));
+}
+
+function truncateMarkdownLine(value: StyledLine, width: number): StyledLine {
+  const spans: StyledSpan[] = [];
+  let used = 0;
+  for (const source of value.spans) {
+    let text = "";
+    for (const character of source.text) {
+      const characterWidth = charCellWidth(character);
+      if (used + characterWidth > width) {
+        if (text) spans.push(span(text, source.style));
+        return line(...spans);
+      }
+      text += character;
+      used += characterWidth;
     }
-    out += `\x1b[${codes}m${segment.text}\x1b[0m`;
+    if (text) spans.push(span(text, source.style));
   }
-  return out;
+  return line(...spans);
 }

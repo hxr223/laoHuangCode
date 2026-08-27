@@ -22,13 +22,19 @@ providers 自动排除；直接 Google API provider `google` 与 Vertex 是不�
 ```text
 /model
 /model current
+/model deepseek-v4-pro
+/model deepseek
 /model deepseek deepseek-v4-pro
 /model anthropic claude-sonnet-4-5
 ```
 
-`/model` 默认只改变当前会话，不修改默认 Profile。切换成功前会完成凭据检查；下一次
-请求会通过共享 Adapter 解析所选 route 和当前 credential。任何失败都不会替换当前
-route。切换后保留已经完成的可见对话历史，并移除供应商私有 replay 状态。
+`/model` 默认列出当前供应商的可用模型，输入序号即可在当前供应商内切换模型。
+`/model <model>` 会把参数解释为当前供应商下的模型；`/model <provider>` 会进入
+指定供应商的模型列表；`/model <provider> <model>` 直接切到完整 route。
+
+运行中模型切换默认只改变当前会话，不修改默认 Profile。切换成功前会完成凭据检查；
+下一次请求会通过共享 Adapter 解析所选 route 和当前 credential。任何失败都不会替换
+当前 route。切换后保留已经完成的可见对话历史，并移除供应商私有 replay 状态。
 
 `/model` 不负责录入凭据。选择尚未登录的供应商时，会提示先运行相应的
 `/login <provider>`。

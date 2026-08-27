@@ -496,12 +496,12 @@ test("agent does not limit tool rounds or model requests", async (t) => {
   assert.equal(client.completions.requests.length, 22);
   assert.ok(
     client.completions.requests.every(
-      (request) => request.toolChoice === "auto",
+      (request) => !("toolChoice" in request),
     ),
   );
 });
 
-test("repeated tool call forces a final answer after three matches", async (t) => {
+test("repeated tool calls add a reminder and continue with tools available", async (t) => {
   const directory = tempDir(t);
   const call = (callId: string) =>
     new FakeMessage({
@@ -519,7 +519,8 @@ test("repeated tool call forces a final answer after three matches", async (t) =
     call("call_1"),
     call("call_2"),
     call("call_3"),
-    new FakeMessage({ content: "No more tool calls." }),
+    call("call_4"),
+    new FakeMessage({ content: "Changed approach and finished." }),
   );
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
@@ -529,27 +530,32 @@ test("repeated tool call forces a final answer after three matches", async (t) =
     onAgentEvent: collectEvents(events),
   });
 
-  const result = await agent.run("Repeat forever", context);
+  const result = await agent.run("Repeat until reminded", context);
 
-  assert.equal(result, "No more tool calls.");
-  assert.equal(client.completions.requests.length, 4);
-  assert.equal(client.completions.requests.at(-1)?.toolChoice, "none");
-  const guard = events.find((event) => event.type === "agent_guard_triggered");
-  assert.ok(guard !== undefined);
-  assert.ok(String(guard.payload["reason"]).includes("repeated tool call"));
-  assert.equal(guard.payload["tool_rounds"], 3);
+  assert.equal(result, "Changed approach and finished.");
+  assert.equal(client.completions.requests.length, 5);
+  assert.ok(client.completions.requests.every((request) => !("toolChoice" in request)));
+  const fourthMessages = requestMessages(client.completions, 3);
+  const reminder = fourthMessages.at(-1);
+  assert.equal(reminder?.role, "user");
+  assert.match(String(reminder?.content), /read.*3 consecutive times/);
+  const warning = events.find((event) => event.type === "agent_repeat_warning");
+  assert.ok(warning !== undefined);
+  assert.equal(warning.payload["tool_name"], "read");
+  assert.equal(warning.payload["repeat_count"], 3);
   const canonical = eventBus.drain();
   assert.ok(
     canonical.some(
       (event) =>
-        event.kind === EventKind.AgentGuardTriggered &&
-        String(event.payload["reason"]).includes("repeated tool call"),
+        event.kind === "agent.repeat_warning" &&
+        event.payload["tool_name"] === "read" &&
+        event.payload["repeat_count"] === 3,
     ),
   );
   const summaries = canonical.filter(
     (event) => event.kind === EventKind.ModelResponseSummary,
   );
-  assert.equal(summaries.length, 4);
+  assert.equal(summaries.length, 5);
   assert.deepEqual(summaries[0]?.payload["tool_names"], ["read"]);
   assert.ok(Number(summaries[0]?.payload["total_tokens"]) > 0);
 });
@@ -571,69 +577,28 @@ test("repeated tool counter resets after a different result", async (t) => {
     call("call_4", "one.txt"),
     new FakeMessage({ content: "Finished normally." }),
   );
+  const events: CollectedEvent[] = [];
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
     tools: createTestToolRegistry(directory),
+    onAgentEvent: collectEvents(events),
   });
 
   assert.equal(await agent.run("Read files"), "Finished normally.");
-  assert.ok(
-    client.completions.requests.every(
-      (request) => request.toolChoice === "auto",
-    ),
-  );
+  assert.ok(client.completions.requests.every((request) => !("toolChoice" in request)));
+  assert.ok(events.every((event) => event.type !== "agent_repeat_warning"));
 });
 
-test("token budget forces final without committing unmatched calls", async (t) => {
+test("default runtime does not stop tools after 100k accumulated tokens", async (t) => {
   const directory = tempDir(t);
-  const first = new FakeMessage({
-    tool_calls: [new FakeToolCall("call_1", "read", '{"path":"missing"}')],
-    usage: { total_tokens: 101 },
-  });
-  const client = fakeClient(first, new FakeMessage({ content: "Budget reached." }));
-  const agent = new CodingAgent({
-    modelAdapter: fakeModelAdapter(client),
-    model: "test-model",
-    provider: "openai",
-    tools: createTestToolRegistry(directory),
-    maxTotalTokens: 100,
-  });
-
-  const result = await agent.run("Spend tokens");
-
-  assert.equal(result, "Budget reached.");
-  assert.equal(client.completions.requests.at(-1)?.toolChoice, "none");
-  assert.ok(agent.messages.every((message) => !message["tool_calls"]));
-});
-
-test("elapsed budget can force no-tool answer immediately", async (t) => {
-  const directory = tempDir(t);
-  const client = fakeClient(new FakeMessage({ content: "Time limit." }));
-  const agent = new CodingAgent({
-    modelAdapter: fakeModelAdapter(client),
-    model: "test-model",
-    provider: "openai",
-    tools: createTestToolRegistry(directory),
-    maxElapsedSeconds: 1e-12,
-  });
-
-  assert.equal(await agent.run("No time"), "Time limit.");
-  assert.equal(client.completions.requests[0]?.toolChoice, "none");
-});
-
-test("failed forced final reports guard counters and reason", async (t) => {
-  const directory = tempDir(t);
-  const call = (callId: string) =>
-    new FakeMessage({
-      tool_calls: [new FakeToolCall(callId, "read", '{"path":"missing"}')],
-    });
   const client = fakeClient(
-    call("call_1"),
-    call("call_2"),
-    call("call_3"),
-    call("call_4"),
+    new FakeMessage({
+      tool_calls: [new FakeToolCall("call_1", "read", '{"path":"missing"}')],
+      usage: { total_tokens: 100_001 },
+    }),
+    new FakeMessage({ content: "Finished after the tool call." }),
   );
   const agent = new CodingAgent({
     modelAdapter: fakeModelAdapter(client),
@@ -642,16 +607,34 @@ test("failed forced final reports guard counters and reason", async (t) => {
     tools: createTestToolRegistry(directory),
   });
 
-  await assert.rejects(agent.run("Ignore the guard"), (error: unknown) => {
-    assert.ok(error instanceof AgentError);
-    assert.match(
-      (error as Error).message,
-      /repeated tool call detected.*Tool rounds: 3; model requests: 4/,
-    );
-    return true;
+  assert.equal(await agent.run("Keep working"), "Finished after the tool call.");
+  assert.ok(client.completions.requests.every((request) => !("toolChoice" in request)));
+  assert.equal(requestMessages(client.completions, 1).at(-1)?.role, "tool-result");
+});
+
+test("default runtime does not stop tools after 300 elapsed seconds", async (t) => {
+  const directory = tempDir(t);
+  let nowCalls = 0;
+  t.mock.method(performance, "now", () => {
+    nowCalls += 1;
+    return nowCalls <= 2 ? 0 : 301_000;
+  });
+  const client = fakeClient(
+    new FakeMessage({
+      tool_calls: [new FakeToolCall("call_1", "read", '{"path":"missing"}')],
+    }),
+    new FakeMessage({ content: "Finished after the tool call." }),
+  );
+  const agent = new CodingAgent({
+    modelAdapter: fakeModelAdapter(client),
+    model: "test-model",
+    provider: "openai",
+    tools: createTestToolRegistry(directory),
   });
 
-  assert.equal(agent.messages.at(-1)?.["role"], "tool-result");
+  assert.equal(await agent.run("Keep working"), "Finished after the tool call.");
+  assert.ok(client.completions.requests.every((request) => !("toolChoice" in request)));
+  assert.equal(requestMessages(client.completions, 1).at(-1)?.role, "tool-result");
 });
 
 test("multiple tool calls run in returned order", async (t) => {

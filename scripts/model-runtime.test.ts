@@ -60,7 +60,6 @@ function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
       parameters: { type: "object" },
       promptGuidelines: [],
     }],
-    toolChoice: "auto",
     requestId: "request-1",
     ...overrides,
   };
@@ -103,6 +102,18 @@ test("forwards typed streamed content, reasoning, and tool-call deltas", async (
     { kind: "model_response_validating", payload: {} },
   ]);
   assert.deepEqual(completion, result());
+});
+
+test("forwards reasoning effort to the adapter request", async () => {
+  const adapter = new StubAdapter(async () => result());
+  const runtime = new ModelRuntime(adapter);
+
+  await runtime.complete({
+    ...request(),
+    reasoningEffort: "low",
+  });
+
+  assert.equal(adapter.requests[0]?.reasoningEffort, "low");
 });
 
 test("does not invoke the adapter after model cancellation", async () => {

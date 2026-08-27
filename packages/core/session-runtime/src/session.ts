@@ -693,6 +693,30 @@ export class AgentSession {
     return held.length;
   }
 
+  /** Promote the earliest queued message for the active task to steer priority. */
+  promotePendingToSteer(): number {
+    const active = this.taskRegistry.active();
+    if (active === null || active.state === TaskState.Cancelling) {
+      return 0;
+    }
+    const promoted = this.pending.promoteFirstCompatible({
+      taskId: active.taskId,
+      timing: "safe_point",
+    });
+    if (promoted === null) {
+      return 0;
+    }
+    this.publishRoute(promoted);
+    this.eventBus.publish(EventKind.InputPending, {
+      source: EventSource.Session,
+      session_id: this.sessionId,
+      task_id: active.taskId,
+      correlation_id: promoted.event.event_id,
+      payload: { pending_count: this.pending.size },
+    });
+    return 1;
+  }
+
   clearHeld(): number {
     return this.held.drain().length;
   }
@@ -988,7 +1012,10 @@ export class AgentSession {
     if (this.#inflightPending.has(taskId)) {
       throw new Error("pending batch is already in flight");
     }
-    const events = this.pending.drainCompatible({ taskId });
+    let events = this.pending.drainCompatible({ taskId, strategy: "steer" });
+    if (events.length === 0) {
+      events = this.pending.drainCompatible({ taskId });
+    }
     if (events.length > 0) {
       this.#inflightPending.set(taskId, events);
       this.taskLifecycle.publishCurrentState(taskId);

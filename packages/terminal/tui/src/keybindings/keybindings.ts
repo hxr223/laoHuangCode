@@ -6,11 +6,11 @@ export type ActionId =
   | "clear_screen"
   | "editor_newline"
   | "select_model"
+  | "steer_now"
   | "submit_follow_up"
   | "dismiss"
   | "cancel"
-  | "toggle_thinking"
-  | "cycle_thinking";
+  | "toggle_thinking";
 
 export interface Keybinding {
   readonly context: string;

@@ -15,7 +15,7 @@
     "test:e2e:pi-ai": "LAOHUANG_RUN_PROVIDER_E2E=1 node --test scripts/pi-ai-provider.e2e.test.ts",
     "check:version": "node scripts/check-package-version.mjs",
     "smoke:package": "node scripts/package-smoke.mjs",
-    "smoke:tui": "bash scripts/tui-smoke.sh",
+    "smoke:tui": "bash scripts/tui-smoke.sh && node scripts/tui-offline-terminal-transcript-smoke.ts",
     "verify:published": "node scripts/verify-published-version.mjs",
     "stats:test": "node scripts/test-stats.mjs",
     "profile:cli": "node scripts/profile-cli.mjs",

@@ -30,13 +30,26 @@ import {
   type CommandResult,
   type QueueStatus,
 } from "./commands.ts";
-import { ModelSelector, type InputFn as PromptFn } from "./model-selection.ts";
-import { ProviderAuthController } from "./provider-auth.ts";
+import type {
+  CommandPresenter,
+  PromptPresentation,
+} from "./command-presentation.ts";
+import {
+  ModelSelector,
+  type InputFn as PromptFn,
+  type ModelSelection,
+} from "./model-selection.ts";
+import { PlainCommandPresenter } from "./plain-command-presenter.ts";
+import {
+  ProviderAuthController,
+  type AuthPromptHandler,
+} from "./provider-auth.ts";
 import {
   EXCLUDED_PROVIDER_IDS,
   VERIFIED_PROVIDER_IDS,
 } from "./provider-policy.ts";
 import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
+import { TerminalCommandPresenter } from "./terminal-command-presenter.ts";
 import {
   CliUsageError,
   HELP,
@@ -52,7 +65,6 @@ import {
   runSessionRepl,
   runTerminalUi,
   supportsTerminalUI,
-  terminalUiPrompts,
   type CommandHandler,
   type InputFn,
   type OutputFn,
@@ -149,30 +161,17 @@ export async function main(
     verifiedProviderIds: VERIFIED_PROVIDER_IDS,
   });
   const modelRuntime = new ModelRuntime(modelPlatform.adapter);
-  // The selector's input/output targets are rewired once the session exists,
-  // mirroring the Python original which mutated selector.input_fn/output_fn.
-  // Like the Python original, the selector's own secret prompts (first-run
-  // setup, `config` subcommand) always use the default secret reader — only
-  // the session commands switch to the terminal UI's secret prompt.
-  let selectorInput: PromptFn = async (prompt) => inputFn(prompt);
-  const selectorSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
-  let authSecretInput: PromptFn = selectorSecretInput;
-  let selectorOutput: OutputFn = outputFn;
-  const providerAuth = new ProviderAuthController({
-    auth: modelPlatform.auth,
-    input: (prompt) => selectorInput(prompt),
-    secretInput: (prompt) => authSecretInput(prompt),
-    output: (message) => {
-      selectorOutput(message);
-    },
-  });
+  let presenterInput: PromptFn = async (prompt) => inputFn(prompt);
+  let presenterSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
+  const providerAuth = new ProviderAuthController({ auth: modelPlatform.auth });
   const selector = new ModelSelector({
     catalog: modelPlatform.catalog,
     providerAuth,
-    input: (prompt) => selectorInput(prompt),
-    output: (message) => {
-      selectorOutput(message);
-    },
+  });
+  const startupPresenter = new PlainCommandPresenter({
+    output: outputFn,
+    input: async (prompt) => inputFn(prompt),
+    secretInput: async (prompt) => secretInputFn(prompt),
   });
 
   if (args.command === "config") {
@@ -209,7 +208,10 @@ export async function main(
     }
 
     try {
-      const selection = await selector.select({
+      const selection = await runInitialModelSelection({
+        selector,
+        presenter: startupPresenter,
+        providerAuth,
         providerName: args.provider ?? undefined,
         modelName: args.configModel ?? undefined,
       });
@@ -287,12 +289,17 @@ export async function main(
           config,
           catalog: modelPlatform.catalog,
           providerAuth,
+          presenter: startupPresenter,
         }))
       ) {
         return 2;
       }
     } else {
-      const selection = await selector.select();
+      const selection = await runInitialModelSelection({
+        selector,
+        presenter: startupPresenter,
+        providerAuth,
+      });
       if (selection === null) {
         return 2;
       }
@@ -319,14 +326,17 @@ export async function main(
   // provider/model are read-only in TS.
   let terminalUi: TerminalUI | null = null;
   let terminalDriver: StdTerminalDriver | null = null;
+  const selectedModel = modelPlatform.catalog.getModel(config.provider, config.model);
   if (interactive) {
     terminalDriver = new StdTerminalDriver();
     terminalUi = new TerminalUI({
       projectRoot,
       provider: config.provider,
       model: config.model,
+      version: VERSION,
       theme: args.theme,
       driver: terminalDriver,
+      capabilities: { reasoning: selectedModel?.reasoning ?? false },
     });
     terminalUi.state.provider = config.provider;
     terminalUi.state.model = config.model;
@@ -360,6 +370,7 @@ export async function main(
     commandDispatcher: (command) =>
       commandDispatcher?.(command) ?? { status: "not_found", command },
   });
+  terminalUi?.setSessionId(runtime.sessionId);
   const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
   const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
 
@@ -384,22 +395,16 @@ export async function main(
       return underlyingSecretInput("");
     };
     replInputFn = plainInput;
-    selectorInput = plainInput;
-    authSecretInput = plainSecretInput;
-  } else if (terminalUi !== null) {
-    // /login and interactive /model run while the terminal loop owns stdin in
-    // raw mode: their questions must be asked through the UI loop, not read
-    // from fd 0 directly.
-    const prompts = terminalUiPrompts(terminalUi);
-    selectorInput = prompts.input;
-    authSecretInput = prompts.secretInput;
+    presenterInput = plainInput;
+    presenterSecretInput = plainSecretInput;
   }
-  selectorOutput = (message) => {
-    runtime.publishNotice(message);
-  };
-  const sessionOutput = (message: string): void => {
-    runtime.publishNotice(message);
-  };
+  const commandPresenter: CommandPresenter = terminalUi === null
+    ? new PlainCommandPresenter({
+        output: outputFn,
+        input: presenterInput,
+        secretInput: presenterSecretInput,
+      })
+    : new TerminalCommandPresenter(terminalUi);
 
   const commands = new SessionCommands({
     agent,
@@ -409,10 +414,9 @@ export async function main(
       baseUrl: config.baseUrl,
       provider: config.provider,
     },
-    input: (prompt) => selectorInput(prompt),
     catalog: modelPlatform.catalog,
     providerAuth,
-    output: sessionOutput,
+    presenter: commandPresenter,
     session: runtime,
     onModelSelected: (selection) => {
       semanticClassifier.configure({
@@ -420,6 +424,15 @@ export async function main(
         model: selection.config.model,
         baseUrl: selection.config.baseUrl,
       });
+      if (terminalUi !== null) {
+        const model = modelPlatform.catalog.getModel(
+          selection.config.provider,
+          selection.config.model,
+        );
+        terminalUi.state.provider = selection.config.provider;
+        terminalUi.state.model = selection.config.model;
+        terminalUi.setRuntimeCapabilities({ reasoning: model?.reasoning ?? false });
+      }
     },
   });
 
@@ -448,7 +461,14 @@ export async function main(
         void commandDispatcher?.("/clear");
         return;
       }
-      runtime.publishNotice(`Key action is unavailable: ${action}.`);
+      if (action === "toggle_thinking") {
+        terminalUi.toggleReasoningFromKeybinding();
+        return;
+      }
+      commandPresenter.notice({
+        text: `Key action is unavailable: ${action}.`,
+        tone: "warning",
+      });
     });
     terminalUi.setRuntimeRunningCallback(() => runtime.activeTask !== null);
   }
@@ -466,6 +486,8 @@ export async function main(
       const driver = terminalDriver;
       cleanShutdown = await runSessionRepl(runtime, {
         commandHandler: handleCommand,
+        presenter: commandPresenter,
+        suggestCommand: (command) => commands.registry.suggest(command),
         ui,
         runUi: (enqueue) => runTerminalUi(ui, driver, enqueue),
       });
@@ -473,6 +495,8 @@ export async function main(
       cleanShutdown = await runPlainSessionRepl(runtime, {
         commandHandler: handleCommand,
         inputFn: replInputFn,
+        presenter: commandPresenter,
+        suggestCommand: (command) => commands.registry.suggest(command),
         sink: plainSink!,
       });
     }
@@ -484,10 +508,75 @@ export async function main(
   return cleanShutdown ? 0 : 1;
 }
 
+export async function runInitialModelSelection(options: {
+  readonly selector: ModelSelector;
+  readonly presenter: PlainCommandPresenter;
+  readonly providerAuth: Pick<ProviderAuthController, "ensureConfigured">;
+  readonly providerName?: string;
+  readonly modelName?: string;
+}): Promise<ModelSelection | null> {
+  let providerName = options.providerName;
+  if (providerName === undefined) {
+    providerName = await options.presenter.select({
+      id: "model-provider",
+      title: "Select model provider",
+      items: options.selector.listProviders().map((provider) => ({
+        value: provider.id,
+        label: provider.name,
+        description: provider.id,
+      })),
+    }) ?? undefined;
+    if (providerName === undefined) {
+      return null;
+    }
+  }
+
+  const authPrompts = presenterAuthPrompts(options.presenter, providerName);
+
+  let modelName = options.modelName;
+  if (modelName === undefined) {
+    const configured = await options.providerAuth.ensureConfigured(providerName, {
+      promptIfMissing: true,
+      prompts: authPrompts,
+    });
+    if (!configured) {
+      return null;
+    }
+    const models = await options.selector.listModels(providerName, "");
+    if (models.length === 0) {
+      throw new Error(`No models available for provider: ${providerName}`);
+    }
+    const selected = await options.presenter.select({
+      id: "model-name",
+      title: `Select model for ${providerName}`,
+      items: models.map((model) => ({
+        value: `${providerName}/${model.id}`,
+        label: model.name,
+        description: providerName,
+      })),
+      searchable: true,
+      maxVisible: 20,
+    });
+    if (selected === null) {
+      return null;
+    }
+    const prefix = `${providerName}/`;
+    modelName = selected.startsWith(prefix) ? selected.slice(prefix.length) : selected;
+  }
+
+  return options.selector.selectExact({
+    providerName,
+    modelName,
+    promptForMissingKey: true,
+    authPrompts,
+  });
+}
+
 async function validateConfiguredSelection(options: {
   readonly config: Config;
   readonly catalog: ModelCatalog;
   readonly providerAuth: ProviderAuthController;
+  readonly presenter: PlainCommandPresenter;
 }): Promise<boolean> {
   const provider = options.catalog.getProvider(options.config.provider);
   if (provider === undefined) {
@@ -496,6 +585,10 @@ async function validateConfiguredSelection(options: {
   if (
     !(await options.providerAuth.ensureConfigured(options.config.provider, {
       promptIfMissing: true,
+      prompts: presenterAuthPrompts(
+        options.presenter,
+        options.config.provider,
+      ),
     }))
   ) {
     return false;
@@ -507,4 +600,32 @@ async function validateConfiguredSelection(options: {
     );
   }
   return true;
+}
+
+function presenterAuthPrompts(
+  presenter: CommandPresenter,
+  provider: string,
+): AuthPromptHandler {
+  return {
+    prompt: (request) => presenter.prompt(
+      request.kind === "select"
+        ? {
+            id: `auth-${provider}`,
+            kind: request.kind,
+            message: request.message,
+            items: (request.options ?? []).map((item) => ({
+              value: item.id,
+              label: item.label,
+              ...(item.description === undefined
+                ? {}
+                : { description: item.description }),
+            })),
+          }
+        : {
+            id: `auth-${provider}`,
+            kind: request.kind,
+            message: request.message,
+          } as PromptPresentation,
+    ),
+  };
 }

@@ -39,7 +39,6 @@ function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
       parameters: { type: "object", properties: { path: { type: "string" } } },
       promptGuidelines: ["Mention line ranges in final prose."],
     }],
-    toolChoice: "auto",
     ...overrides,
   };
 }
@@ -65,8 +64,8 @@ test("toPiContext converts neutral history, tools, and tool results", () => {
   });
 });
 
-test("toPiContext omits tools when forced final disables tool use", () => {
-  const context = toPiContext(request({ toolChoice: "none" }));
+test("toPiContext omits tools when the request has no tools", () => {
+  const context = toPiContext(request({ tools: [] }));
 
   assert.ok(!("tools" in context));
 });

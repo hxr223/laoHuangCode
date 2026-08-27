@@ -100,6 +100,11 @@ export class HistoryCommitter {
     }
   }
 
+  commitReminder(content: string): void {
+    this.raiseIfCancelled();
+    this.messages.push({ role: "user", content });
+  }
+
   snapshot(): HistoryMessage[] {
     return [...this.messages];
   }

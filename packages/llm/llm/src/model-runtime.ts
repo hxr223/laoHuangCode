@@ -7,6 +7,7 @@ import {
   type ModelMessage,
   type ModelRequest,
   type ModelResult,
+  type ReasoningEffort,
   ModelStreamCancelled,
   ModelStreamError,
 } from "./model-contracts.ts";
@@ -19,7 +20,7 @@ export interface ModelRuntimeRequest {
   readonly baseUrl?: string;
   readonly messages: readonly ModelMessage[];
   readonly tools: readonly ToolSpec[];
-  readonly toolChoice: "auto" | "none";
+  readonly reasoningEffort?: ReasoningEffort;
   readonly temperature?: number;
   readonly timeoutMs?: number;
   readonly maxAttempts?: number;
@@ -67,7 +68,9 @@ export class ModelRuntime {
         ...(request.baseUrl === undefined ? {} : { baseUrl: request.baseUrl }),
         messages: request.messages,
         tools: request.tools,
-        toolChoice: request.toolChoice,
+        ...(request.reasoningEffort === undefined
+          ? {}
+          : { reasoningEffort: request.reasoningEffort }),
         ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
         ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
         ...(request.requestId === undefined ? {} : { requestId: request.requestId }),

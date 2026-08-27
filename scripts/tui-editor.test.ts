@@ -13,6 +13,7 @@ import {
   type InputAction,
 } from "../packages/terminal/tui/src/tui/editor.ts";
 import { makeKeyInput } from "../packages/terminal/tui/src/keybindings/key-id.ts";
+import { lineText } from "../packages/terminal/tui/src/tui/render-model.ts";
 
 /**
  * Mirror of the Python test helper: StdinBuffer -> TerminalInputFilter ->
@@ -69,11 +70,18 @@ test("decoder distinguishes submit, alt+enter and ctrl+d", () => {
   ]);
 });
 
-test("decoder emits ctrl+c as neutral key input", () => {
+test("decoder emits ctrl+c and ctrl+s as neutral key input", () => {
   const decoder = new RawInputDecoder();
 
   assert.deepEqual(decoder.feed(Buffer.from("\x03")), [
     inputAction(InputActionKind.Key, "", makeKeyInput("ctrl_c", { ctrl: true })),
+  ]);
+  assert.deepEqual(decoder.feed(Buffer.from("\x13")), [
+    inputAction(
+      InputActionKind.Key,
+      "",
+      makeKeyInput("character", { text: "s", ctrl: true }),
+    ),
   ]);
 });
 
@@ -511,6 +519,18 @@ test("render lines masks secret input", () => {
   const { lines } = editor.renderLines(20, { mask: true });
 
   assert.deepEqual(lines, ["❯ **"]);
+});
+
+test("styled editor projection places cjk cursor after nine terminal cells", () => {
+  const editor = new EditorState();
+  editor.apply(inputAction(InputActionKind.Insert, "中文abc"), { runtimeActive: false });
+
+  const rendered = editor.renderStyledLines(40, { prompt: "❯ ", mask: false });
+
+  assert.deepEqual(rendered.lines.map(lineText), ["❯ 中文abc"]);
+  assert.deepEqual([rendered.cursorRow, rendered.cursorColumn], [0, 9]);
+  assert.deepEqual(rendered.lines[0]?.spans[0]?.style, { foreground: "accent" });
+  assert.equal(rendered.lines[0]?.spans[1]?.style, undefined);
 });
 
 test("history up recalls entries and history down restores the draft", () => {
