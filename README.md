@@ -134,8 +134,13 @@ tmux kill-session -t laohuang-component-test
 
 捕获结果应显示无全局外框的 `/help` 结构化命令列表、单一输入提示符和保留的原生
 scrollback，不应出现编号交互列表或终端协商片段。供应商支持的模型选择和认证操作
-需要已配置凭据，不属于自动 `smoke:tui` 验证；自动烟测只打开本地命令界面，不提交
-普通输入，也不发起供应商请求。
+需要已配置凭据，不属于自动 `smoke:tui` 验证。
+
+`npm run smoke:tui` 还会运行
+`node scripts/tui-offline-terminal-transcript-smoke.ts`。这个离线 tmux 验证器
+启动真实 `StdTerminalDriver` 和交互 loop，只注入本地假事件；它会提交两轮普通输入，
+检查 reasoning 冻结、普通回答默认前景色、本地工具输出折叠/展开/收起、tmux resize、
+原生 scrollback 和本地 secret fixture 不泄漏，不发起供应商请求。
 
 1. 在真实 TTY 中运行 `laohuang`。
 2. 发送第一个问题并等待回答完成。
