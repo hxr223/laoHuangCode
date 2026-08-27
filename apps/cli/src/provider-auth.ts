@@ -4,8 +4,6 @@ import type {
   ModelAuthService,
   ModelAuthStatus,
 } from "@laohuang/llm";
-import type { CommandPresenter } from "./command-presentation.ts";
-import type { InputFn, OutputFn } from "./model-selection.ts";
 
 export interface AuthPromptHandler {
   prompt(request: {
@@ -21,33 +19,13 @@ export interface AuthPromptHandler {
 
 export interface ProviderAuthControllerOptions {
   readonly auth: ModelAuthService;
-  readonly input: InputFn;
-  readonly secretInput: InputFn;
-  readonly output?: OutputFn | undefined;
-  readonly presenter?: CommandPresenter | undefined;
 }
 
 export class ProviderAuthController {
   readonly #auth: ModelAuthService;
-  readonly #input: InputFn;
-  readonly #secretInput: InputFn;
-  readonly #output: OutputFn;
-  #presenter: CommandPresenter | null;
 
   constructor(options: ProviderAuthControllerOptions) {
     this.#auth = options.auth;
-    this.#input = options.input;
-    this.#secretInput = options.secretInput;
-    this.#output = options.output ?? ((message) => console.log(message));
-    this.#presenter = options.presenter ?? null;
-  }
-
-  get presenter(): CommandPresenter | null {
-    return this.#presenter;
-  }
-
-  setPresenter(presenter: CommandPresenter): void {
-    this.#presenter = presenter;
   }
 
   status(provider: string): Promise<ModelAuthStatus> {
@@ -66,35 +44,26 @@ export class ProviderAuthController {
       return true;
     }
     if (!options.promptIfMissing) {
-      this.#output(
-        `No credentials configured for ${provider}. Run /login ${provider} first.`,
-      );
       return false;
     }
-    return this.#login(provider, options.prompts);
+    if (options.prompts === undefined) {
+      throw new Error("Authentication prompt handler is required.");
+    }
+    const configured = await this.login(provider, options.prompts);
+    return configured?.configured ?? false;
   }
 
-  login(provider: string): Promise<boolean> {
-    return this.#login(provider);
-  }
-
-  async #login(
+  async login(
     provider: string,
-    prompts?: AuthPromptHandler,
-  ): Promise<boolean> {
+    prompts: AuthPromptHandler,
+  ): Promise<ModelAuthStatus | null> {
     try {
-      const status = await this.#auth.loginApiKey(
-        provider,
-        this.#interaction(prompts),
-      );
-      return status.configured;
+      return await this.#auth.loginApiKey(provider, this.#interaction(prompts));
     } catch (error) {
-      if (isPromptCancellation(error)) {
-        this.#output("Login cancelled; credentials were not changed.");
-      } else {
-        this.#output(`Login failed for ${provider}: ${errorMessage(error)}`);
+      if (error instanceof ProviderLoginCancelledError) {
+        return null;
       }
-      return false;
+      throw error;
     }
   }
 
@@ -102,98 +71,39 @@ export class ProviderAuthController {
     return this.#auth.logout(provider);
   }
 
-  #interaction(prompts?: AuthPromptHandler): ApiKeySetupInteraction {
+  #interaction(prompts: AuthPromptHandler): ApiKeySetupInteraction {
     return {
       prompt: (prompt) => this.#prompt(prompt, prompts),
-      notify: (message) => {
-        this.#output(message);
-      },
+      notify: () => {},
     };
   }
 
   async #prompt(
     prompt: ApiKeySetupPrompt,
-    prompts?: AuthPromptHandler,
+    prompts: AuthPromptHandler,
   ): Promise<string> {
-    if (prompts !== undefined) {
-      const answer = await prompts.prompt(
-        prompt.type === "select"
-          ? {
-              kind: prompt.type,
-              message: prompt.message,
-              options: prompt.options,
-            }
-          : {
-              kind: prompt.type,
-              message: prompt.message,
-            },
-      );
-      if (answer === null) {
-        throw new ProviderLoginCancelledError("prompt cancelled");
-      }
-      const normalized = answer.trim();
-      if (prompt.type === "secret" && normalized.length === 0) {
-        throw new ProviderLoginCancelledError("empty secret");
-      }
-      if (
-        prompt.type === "select"
-        && !prompt.options.some((option) => option.id === normalized)
-      ) {
-        throw new ProviderLoginCancelledError("invalid selection");
-      }
-      return normalized;
+    const answer = await prompts.prompt(
+      prompt.type === "select"
+        ? {
+            kind: prompt.type,
+            message: prompt.message,
+            options: prompt.options,
+          }
+        : {
+            kind: prompt.type,
+            message: prompt.message,
+          },
+    );
+    if (answer === null) {
+      throw new ProviderLoginCancelledError();
     }
-
-    if (prompt.type === "secret") {
-      const answer = (await this.#secretInput(prompt.message)).trim();
-      if (answer.length === 0) {
-        throw new ProviderLoginCancelledError("empty secret");
-      }
-      return answer;
-    }
-    if (prompt.type === "text") {
-      return (await this.#input(prompt.message)).trim();
-    }
-
-    this.#output(prompt.message);
-    prompt.options.forEach((option, index) => {
-      const description =
-        option.description === undefined ? "" : ` - ${option.description}`;
-      this.#output(`  ${index + 1}. ${option.label}${description}`);
-    });
-    const raw = (await this.#input("Select option: ")).trim();
-    const choice = Number(raw);
-    const selected = Number.isInteger(choice)
-      ? prompt.options[choice - 1]
-      : undefined;
-    if (selected === undefined) {
-      throw new ProviderLoginCancelledError("invalid selection");
-    }
-    return selected.id;
+    return answer;
   }
 }
 
 class ProviderLoginCancelledError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor() {
+    super("Authentication prompt cancelled.");
     this.name = "ProviderLoginCancelledError";
   }
-}
-
-function isPromptCancellation(error: unknown): boolean {
-  if (error instanceof ProviderLoginCancelledError) {
-    return true;
-  }
-  if (!(error instanceof Error)) {
-    return false;
-  }
-  return (
-    error.name === "PromptCancelledError" ||
-    error.name === "PromptEofError" ||
-    error.name === "EOFError"
-  );
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
