@@ -442,6 +442,7 @@ const CONTROL_KEYS: ReadonlyMap<number, KeyInput> = new Map([
   [3, makeKeyInput("ctrl_c", { ctrl: true })],
   [12, makeKeyInput("ctrl_l", { ctrl: true })],
   [15, makeKeyInput("character", { text: "o", ctrl: true })],
+  [19, makeKeyInput("character", { text: "s", ctrl: true })],
   [20, makeKeyInput("character", { text: "t", ctrl: true })],
 ]);
 

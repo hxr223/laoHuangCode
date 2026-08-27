@@ -477,6 +477,42 @@ export class PendingQueue {
     this.estimatedTokensValue += tokens;
   }
 
+  promoteFirstCompatible(options: DrainCompatibleOptions = {}): RoutedEvent | null {
+    const taskId = options.taskId ?? null;
+    const strategy = options.strategy ?? null;
+    const timing = options.timing ?? null;
+    const index = this.items.findIndex((item) => {
+      if (taskId !== null && item.decision.taskId !== taskId) {
+        return false;
+      }
+      if (strategy !== null && item.decision.strategy !== strategy) {
+        return false;
+      }
+      if (timing !== null && item.decision.timing !== timing) {
+        return false;
+      }
+      return true;
+    });
+    if (index === -1) {
+      return null;
+    }
+    const item = this.items[index]!;
+    const promoted: RoutedEvent = {
+      event: item.event,
+      decision: {
+        ...item.decision,
+        destination: "pending",
+        timing: "safe_point",
+        strategy: "steer",
+        confidence: 1.0,
+        reason: "promoted to steer by user",
+        layer: 4,
+      },
+    };
+    this.items[index] = promoted;
+    return promoted;
+  }
+
   /** Atomically remove all currently eligible events in source order. */
   drainCompatible(options: DrainCompatibleOptions = {}): RoutedEvent[] {
     const taskId = options.taskId ?? null;

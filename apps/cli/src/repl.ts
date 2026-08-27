@@ -6,6 +6,7 @@ import { AgentError } from "@laohuang/agent-runtime";
 import {
   makeFollowUpIntent,
   makePromptIntent,
+  makeSteerIntent,
   type CommandResult,
   type QueueStatus,
   type SessionAction,
@@ -309,6 +310,7 @@ export interface SessionReplSession {
   readonly eventBus: { flush(): Promise<unknown> };
   submitInput(content: string): Promise<Submission>;
   submitAction(action: SessionAction): Promise<Submission | CommandResult | boolean>;
+  promotePendingToSteer(): number;
   queueStatus(): QueueStatus;
   publishNotice(text: string, options?: { style?: string }): unknown;
   waitForIdle(timeoutMs?: number): Promise<boolean>;
@@ -356,12 +358,23 @@ async function handleSessionInput(
   userInput: string,
   options: SubmitOptions = {},
 ): Promise<boolean> {
-  if (!userInput) {
+  if (!userInput && options.strategy !== "steer") {
     return true;
   }
-  const intent = options.strategy === "follow_up"
-    ? makeFollowUpIntent(userInput, "editor")
-    : makePromptIntent(userInput, "editor");
+  if (!userInput) {
+    const promoted = session.promotePendingToSteer();
+    session.publishNotice(
+      promoted > 0
+        ? `Steered ${promoted} queued message(s).`
+        : "No queued message to steer.",
+    );
+    return true;
+  }
+  const intent = options.strategy === "steer"
+    ? makeSteerIntent(userInput, "editor")
+    : options.strategy === "follow_up"
+      ? makeFollowUpIntent(userInput, "editor")
+      : makePromptIntent(userInput, "editor");
   let action: SessionAction;
   let result: Submission | CommandResult | boolean;
   let submission: Submission;
@@ -393,7 +406,9 @@ async function handleSessionInput(
   if (submission.queued) {
     const status = session.queueStatus();
     session.publishNotice(
-      `Message queued (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`,
+      options.strategy === "steer"
+        ? `Message steered (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`
+        : `Message queued (pending ${status.pending ?? 0} · held ${status.held ?? 0}).`,
     );
   } else if (submission.rejected) {
     session.publishNotice(`Message rejected: ${submission.reason}`, {
@@ -634,9 +649,9 @@ async function runPersistentSessionRepl(
   let cleanShutdown = false;
   try {
     const enqueue = (userInput: string, submitOptions: SubmitOptions = {}): void => {
-      // Exit is a local UI operation and should not wait behind a slow
-      // semantic classification of an earlier queued message.
-      if (userInput === "/exit") {
+      // Local control operations should not wait behind a slow semantic
+      // classification of an earlier queued message.
+      if (userInput === "/exit" || submitOptions.strategy === "steer") {
         void (async () => {
           try {
             await handleSessionInput(
@@ -656,7 +671,9 @@ async function runPersistentSessionRepl(
             }
           }
         })();
-        ui.requestExit?.();
+        if (userInput === "/exit") {
+          ui.requestExit?.();
+        }
         return;
       }
       coordinator.submit({ text: userInput, options: submitOptions });

@@ -355,6 +355,25 @@ test("alt enter submits a follow-up action from the live loop", () => {
   ]);
 });
 
+test("ctrl s submits a steer action from the live loop", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const submitted: Array<{ text: string; strategy?: string }> = [];
+
+  ui.setRuntimeRunningCallback(() => true);
+  ui.startLoop((text, options) => {
+    submitted.push({ text, strategy: options?.strategy });
+  });
+  ui.feedInputBytes(bytes("change direction\x13"));
+  ui.feedInputBytes(bytes("\x13"));
+  ui.drainLoop();
+
+  assert.deepEqual(submitted, [
+    { text: "change direction", strategy: "steer" },
+    { text: "", strategy: "steer" },
+  ]);
+});
+
 test("enhanced shift tab does not invoke a reasoning effort action", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const actions: string[] = [];
