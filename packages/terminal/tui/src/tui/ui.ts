@@ -66,8 +66,8 @@ import {
   createNoticeBlock,
   createUserBlock,
   createWelcomeBlock,
-  noticeTone,
   type TranscriptBlock,
+  type NoticeTone,
 } from "./transcript-store.ts";
 import {
   EditorState,
@@ -125,11 +125,11 @@ export {
 /** Local command feedback sharing the loop's event queue. */
 class LocalMessage {
   readonly text: string;
-  readonly style: string;
+  readonly tone: NoticeTone;
 
-  constructor(text: string, style = "") {
+  constructor(text: string, tone: NoticeTone = "info") {
     this.text = text;
-    this.style = style;
+    this.tone = tone;
   }
 }
 
@@ -216,6 +216,14 @@ function ansiStyledText(style: string, text: string): string {
     return text;
   }
   return `\x1b[${codes.join(";")}m${text}\x1b[0m`;
+}
+
+function ansiNoticeStyle(theme: TerminalTheme, tone: NoticeTone): string {
+  if (tone === "error") return `bold ${theme.color("error")}`;
+  if (tone === "warning") return theme.color("warning");
+  if (tone === "success") return theme.color("success");
+  if (tone === "dim") return theme.color("dim");
+  return "";
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +553,7 @@ export class InteractiveTerminalLoop {
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
         this.#ui.appendTranscript(
-          createNoticeBlock(this.#ui.newBlockId(), message.text, noticeTone(message.style)),
+          createNoticeBlock(this.#ui.newBlockId(), message.text, message.tone),
         );
       } else {
         this.#ui.applyProjectedEvent(item.event as UIEventLike);
@@ -1228,7 +1236,7 @@ export class TerminalUI {
     }
     if (event instanceof LocalMessage) {
       this.appendTranscript(
-        createNoticeBlock(this.newBlockId(), event.text, noticeTone(event.style)),
+        createNoticeBlock(this.newBlockId(), event.text, event.tone),
       );
       return;
     }
@@ -1280,23 +1288,23 @@ export class TerminalUI {
   }
 
   showError(message: string): void {
-    this.#writeLocal(`Error: ${message}`, `bold ${this.theme.color("error")}`);
+    this.#writeLocal(`Error: ${message}`, "error");
   }
 
   showInterrupted(options: { operation?: boolean } = {}): void {
     const message = options.operation ? "Operation interrupted." : "Interrupted.";
-    this.#writeLocal(message, this.theme.color("warning"));
+    this.#writeLocal(message, "warning");
   }
 
   showGoodbye(): void {
     if (this.#loop !== null) {
       if (!this.#loop.closed) {
-        this.#writeLocal("Goodbye.", this.theme.color("dim"));
+        this.#writeLocal("Goodbye.", "dim");
         this.flushEventRenderer();
       }
       return;
     }
-    this.#output(ansiStyledText(this.theme.color("dim"), "Goodbye."));
+    this.#writeLocal("Goodbye.", "dim");
   }
 
   showAssistant(response: string): void {
@@ -1335,16 +1343,16 @@ export class TerminalUI {
     }
   }
 
-  #writeLocal(message: string, style = ""): void {
+  #writeLocal(message: string, tone: NoticeTone = "info"): void {
     if (this.#loop !== null) {
       if (!this.#loop.closed) {
-        this.#loop.publishEvent(new LocalMessage(message, style));
+        this.#loop.publishEvent(new LocalMessage(message, tone));
         return;
       }
-      this.#output(ansiStyledText(style, message));
+      this.#output(ansiStyledText(ansiNoticeStyle(this.theme, tone), message));
       return;
     }
-    this.#output(ansiStyledText(style, message));
+    this.#output(ansiStyledText(ansiNoticeStyle(this.theme, tone), message));
   }
 }
 

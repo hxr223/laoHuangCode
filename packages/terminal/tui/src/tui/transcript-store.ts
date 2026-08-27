@@ -1,6 +1,7 @@
 /** Append-only display transcript storage, independent from terminal drawing. */
 
 import type { UIUpdate } from "./state.ts";
+import { redactToolText, ToolOutputRedactor } from "./display-policy.ts";
 
 interface BaseTranscriptBlock {
   readonly key: string;
@@ -84,8 +85,8 @@ export function createToolBlock(
     kind: "tool",
     key,
     mutable: true,
-    name: fields.name,
-    subject: fields.subject,
+    name: redactToolText(fields.name),
+    subject: redactToolText(fields.subject),
     status: fields.status,
     exitCode: null,
     durationMs: null,
@@ -134,6 +135,7 @@ export class TranscriptStore {
   readonly #byCorrelation = new Map<string, TranscriptBlock>();
   readonly #errorStyle: string;
   readonly #toolBufferLimit: number;
+  readonly #toolOutputRedactor = new ToolOutputRedactor();
   #toolOutputExpanded = false;
   #nextBlockId = 0;
 
@@ -213,9 +215,17 @@ export class TranscriptStore {
       const item = this.#byCorrelation.get(`tool:${correlationId}`);
       if (item?.kind === "tool") {
         if (update.stream === "stdout") {
-          item.stdout = (item.stdout + update.text).slice(-this.#toolBufferLimit);
+          item.stdout = (item.stdout + this.#toolOutputRedactor.redact(
+            correlationId,
+            "stdout",
+            update.text,
+          )).slice(-this.#toolBufferLimit);
         } else if (update.stream === "stderr") {
-          item.stderr = (item.stderr + update.text).slice(-this.#toolBufferLimit);
+          item.stderr = (item.stderr + this.#toolOutputRedactor.redact(
+            correlationId,
+            "stderr",
+            update.text,
+          )).slice(-this.#toolBufferLimit);
         }
       }
       return;
@@ -230,6 +240,7 @@ export class TranscriptStore {
         ? Math.trunc(update.payload.duration_ms)
         : null;
       item.mutable = false;
+      this.#toolOutputRedactor.clear(correlationId);
       return;
     }
     if (kind === "task.cancelled") {
