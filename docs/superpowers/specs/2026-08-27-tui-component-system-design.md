@@ -41,9 +41,9 @@ In an interactive TTY session:
 - The terminal uses native scrollback for frozen transcript content and redraws
   only the active region. Components may not bypass `InteractiveTerminalLoop` or
   `PiMainScreenRenderer` to write interactive stdout.
-- The root layout keeps the native full-screen `╭─╮` frame as a componentized
-  shell around transcript, composer, completion, and status. Interior command
-  views, tool cards, and authentication dialogs still use dedicated components.
+- The root layout uses Kimi-style framed welcome and composer surfaces while
+  leaving transcript content unboxed. Interior command views, tool cards, and
+  authentication dialogs still use dedicated components.
 
 In a non-interactive session:
 
@@ -454,7 +454,7 @@ erasable TypeScript syntax.
 2. No interactive command handler prints numbered options or preformatted ANSI.
 3. No business component emits ANSI directly.
 4. `PiMainScreenRenderer` and raw terminal input behavior remain intact.
-5. The full-screen decorative frame is preserved without regressing native
+5. The Kimi-style welcome/input frames are preserved without regressing native
    scrollback, cursor placement, completion shrink, resize, or frozen-history
    behavior.
 6. Interactive and plain presenters report equivalent domain facts.
