@@ -177,6 +177,21 @@ if (args[0] === "capture-pane") {
   });
 });
 
+test("terminal-smoke includes the offline transcript tmux verifier", () => {
+  const manifest = JSON.parse(
+    readFileSync(join(PROJECT_ROOT, "package.json"), "utf8"),
+  ) as { scripts?: Record<string, string> };
+
+  assert.match(
+    manifest.scripts?.["smoke:tui"] ?? "",
+    /scripts\/tui-offline-terminal-transcript-smoke\.ts/u,
+  );
+  assert.equal(
+    existsSync(join(PROJECT_ROOT, "scripts", "tui-offline-terminal-transcript-smoke.ts")),
+    true,
+  );
+});
+
 test("verify-published-version retries npm registry lookups until the expected version appears", () => {
   withTempDir((directory) => {
     const binDir = join(directory, "bin");

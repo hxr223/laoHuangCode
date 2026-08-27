@@ -1974,6 +1974,9 @@ tests 588, pass 587, fail 0, skipped 1
 npm run smoke:tui
 PASS
 
+node scripts/tui-offline-terminal-transcript-smoke.ts
+PASS
+
 git diff --check
 PASS
 ```
@@ -1999,22 +2002,24 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
 - The authentication dialog displayed bullets only. The supplied local test
   value did not appear in capture or scrollback, and authentication was
   cancelled without changing credentials.
-- A temporary offline fake-session harness ran the real `StdTerminalDriver`,
-  raw loop, `PiMainScreenRenderer`, transcript reducer, and Ctrl+O display
-  action inside tmux. No harness file was added to the repository because this
-  was a manual terminal acceptance fixture, not product behavior.
-- The collapsed capture showed frozen reasoning, an ordinary answer with no
-  explicit foreground SGR, and a completed local tool without its output. The
-  late reasoning delta was absent. Ctrl+O produced an expanded capture with
-  the local tool output, and the second submitted turn preserved both answers
-  with tmux `history_size` equal to 3.
+- `scripts/tui-offline-terminal-transcript-smoke.ts` is a committed offline
+  fake-session harness and verifier. It runs the real `StdTerminalDriver`, raw
+  loop, `PiMainScreenRenderer`, transcript reducer, and Ctrl+O display action
+  inside tmux, with no provider call, API key, or paid service.
+- The committed verifier submits a first prompt, checks frozen reasoning, an
+  ordinary answer with no explicit foreground SGR, and a completed local tool
+  whose output is collapsed by default. It toggles Ctrl+O to expand and then
+  collapse the tool output, resizes tmux from 80x12 to 52x8, submits a second
+  prompt, verifies both answers remain available through tmux capture, and
+  asserts native tmux `history_size` is greater than 0.
 - Terminal-emulator coverage remains the deterministic regression layer for
   reasoning freeze, answer styles, tool folding, resize persistence, and
-  second-turn history; the offline tmux harness now independently verifies
+  second-turn history; the committed offline tmux harness independently verifies
   those surfaces in a real terminal without a provider-backed turn.
 
-Fix round 1 also replaced fixed 200ms smoke delays with bounded polling. The
-smoke polls startup, slash completion, completion dismissal, `/help`, and ASCII
-input every 100ms for up to five seconds, validates the successful capture,
-and prints the last capture on timeout. `/help` must still appear before any
-subsequent key.
+Fix round 1 replaced fixed 200ms smoke delays with bounded polling. Fix round 2
+wires `npm run smoke:tui` to run both the built-CLI tmux smoke and the committed
+offline transcript tmux verifier. `/help` must still appear before any
+subsequent key, and the transcript verifier rejects global frames, numbered
+lists, duplicated prompts, terminal negotiation fragments, late reasoning text,
+and the local secret fixture.
