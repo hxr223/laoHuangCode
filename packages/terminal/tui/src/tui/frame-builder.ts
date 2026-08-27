@@ -174,9 +174,44 @@ function fallbackText(block: TranscriptBlock): string {
       ].filter(Boolean).join("  ");
     case "welcome":
       return [block.title, ...block.details].join("\n");
+    case "help":
+      return block.commands.map((command) =>
+        `${command.usage}  ${command.description}`).join("\n");
+    case "provider_list":
+      return block.providers.map(providerFallbackText).join("\n");
+    case "provider_detail":
+      return [
+        providerFallbackText(block.provider),
+        `${block.provider.dynamicModels ? "dynamic" : "static"} models  ` +
+          `${block.provider.modelCount} ${block.provider.modelCount === 1 ? "model" : "models"}`,
+      ].join("\n");
+    case "queue_status":
+      return [
+        `pending ${block.queue.pending}`,
+        `pending tokens ${block.queue.pendingTokens}`,
+        `held ${block.queue.held}`,
+        `held tokens ${block.queue.heldTokens}`,
+        `dead letters ${block.queue.deadLetters}`,
+      ].join("  ");
     default:
       return assertNever(block);
   }
+}
+
+function providerFallbackText(provider: {
+  readonly name: string;
+  readonly available: boolean;
+  readonly configured: boolean;
+  readonly verified: boolean;
+  readonly source: string | null;
+}): string {
+  return [
+    provider.name,
+    provider.available ? "available" : "unavailable",
+    provider.configured ? "configured" : "unconfigured",
+    provider.verified ? "verified" : "unverified",
+    provider.source ?? "",
+  ].filter(Boolean).join("  ");
 }
 
 function assertNever(value: never): never {

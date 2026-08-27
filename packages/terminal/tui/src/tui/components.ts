@@ -24,6 +24,20 @@ export { ThinkingMessage, type ThinkingMessageOptions } from "./components/messa
 export { ToolMessage, type ToolMessageOptions } from "./components/messages/tool-message.ts";
 export { UserMessage, type UserMessageOptions } from "./components/messages/user-message.ts";
 export { WelcomeMessage, type WelcomeMessageOptions } from "./components/messages/welcome-message.ts";
+export {
+  type HelpCommandViewModel,
+  type ProviderDetailViewModel,
+  type ProviderSummaryViewModel,
+  type QueueStatusViewModel,
+} from "./components/views/contracts.ts";
+export { HelpView, type HelpViewOptions } from "./components/views/help-view.ts";
+export {
+  ProviderDetailView,
+  ProviderStatusView,
+  type ProviderDetailViewOptions,
+  type ProviderStatusViewOptions,
+} from "./components/views/provider-status-view.ts";
+export { QueueStatusView, type QueueStatusViewOptions } from "./components/views/queue-status-view.ts";
 
 export const COMPOSER_COMPONENT = "composer";
 

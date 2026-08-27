@@ -2,6 +2,12 @@
 
 import type { UIUpdate } from "./state.ts";
 import { redactToolText, ToolOutputRedactor } from "./display-policy.ts";
+import type {
+  HelpCommandViewModel,
+  ProviderDetailViewModel,
+  ProviderSummaryViewModel,
+  QueueStatusViewModel,
+} from "./components/views/contracts.ts";
 
 interface BaseTranscriptBlock {
   readonly key: string;
@@ -49,13 +55,37 @@ export interface WelcomeTranscriptBlock extends BaseTranscriptBlock {
   details: readonly string[];
 }
 
+export interface HelpTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "help";
+  readonly commands: readonly HelpCommandViewModel[];
+}
+
+export interface ProviderListTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "provider_list";
+  readonly providers: readonly ProviderSummaryViewModel[];
+}
+
+export interface ProviderDetailTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "provider_detail";
+  readonly provider: ProviderDetailViewModel;
+}
+
+export interface QueueStatusTranscriptBlock extends BaseTranscriptBlock {
+  readonly kind: "queue_status";
+  readonly queue: QueueStatusViewModel;
+}
+
 export type TranscriptBlock =
   | UserTranscriptBlock
   | AssistantTranscriptBlock
   | ThinkingTranscriptBlock
   | ToolTranscriptBlock
   | NoticeTranscriptBlock
-  | WelcomeTranscriptBlock;
+  | WelcomeTranscriptBlock
+  | HelpTranscriptBlock
+  | ProviderListTranscriptBlock
+  | ProviderDetailTranscriptBlock
+  | QueueStatusTranscriptBlock;
 
 export function createUserBlock(key: string, text: string): UserTranscriptBlock {
   return { kind: "user", key, text, mutable: false };
@@ -109,6 +139,34 @@ export function createWelcomeBlock(
   details: readonly string[],
 ): WelcomeTranscriptBlock {
   return { kind: "welcome", key: "welcome", title, details, mutable: false };
+}
+
+export function createHelpBlock(
+  key: string,
+  commands: readonly HelpCommandViewModel[],
+): HelpTranscriptBlock {
+  return { kind: "help", key, commands, mutable: false };
+}
+
+export function createProviderListBlock(
+  key: string,
+  providers: readonly ProviderSummaryViewModel[],
+): ProviderListTranscriptBlock {
+  return { kind: "provider_list", key, providers, mutable: false };
+}
+
+export function createProviderDetailBlock(
+  key: string,
+  provider: ProviderDetailViewModel,
+): ProviderDetailTranscriptBlock {
+  return { kind: "provider_detail", key, provider, mutable: false };
+}
+
+export function createQueueStatusBlock(
+  key: string,
+  queue: QueueStatusViewModel,
+): QueueStatusTranscriptBlock {
+  return { kind: "queue_status", key, queue, mutable: false };
 }
 
 export interface TranscriptStoreOptions {

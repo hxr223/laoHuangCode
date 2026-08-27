@@ -7,6 +7,9 @@ import { ThinkingMessage } from "./messages/thinking-message.ts";
 import { ToolMessage } from "./messages/tool-message.ts";
 import { UserMessage } from "./messages/user-message.ts";
 import { WelcomeMessage } from "./messages/welcome-message.ts";
+import { HelpView } from "./views/help-view.ts";
+import { ProviderDetailView, ProviderStatusView } from "./views/provider-status-view.ts";
+import { QueueStatusView } from "./views/queue-status-view.ts";
 
 export interface TranscriptOptions {
   readonly blocks: readonly TranscriptBlock[];
@@ -56,6 +59,14 @@ export class Transcript implements TuiComponent {
         return new NoticeMessage(block).render(context).lines;
       case "welcome":
         return new WelcomeMessage(block).render(context).lines;
+      case "help":
+        return new HelpView(block).render(context).lines;
+      case "provider_list":
+        return new ProviderStatusView(block).render(context).lines;
+      case "provider_detail":
+        return new ProviderDetailView(block.provider).render(context).lines;
+      case "queue_status":
+        return new QueueStatusView(block.queue).render(context).lines;
       default:
         return assertNever(block);
     }
