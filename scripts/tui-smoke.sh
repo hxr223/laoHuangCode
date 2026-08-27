@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SESSION_NAME="${LAOHUANG_SMOKE_SESSION:-laohuang-smoke-$$}"
 SMOKE_COMMAND="${LAOHUANG_SMOKE_COMMAND:-node apps/cli/dist/bin.js}"
-SMOKE_SLEEP="${LAOHUANG_SMOKE_SLEEP:-1}"
-SMOKE_STEP_SLEEP="${LAOHUANG_SMOKE_STEP_SLEEP:-0.2}"
+SMOKE_TIMEOUT_SECONDS="${LAOHUANG_SMOKE_TIMEOUT_SECONDS:-5}"
+SMOKE_POLL_INTERVAL="${LAOHUANG_SMOKE_POLL_INTERVAL:-0.1}"
 SMOKE_HOLD="${LAOHUANG_SMOKE_HOLD:-2}"
 STATUS_FILE="$(mktemp -t laohuang-tui-smoke.XXXXXX)"
 SMOKE_CONFIG_ROOT="$(mktemp -d -t laohuang-tui-config.XXXXXX)"
@@ -76,46 +76,50 @@ validate_capture() {
 capture_and_validate() {
   local label="$1"
   local expected="${2:-}"
+  local forbidden="${3:-}"
   local capture
-  capture="$(tmux capture-pane -t "$SESSION_NAME" -p -S -200)"
-  validate_capture "$label" "$capture"
-  printf '%s\n' "$capture"
-  if [[ -n "$expected" ]] && ! printf '%s\n' "$capture" | grep -F "$expected" >/dev/null; then
-    echo "terminal smoke ($label): expected surface was not rendered" >&2
-    return 1
-  fi
+  local deadline=$((SECONDS + SMOKE_TIMEOUT_SECONDS))
+
+  while true; do
+    capture="$(tmux capture-pane -t "$SESSION_NAME" -p -S -200)"
+    if { [[ -z "$expected" ]] || printf '%s\n' "$capture" | grep -F "$expected" >/dev/null; } &&
+      { [[ -z "$forbidden" ]] || ! printf '%s\n' "$capture" | grep -F "$forbidden" >/dev/null; }; then
+      validate_capture "$label" "$capture"
+      printf '%s\n' "$capture"
+      return 0
+    fi
+    if (( SECONDS >= deadline )); then
+      break
+    fi
+    sleep "$SMOKE_POLL_INTERVAL"
+  done
+
+  printf '%s\n' "$capture" >&2
+  echo "terminal smoke ($label): timed out waiting for expected surface" >&2
+  return 1
 }
 
 status_file_quoted="$(printf "%q" "$STATUS_FILE")"
 smoke_hold_quoted="$(printf "%q" "$SMOKE_HOLD")"
 tmux new-session -d -s "$SESSION_NAME" -x 80 -y 24 \
   bash -lc "{ $SMOKE_COMMAND; }; status=\$?; printf '%s' \"\$status\" > $status_file_quoted; sleep $smoke_hold_quoted"
-sleep "$SMOKE_SLEEP"
 
 if [[ "$INTERACTIVE_SMOKE" == "1" ]]; then
-  capture_and_validate "startup"
+  capture_and_validate "startup" "hello, welcome to laoHuang"
   tmux send-keys -t "$SESSION_NAME" "/"
-  sleep "$SMOKE_STEP_SLEEP"
-  capture_and_validate "slash completion"
+  capture_and_validate "slash completion" "/help  查看命令帮助"
   tmux send-keys -t "$SESSION_NAME" Escape
-  sleep 0.1
+  capture_and_validate "dismiss slash completion" "❯ /" "› /apikey"
   tmux send-keys -t "$SESSION_NAME" BSpace
-  sleep 0.1
   tmux send-keys -t "$SESSION_NAME" "/help" Enter
-  sleep "$SMOKE_STEP_SLEEP"
   capture_and_validate "help" "/model [provider|model] [model]"
   tmux send-keys -t "$SESSION_NAME" "abc"
-  sleep "$SMOKE_STEP_SLEEP"
-  capture_and_validate "ascii input"
-  tmux send-keys -t "$SESSION_NAME" Escape
-  sleep 0.1
+  capture_and_validate "ascii input" "❯ abc"
   tmux send-keys -t "$SESSION_NAME" BSpace BSpace BSpace
   tmux send-keys -t "$SESSION_NAME" "/exit" Enter
-  for _ in {1..20}; do
-    if [[ -s "$STATUS_FILE" ]]; then
-      break
-    fi
-    sleep 0.1
+  exit_deadline=$((SECONDS + SMOKE_TIMEOUT_SECONDS))
+  while [[ ! -s "$STATUS_FILE" ]] && (( SECONDS < exit_deadline )); do
+    sleep "$SMOKE_POLL_INTERVAL"
   done
   if [[ ! -s "$STATUS_FILE" ]]; then
     echo "terminal smoke: CLI did not exit cleanly" >&2
