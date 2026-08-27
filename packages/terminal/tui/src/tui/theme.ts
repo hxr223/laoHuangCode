@@ -30,8 +30,7 @@ export class TerminalTheme {
 
   /** Truecolor SGR sequence for a token, foreground or background. */
   sgr(token: StyleToken, options?: { background?: boolean }): string;
-  sgr(token: string, options?: { background?: boolean }): string;
-  sgr(token: string, options?: { background?: boolean }): string {
+  sgr(token: StyleToken, options?: { background?: boolean }): string {
     const hex = this.color(token);
     const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
     if (!match) {

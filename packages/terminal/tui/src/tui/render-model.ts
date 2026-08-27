@@ -72,6 +72,7 @@ export function wrapStyledSpans(
   const lines: StyledLine[] = [];
   let current: StyledSpan[] = [];
   let currentWidth = 0;
+  let skipLineFeed = false;
 
   const append = (text: string, style: SpanStyle | undefined): void => {
     const previous = current.at(-1);
@@ -89,16 +90,28 @@ export function wrapStyledSpans(
 
   for (const source of spans) {
     for (const character of source.text) {
-      if (character === "\n" || character === "\r") {
+      if (character === "\r") {
+        finish();
+        skipLineFeed = true;
+        continue;
+      }
+      if (character === "\n") {
+        if (skipLineFeed) {
+          skipLineFeed = false;
+          continue;
+        }
         finish();
         continue;
       }
+      skipLineFeed = false;
       const characterWidth = charCellWidth(character);
+      if (characterWidth > targetWidth) {
+        throw new Error(
+          `code point exceeds wrap width: ${characterWidth} > ${targetWidth}`,
+        );
+      }
       if (currentWidth > 0 && currentWidth + characterWidth > targetWidth) {
         finish();
-      }
-      if (characterWidth > targetWidth) {
-        continue;
       }
       append(character, source.style);
       currentWidth += characterWidth;

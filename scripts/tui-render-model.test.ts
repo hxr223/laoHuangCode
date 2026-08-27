@@ -9,6 +9,7 @@ import {
   line,
   lineText,
   span,
+  wrapStyledSpans,
 } from "../packages/terminal/tui/src/tui/render-model.ts";
 import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 
@@ -32,5 +33,17 @@ test("compiler rejects a line wider than terminal cells", () => {
   assert.throws(
     () => compileStyledLines([line(span("中文ab"))], 5, PI_DARK),
     /rendered line exceeds terminal width/u,
+  );
+});
+
+test("wrapping treats CRLF as one line break", () => {
+  const wrapped = wrapStyledSpans([span("a\r\nb")], 4);
+  assert.deepEqual(wrapped.map(lineText), ["a", "b"]);
+});
+
+test("wrapping rejects a code point wider than the supplied width", () => {
+  assert.throws(
+    () => wrapStyledSpans([span("中")], 1),
+    /code point exceeds wrap width/u,
   );
 });
