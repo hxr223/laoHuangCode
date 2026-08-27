@@ -7,6 +7,18 @@ import type {
 import type { CommandPresenter } from "./command-presentation.ts";
 import type { InputFn, OutputFn } from "./model-selection.ts";
 
+export interface AuthPromptHandler {
+  prompt(request: {
+    readonly kind: "text" | "secret" | "select";
+    readonly message: string;
+    readonly options?: readonly {
+      readonly id: string;
+      readonly label: string;
+      readonly description?: string;
+    }[];
+  }): Promise<string | null>;
+}
+
 export interface ProviderAuthControllerOptions {
   readonly auth: ModelAuthService;
   readonly input: InputFn;
@@ -44,7 +56,10 @@ export class ProviderAuthController {
 
   async ensureConfigured(
     provider: string,
-    options: { promptIfMissing: boolean },
+    options: {
+      readonly promptIfMissing: boolean;
+      readonly prompts?: AuthPromptHandler;
+    },
   ): Promise<boolean> {
     const status = await this.status(provider);
     if (status.configured) {

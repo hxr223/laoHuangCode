@@ -60,16 +60,24 @@ test("terminal presenter delegates selection requests to TerminalUI", async () =
   let received: SelectionPresentation | null = null;
   ui.select = async (request) => {
     received = request;
-    return "deepseek";
+    return "deepseek/deepseek-v4-flash";
   };
   const presenter = new TerminalCommandPresenter(ui);
   const request: SelectionPresentation = {
-    id: "provider",
-    title: "Select provider",
-    items: [{ value: "deepseek", label: "DeepSeek" }],
+    id: "model-name",
+    title: "Select model",
+    items: [{
+      value: "deepseek/deepseek-v4-flash",
+      label: "DeepSeek V4 Flash",
+      description: "deepseek",
+    }],
+    searchable: true,
   };
 
-  assert.equal(await presenter.select(request), "deepseek");
+  assert.equal(
+    await presenter.select(request),
+    "deepseek/deepseek-v4-flash",
+  );
   assert.deepEqual(received, request);
 });
 
