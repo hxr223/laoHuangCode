@@ -333,6 +333,7 @@ export async function main(
       projectRoot,
       provider: config.provider,
       model: config.model,
+      version: VERSION,
       theme: args.theme,
       driver: terminalDriver,
       capabilities: { reasoning: selectedModel?.reasoning ?? false },
@@ -369,6 +370,7 @@ export async function main(
     commandDispatcher: (command) =>
       commandDispatcher?.(command) ?? { status: "not_found", command },
   });
+  terminalUi?.setSessionId(runtime.sessionId);
   const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
   const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
 

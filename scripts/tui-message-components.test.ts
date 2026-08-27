@@ -37,6 +37,8 @@ test("assistant and input text keep terminal default foreground", () => {
   assert.ok(body.some((item) => item.text.includes("answer")));
   assert.ok(body.every((item) => item.style?.foreground !== "muted"));
   assert.ok(input.some((item) => item.text.includes("question") && item.style?.foreground === undefined));
+  assert.ok(input.some((item) => item.text === "✨ " && item.style?.foreground === "accent"));
+  assert.ok(input.every((item) => item.style?.background === undefined));
 });
 
 test("thinking is muted italic without styling later answers", () => {
@@ -71,7 +73,16 @@ test("message components emit semantic styled-line snapshots at 40 and 80 column
       expanded: true,
     }),
     new NoticeMessage({ text: "saved", tone: "success" }),
-    new WelcomeMessage({ title: "hello", details: ["/help for commands"] }),
+    new WelcomeMessage({
+      title: "Welcome to LaoHuang Code!",
+      details: [
+        "Send /help for help information.",
+        "Directory: /worktree",
+        "Session: session_123",
+        "Model: deepseek/deepseek-v4-flash",
+        "Version: 0.0.0",
+      ],
+    }),
   ];
 
   for (const width of [40, 80]) {
@@ -85,10 +96,9 @@ test("message components emit semantic styled-line snapshots at 40 and 80 column
 function expectedSnapshots(width: number): Snapshot[] {
   return [
     [[
-      { text: " ", style: { background: "user_bg" } },
+      { text: "✨ ", style: { foreground: "accent" } },
       { text: "question" },
-      { text: " ", style: { background: "user_bg" } },
-      { text: " ".repeat(width - 10), style: { background: "user_bg" } },
+      { text: " ".repeat(width - 11) },
     ]],
     [
       [{ text: "Answer", style: { bold: true, foreground: "heading" } }],
@@ -120,12 +130,62 @@ function expectedSnapshots(width: number): Snapshot[] {
     ]],
     [
       [
-        { text: "hello", style: { foreground: "accent", bold: true } },
-        { text: " ".repeat(width - 5) },
+        { text: "╭", style: { foreground: "accent" } },
+        { text: "─".repeat(width - 2), style: { foreground: "accent" } },
+        { text: "╮", style: { foreground: "accent" } },
       ],
       [
-        { text: "/help for commands", style: { foreground: "dim" } },
-        { text: " ".repeat(width - 18) },
+        { text: "│", style: { foreground: "accent" } },
+        { text: "H", style: { foreground: "accent", bold: true } },
+        { text: "   " },
+        { text: "Welcome to LaoHuang Code!", style: { foreground: "accent", bold: true } },
+        { text: " ".repeat(width - 31) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "│", style: { foreground: "accent" } },
+        { text: "    " },
+        { text: "Send /help for help information.", style: { foreground: "dim" } },
+        { text: " ".repeat(width - 38) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "│", style: { foreground: "accent" } },
+        { text: " ".repeat(width - 2) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "│", style: { foreground: "accent" } },
+        { text: "Directory:", style: { bold: true } },
+        { text: " /worktree" },
+        { text: " ".repeat(width - 22) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "│", style: { foreground: "accent" } },
+        { text: "Session:", style: { bold: true } },
+        { text: " session_123" },
+        { text: " ".repeat(width - 22) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "│", style: { foreground: "accent" } },
+        { text: "Model:", style: { bold: true } },
+        { text: " deepseek/deepseek-v4-flash" },
+        { text: " ".repeat(width - 35) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "│", style: { foreground: "accent" } },
+        { text: "Version:", style: { bold: true } },
+        { text: " 0.0.0" },
+        { text: " ".repeat(width - 16) },
+        { text: "│", style: { foreground: "accent" } },
+      ],
+      [
+        { text: "╰", style: { foreground: "accent" } },
+        { text: "─".repeat(width - 2), style: { foreground: "accent" } },
+        { text: "╯", style: { foreground: "accent" } },
       ],
     ],
   ];

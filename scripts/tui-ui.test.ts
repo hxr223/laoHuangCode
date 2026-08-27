@@ -352,20 +352,19 @@ test("frame colors the pi input prompt but leaves input text default without mov
   const ui = new TerminalUI({ theme: "dark" });
   const editor = new EditorState();
   editor.apply({ kind: "insert", text: "你好你" }, { runtimeActive: false });
-  const frame = ui.buildFrame({ width: 11, editor });
+  const frame = ui.buildFrame({ width: 13, editor });
 
   const inputStart = frame.lines.findIndex((line) =>
-    stripTerminalControls(line).includes("❯"),
+    stripTerminalControls(line).includes("> "),
   );
-  const inputLines = frame.lines.slice(inputStart, inputStart + 2);
+  const inputLine = frame.lines[inputStart];
 
   assert.notEqual(inputStart, -1);
-  assert.equal(inputLines.length, 1);
-  assert.ok(inputLines[0]!.includes(PI_DARK.sgr("accent")));
-  assert.ok(!inputLines[0]!.includes(PI_DARK.sgr("text")));
-  assert.deepEqual(inputLines.map(stripTerminalControls), ["❯ 你好你"]);
-  assert.equal(frame.cursorCol, 8);
-  assert.ok(frame.lines.every((line) => visibleWidth(line) <= 11));
+  assert.ok(inputLine!.includes(PI_DARK.sgr("accent")));
+  assert.ok(!inputLine!.includes(PI_DARK.sgr("text")));
+  assert.equal(stripTerminalControls(inputLine!), "│> 你好你  │");
+  assert.equal(frame.cursorCol, 9);
+  assert.ok(frame.lines.every((line) => visibleWidth(line) <= 12));
 });
 
 test("tool card renders status metadata and expanded output inside width", () => {
@@ -887,10 +886,10 @@ test("typing updates editor line without appending prompt history", () => {
 
   const plainWrites = stripTerminalControls(terminal.writes());
   assert.equal(terminal.writeChunks().length, 1);
-  assert.ok(plainWrites.includes("\r❯ as"));
+  assert.ok(plainWrites.includes("\r│> as"));
   assert.equal(terminal.writes().split("\x1b[2K").length - 1, 1);
   assert.ok(!terminal.writes().includes("\r\n"));
-  assert.ok(!plainWrites.includes("\r\n❯ a"));
+  assert.ok(!plainWrites.includes("\r\n> a"));
 });
 
 test("typing updates editor line semantically in four rows", () => {
@@ -908,9 +907,29 @@ test("typing updates editor line semantically in four rows", () => {
   emulator.write(terminal.writes());
 
   const rendered = emulator.logicalLines.join("\n");
-  assert.equal(rendered.split("❯ ").length - 1, 1);
-  assert.ok(emulator.viewportLines.some((line) => line.includes("❯ as")));
-  assert.ok(!emulator.logicalLines.includes("❯ a"));
+  assert.equal(rendered.split("> ").length - 1, 1);
+  assert.ok(emulator.viewportLines.some((line) => line.includes("> as")));
+  assert.ok(!emulator.logicalLines.includes("> a"));
+});
+
+test("terminal resize requests a fresh frame at the new width", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 40, rows: 6 });
+  const emulator = new TerminalEmulator({ columns: 40, rows: 6 });
+  const ui = new TerminalUI({ theme: "dark", driver: terminal });
+  ui.startLoop(() => {});
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+  const narrow = emulator.logicalLines.find((line) => line.startsWith("╭"));
+
+  terminal.clearWrites();
+  terminal.resize({ columns: 90, rows: 6 });
+  emulator.resize({ columns: 90, rows: 6 });
+  ui.drainLoop();
+  emulator.write(terminal.writes());
+  const wide = emulator.logicalLines.find((line) => line.startsWith("╭"));
+
+  assert.equal(visibleWidth(narrow ?? ""), 39);
+  assert.equal(visibleWidth(wide ?? ""), 89);
 });
 
 test("three ascii keystrokes leave cursor after third character", () => {
@@ -928,13 +947,13 @@ test("three ascii keystrokes leave cursor after third character", () => {
     terminal.clearWrites();
   }
 
-  assert.ok(emulator.viewportLines.includes("❯ asd"));
-  assert.equal(emulator.cursorColumn, 5);
-  assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
-  assert.equal(/[╭╮╰╯│]/u.test(emulator.logicalLines.join("\n")), false);
+  assert.ok(emulator.viewportLines.includes(`│> asd${" ".repeat(72)}│`));
+  assert.equal(emulator.cursorColumn, 6);
+  assert.equal(emulator.logicalLines.join("\n").split("> ").length - 1, 1);
+  assert.equal(/[╭╮╰╯│]/u.test(emulator.logicalLines.join("\n")), true);
 });
 
-test("cjk typing leaves the unframed hardware cursor after nine cells", () => {
+test("cjk typing leaves the framed hardware cursor after ten cells", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
   const emulator = new TerminalEmulator({ columns: 80, rows: 4 });
   const ui = new TerminalUI({ theme: "dark", driver: terminal });
@@ -946,9 +965,9 @@ test("cjk typing leaves the unframed hardware cursor after nine cells", () => {
   ui.drainLoop();
   emulator.write(terminal.writes());
 
-  assert.ok(emulator.viewportLines.includes("❯ 中文abc"));
-  assert.equal(emulator.cursorColumn, 9);
-  assert.equal(emulator.logicalLines.join("\n").split("❯ ").length - 1, 1);
+  assert.ok(emulator.viewportLines.includes(`│> 中文abc${" ".repeat(68)}│`));
+  assert.equal(emulator.cursorColumn, 10);
+  assert.equal(emulator.logicalLines.join("\n").split("> ").length - 1, 1);
 });
 
 test("two completed turns remain in history without tail truncation", () => {
@@ -1080,8 +1099,8 @@ test("raw loop owns transcript and editor together", () => {
   ui.drainLoop();
 
   assert.deepEqual(submitted, ["hello"]);
-  assert.equal(/[╭╮╰╯│]/u.test(stripTerminalControls(terminal.writes())), false);
-  assert.ok(terminal.writes().includes("hello, welcome to laoHuang"));
+  assert.equal(/[╭╮╰╯│]/u.test(stripTerminalControls(terminal.writes())), true);
+  assert.ok(terminal.writes().includes("Welcome to LaoHuang Code!"));
   assert.ok(terminal.writes().includes("hello"));
 });
 
@@ -1383,7 +1402,7 @@ test("frame grows only for actual multiline input", () => {
   );
   const frame = ui.buildFrame({ width: 80, editor });
 
-  assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("❯ first line")));
+  assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("> first line")));
   assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes("  second line")));
   assert.equal(
     frame.lines.filter(
@@ -1454,8 +1473,8 @@ test("selector cancellation resolves null without submitting composer input", as
 
   assert.equal(await selection, null);
   assert.deepEqual(submitted, []);
-  assert.equal(emulator.logicalLines.filter((line) => line.startsWith("❯")).length, 1);
-  assert.ok(emulator.viewportLines.some((line) => line === "❯"));
+  assert.equal(emulator.logicalLines.filter((line) => line.includes("> ")).length, 1);
+  assert.ok(emulator.viewportLines.some((line) => line.includes("│>")));
 });
 
 test("interactive command component journey preserves scrollback and cursor", async () => {
@@ -1514,9 +1533,9 @@ test("interactive command component journey preserves scrollback and cursor", as
   assert.ok(screen.includes("deepseek"));
   assert.equal(screen.includes("Model providers:\n  1."), false);
   assert.equal(/^[ ]+[0-9]+[.)][ ]/mu.test(screen), false);
-  assert.equal(/[╭╮╰╯│]/u.test(screen), false);
-  assert.equal(screen.split("❯ 中文abc").length - 1, 1);
-  assert.equal(terminal.cursorColumn, visibleWidth("❯ 中文abc"));
+  assert.equal(/[╭╮╰╯│]/u.test(screen), true);
+  assert.equal(screen.split("> 中文abc").length - 1, 1);
+  assert.equal(terminal.cursorColumn, visibleWidth("│> 中文abc"));
   assert.ok(terminal.scrollback.length > 0);
 });
 
@@ -2063,7 +2082,8 @@ test("welcome panel shows session context", () => {
   ui.showWelcome();
 
   const rendered = stream.join("\n");
-  assert.ok(rendered.includes("hello, welcome to laoHuang"));
+  assert.ok(rendered.includes("Welcome to LaoHuang Code!"));
+  assert.ok(rendered.includes("Send /help for help information."));
   assert.ok(rendered.includes("/tmp/demo"));
   assert.ok(rendered.includes("deepseek/deepseek-v4-pro"));
 });

@@ -21,7 +21,7 @@ export interface MainScreenRenderResult extends ComponentRenderResult {
   readonly activeStart: number;
 }
 
-/** Unframed root composition for transcript, active dock, completion, and status. */
+/** Root composition for transcript, active dock, completion, and status. */
 export class MainScreen implements TuiComponent {
   readonly #transcript: Transcript;
   readonly #composer: Composer;
@@ -42,26 +42,29 @@ export class MainScreen implements TuiComponent {
   }
 
   renderWithMetadata(context: RenderContext): MainScreenRenderResult {
-    const transcript = this.#transcript.renderWithMetadata(context);
-    const dock = this.#activeView ?? this.#composer.render(context);
+    const width = Math.max(1, context.width);
+    const nextContext = { ...context, width };
+    const transcript = this.#transcript.renderWithMetadata(nextContext);
+    const dock = this.#activeView ?? this.#composer.render(nextContext);
     const completion = this.#activeView === null
-      ? this.#completion.render(context)
+      ? this.#completion.render(nextContext)
       : { lines: [] as readonly StyledLine[] };
-    const status = this.#status.render(context);
+    const status = this.#status.render(nextContext);
     const dockCursor = dock.cursor ?? {
       row: Math.max(0, dock.lines.length - 1),
       column: 0,
     };
+    const contentLines = [
+      ...transcript.lines,
+      ...dock.lines,
+      ...completion.lines,
+      ...status.lines,
+    ];
     return {
-      lines: [
-        ...transcript.lines,
-        ...dock.lines,
-        ...completion.lines,
-        ...status.lines,
-      ],
+      lines: contentLines,
       cursor: {
         row: transcript.lines.length + dockCursor.row,
-        column: dockCursor.column,
+        column: Math.min(width - 1, dockCursor.column),
       },
       activeStart: transcript.activeStart ?? transcript.lines.length,
     };

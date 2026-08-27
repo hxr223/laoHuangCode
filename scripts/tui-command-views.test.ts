@@ -15,6 +15,7 @@ import { EditorState } from "../packages/terminal/tui/src/tui/editor.ts";
 import { FrameBuilder } from "../packages/terminal/tui/src/tui/frame-builder.ts";
 import { lineText } from "../packages/terminal/tui/src/tui/render-model.ts";
 import { createUIState } from "../packages/terminal/tui/src/tui/state.ts";
+import { stripTerminalControls } from "../packages/terminal/tui/src/tui/screen.ts";
 import {
   createHelpBlock,
   createProviderDetailBlock,
@@ -200,13 +201,13 @@ test("frame fallback projects every static command result variant", () => {
   const text = new FrameBuilder({ state: createUIState(), transcript }).build({
     width: 80,
     editor: new EditorState(),
-  }).screen.lines.join("\n");
+  }).screen.lines.map(stripTerminalControls).join("\n");
 
   assert.ok(text.includes("show commands"));
   assert.ok(text.includes("unverified"));
   assert.ok(text.includes("stored credential"));
   assert.ok(text.includes("dynamic models"));
-  assert.ok(text.includes("pending 12"));
+  assert.ok(text.includes("pending  12"));
 });
 
 test("model selector filters and returns the highlighted model", () => {

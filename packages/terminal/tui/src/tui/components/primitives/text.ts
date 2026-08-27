@@ -76,8 +76,14 @@ function applyTextPadding(
     backgroundStyle(options.background),
   );
   const contentLines = lines.map((value) => {
+    const contentSpans = options.background === undefined
+      ? value.spans
+      : value.spans.map((item) => span(item.text, {
+        ...item.style,
+        background: item.style?.background ?? options.background,
+      }));
     const padded = truncateStyledLine(
-      line(horizontalPadding, ...value.spans, horizontalPadding),
+      line(horizontalPadding, ...contentSpans, horizontalPadding),
       targetWidth,
       "",
     );
