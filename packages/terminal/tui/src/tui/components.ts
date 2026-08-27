@@ -1,5 +1,14 @@
 import type { OverlayEntry } from "./overlay-manager.ts";
 
+export type {
+  ComponentRenderResult,
+  RenderContext,
+  SpanStyle,
+  StyledLine,
+  StyledSpan,
+  StyleToken,
+} from "./render-model.ts";
+
 export const COMPOSER_COMPONENT = "composer";
 
 export const COMPLETION_OVERLAY: OverlayEntry = {

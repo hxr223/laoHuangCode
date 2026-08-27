@@ -1,4 +1,4 @@
-import type { FocusableComponent } from "../component.ts";
+import type { LegacyTuiComponent } from "../component.ts";
 import { truncateToWidth } from "../screen.ts";
 import type { CompletionItemLike } from "../contracts.ts";
 import type { TerminalTheme } from "../theme.ts";
@@ -11,7 +11,7 @@ export interface CompletionListOptions {
 }
 
 /** Width-bounded slash-command completion menu. */
-export class CompletionList implements FocusableComponent {
+export class CompletionList implements LegacyTuiComponent {
   focused = false;
   readonly #items: readonly CompletionItemLike[];
   readonly #selectedIndex: number | null;

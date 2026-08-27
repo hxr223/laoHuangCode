@@ -74,7 +74,7 @@ test("completion list leaves unselected command text default and accents selecte
   assert.ok(!lines[0]!.includes(PI_DARK.sgr("text")));
   assert.ok(lines[0]!.includes(PI_DARK.sgr("muted")));
   assert.ok(lines[1]!.includes(PI_DARK.sgr("accent")));
-  assert.ok(!lines[1]!.includes(PI_DARK.sgr("selected_bg", { background: true })));
+  assert.doesNotMatch(lines[1]!, /\x1b\[48;2;/u);
   assert.deepEqual(lines.map(stripTerminalControls), [
     "  /help  Show help",
     "› /model  Switch mod",
