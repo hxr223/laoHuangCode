@@ -1142,6 +1142,103 @@ test("raw loop reuses editor for command questions", async () => {
   assert.ok(terminal.writes().includes("Select model:"));
 });
 
+test("selector receives input before composer and restores focus on submit", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  const selection = ui.select({
+    id: "effort",
+    title: "Reasoning effort",
+    items: [
+      { value: "low", label: "low" },
+      { value: "high", label: "high" },
+    ],
+    currentValue: "low",
+  });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("\x1b[B\r"));
+  ui.drainLoop();
+
+  assert.equal(await selection, "high");
+  assert.deepEqual(submitted, []);
+  assert.equal(ui.focusedComponentId(), "composer");
+});
+
+test("selector cancellation resolves null without submitting composer input", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  const submitted: string[] = [];
+  ui.startLoop((text) => submitted.push(text));
+
+  const selection = ui.select({
+    id: "provider",
+    title: "Provider",
+    items: [{ value: "deepseek", label: "DeepSeek" }],
+  });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+
+  assert.equal(await selection, null);
+  assert.deepEqual(submitted, []);
+});
+
+test("prompt modal takes priority over an active selector", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  const selection = ui.select({
+    id: "model",
+    title: "Model",
+    items: [{ value: "v4", label: "v4" }],
+  });
+  const prompt = ui.prompt({ id: "credential", kind: "text", message: "Credential" });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes("value\r"));
+  ui.drainLoop();
+
+  assert.equal(await prompt, "value");
+  assert.equal(ui.focusedComponentId(), "model");
+  ui.close();
+  assert.equal(await selection, null);
+});
+
+test("closing a loop cancels a pending view", async () => {
+  const ui = new TerminalUI({
+    driver: new MemoryTerminalDriver({ columns: 80, rows: 24 }),
+  });
+  ui.startLoop(() => {});
+
+  const selection = ui.select({
+    id: "effort",
+    title: "Reasoning effort",
+    items: [{ value: "low", label: "low" }],
+  });
+  ui.close();
+
+  assert.equal(await selection, null);
+});
+
+test("secret prompt values never reach terminal writes", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+
+  const secret = "task6-secret-fixture";
+  const prompt = ui.prompt({ id: "api-key", kind: "secret", message: "Enter API key" });
+  ui.drainLoop();
+  ui.feedInputBytes(bytes(`${secret}\r`));
+  ui.drainLoop();
+
+  assert.equal(await prompt, secret);
+  assert.equal(terminal.writes().includes(secret), false);
+});
+
 test("single renderer keeps stream text across tool boundaries", () => {
   const ui = new TerminalUI({ theme: "light" });
   ui.applyProjectedEvent(event("model.reasoning_delta", "r1", { text: "thinking" }));

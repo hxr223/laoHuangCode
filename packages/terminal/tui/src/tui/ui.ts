@@ -99,11 +99,13 @@ import {
   type TerminalDriver,
 } from "./screen.ts";
 import { COMPLETION_OVERLAY, COMPOSER_COMPONENT } from "./components.ts";
+import type { PromptRequest, SelectionRequest } from "./components/views/contracts.ts";
 import { CompletionList } from "./components/completion-list.ts";
 import { Transcript } from "./components/transcript.ts";
 import { FocusManager } from "./focus-manager.ts";
 import { OverlayManager } from "./overlay-manager.ts";
 import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
+import { ViewHost } from "./view-host.ts";
 
 const WELCOME_TEXT = "hello, welcome to laoHuang";
 
@@ -230,15 +232,20 @@ function ansiNoticeStyle(theme: TerminalTheme, tone: NoticeTone): string {
 // InteractiveTerminalLoop — serialize stdin, UI events, and terminal writes
 // ---------------------------------------------------------------------------
 
-interface LoopQuestion {
-  message: string;
-  secret: boolean;
-  resolve(answer: string): void;
-}
-
 type LoopWorkItem =
   | { type: "input"; data: Uint8Array }
-  | { type: "event"; event: unknown };
+  | { type: "event"; event: unknown }
+  | {
+    type: "open_selection";
+    request: SelectionRequest;
+    resolve: (value: string | null) => void;
+  }
+  | {
+    type: "open_prompt";
+    request: PromptRequest;
+    resolve: (value: string | null) => void;
+  }
+  | { type: "close_view"; value: string | null };
 
 export interface SubmitOptions {
   readonly strategy?: "follow_up" | "steer";
@@ -283,11 +290,11 @@ export class InteractiveTerminalLoop {
   #renderer: PiMainScreenRenderer;
   #overlays = new OverlayManager();
   #focus = new FocusManager(this.#overlays, COMPOSER_COMPONENT);
+  #viewHost = new ViewHost(this.#overlays);
   #onSubmit: SubmitCallback = () => {};
   #exitRequested = false;
   #closed = false;
   #running = false;
-  #question: LoopQuestion | null = null;
   #needsRender = true;
   #terminalModesStarted = false;
   #keyboardProtocolPushed = false;
@@ -376,17 +383,32 @@ export class InteractiveTerminalLoop {
     this.#scheduleWakeup();
   }
 
-  ask(message: string, options: { secret?: boolean } = {}): Promise<string> {
-    if (this.#closed || !this.#running) {
-      return Promise.resolve("");
+  openSelection(request: SelectionRequest): Promise<string | null> {
+    return this.#queueView("open_selection", request);
+  }
+
+  openPrompt(request: PromptRequest): Promise<string | null> {
+    return this.#queueView("open_prompt", request);
+  }
+
+  closeActiveView(value: string | null = null): void {
+    if (this.#closed) {
+      return;
     }
-    const secret = options.secret ?? false;
-    return new Promise<string>((resolve) => {
-      this.#question = { message, secret, resolve };
-      this.#resetEditor();
-      this.#needsRender = true;
-      this.#scheduleWakeup();
-    });
+    this.#work.push({ type: "close_view", value });
+    this.#scheduleWakeup();
+  }
+
+  focusedComponentId(): string {
+    return this.#focus.current();
+  }
+
+  renderActiveView(context: { width: number; theme: TerminalTheme }) {
+    return this.#viewHost.render(context);
+  }
+
+  handleActiveViewInput(event: TuiInputEvent): boolean {
+    return this.#viewHost.handleInput(event);
   }
 
   requestExit(): void {
@@ -400,9 +422,8 @@ export class InteractiveTerminalLoop {
     }
     this.#closed = true;
     this.#running = false;
-    const question = this.#question;
-    this.#question = null;
-    question?.resolve("");
+    this.#cancelPendingViews();
+    this.#viewHost.closeAll();
     if (this.#escapeTimer !== null) {
       clearTimeout(this.#escapeTimer);
       this.#escapeTimer = null;
@@ -550,6 +571,15 @@ export class InteractiveTerminalLoop {
           this.#applyActions(this.#decoder.flush());
         }
         changed = true;
+      } else if (item.type === "open_selection") {
+        this.#viewHost.openSelection(item.request).then(item.resolve);
+        changed = true;
+      } else if (item.type === "open_prompt") {
+        this.#viewHost.openPrompt(item.request).then(item.resolve);
+        changed = true;
+      } else if (item.type === "close_view") {
+        this.#viewHost.closeActive(item.value);
+        changed = true;
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
         this.#ui.appendTranscript(
@@ -567,13 +597,10 @@ export class InteractiveTerminalLoop {
   #render(): void {
     this.#needsRender = false;
     try {
-      const question = this.#question;
       this.#renderer.render(
         this.#ui.buildFrame({
           width: Math.max(1, this.#driver.getSize().columns),
           editor: this.#editor,
-          prompt: question !== null ? `${question.message} ` : "❯ ",
-          secret: question !== null && question.secret,
         }),
       );
     } catch (error) {
@@ -593,6 +620,10 @@ export class InteractiveTerminalLoop {
   }
 
   #applyInputEvent(event: TuiInputEvent): void {
+    if (this.#ui.handleActiveViewInput(event)) {
+      this.#needsRender = true;
+      return;
+    }
     if (event.type === "text" || event.type === "paste") {
       this.#applyEditorAction(inputAction(InputActionKind.Insert, event.text));
       return;
@@ -635,10 +666,6 @@ export class InteractiveTerminalLoop {
   }
 
   #applyFollowUpSubmit(): void {
-    if (this.#applyQuestionAction(inputAction(InputActionKind.Submit))) {
-      this.#needsRender = true;
-      return;
-    }
     if (this.#applyCompletionAction(inputAction(InputActionKind.Submit))) {
       this.#needsRender = true;
       return;
@@ -665,10 +692,6 @@ export class InteractiveTerminalLoop {
   }
 
   #applySteerSubmit(): void {
-    if (this.#applyQuestionAction(inputAction(InputActionKind.Submit))) {
-      this.#needsRender = true;
-      return;
-    }
     if (this.#applyCompletionAction(inputAction(InputActionKind.Submit))) {
       this.#needsRender = true;
       return;
@@ -697,10 +720,6 @@ export class InteractiveTerminalLoop {
   }
 
   #applyEditorAction(action: InputAction): void {
-    if (this.#applyQuestionAction(action)) {
-      this.#needsRender = true;
-      return;
-    }
     if (this.#applyCompletionAction(action)) {
       this.#needsRender = true;
       return;
@@ -759,58 +778,13 @@ export class InteractiveTerminalLoop {
     }
   }
 
-  #applyQuestionAction(action: InputAction): boolean {
-    const question = this.#question;
-    if (question === null) {
-      return false;
-    }
-    if (action.kind === InputActionKind.Submit) {
-      const answer = this.#editor.text;
-      if (this.#question === question) {
-        this.#question = null;
-      }
-      this.#resetEditor();
-      question.resolve(answer);
-      return true;
-    }
-    if (
-      action.kind === InputActionKind.Cancel ||
-      action.kind === InputActionKind.Eof
-    ) {
-      if (this.#question === question) {
-        this.#question = null;
-      }
-      this.#resetEditor();
-      question.resolve("");
-      return true;
-    }
-    const effect = this.#editor.apply(action, { runtimeActive: false });
-    if (effect.notice) {
-      this.#appendNotice(effect.notice);
-    }
-    return true;
-  }
-
   #appendNotice(text: string): void {
     this.#ui.appendTranscript(
       createNoticeBlock(this.#ui.newBlockId(), text, "warning"),
     );
   }
 
-  #resetEditor(): void {
-    this.#editor.text = "";
-    this.#editor.cursor = 0;
-    this.#editor.historyIndex = null;
-    this.#editor.setCompletions([]);
-    this.#syncCompletionOverlay();
-  }
-
   #refreshCompletions(): void {
-    if (this.#question !== null) {
-      this.#editor.setCompletions([]);
-      this.#syncCompletionOverlay();
-      return;
-    }
     const registry = this.#ui.commandRegistry;
     if (registry !== null) {
       this.#editor.setCompletions(
@@ -828,6 +802,43 @@ export class InteractiveTerminalLoop {
     } else {
       this.#overlays.close(COMPLETION_OVERLAY.id);
     }
+  }
+
+  #queueView(
+    type: "open_selection" | "open_prompt",
+    request: SelectionRequest | PromptRequest,
+  ): Promise<string | null> {
+    if (this.#closed || !this.#running) {
+      return Promise.resolve(null);
+    }
+    return new Promise((resolve) => {
+      if (type === "open_selection") {
+        this.#work.push({
+          type,
+          request: request as SelectionRequest,
+          resolve,
+        });
+      } else {
+        this.#work.push({
+          type,
+          request: request as PromptRequest,
+          resolve,
+        });
+      }
+      this.#scheduleWakeup();
+    });
+  }
+
+  #cancelPendingViews(): void {
+    const retained: LoopWorkItem[] = [];
+    for (const item of this.#work) {
+      if (item.type === "open_selection" || item.type === "open_prompt") {
+        item.resolve(null);
+      } else {
+        retained.push(item);
+      }
+    }
+    this.#work = retained;
   }
 }
 
@@ -963,12 +974,21 @@ export class TerminalUI {
 
   // -- prompts ------------------------------------------------------------
 
-  prompt(message?: string): Promise<string> {
+  select(request: SelectionRequest): Promise<string | null> {
+    return this.#loop?.openSelection(request) ?? Promise.resolve(null);
+  }
+
+  prompt(request: PromptRequest): Promise<string | null>;
+  prompt(message: string): Promise<string>;
+  prompt(request: PromptRequest | string): Promise<string | null> {
+    const normalized: PromptRequest = typeof request === "string"
+      ? { id: "legacy-text-prompt", kind: "text", message: request }
+      : request;
     if (this.#loop !== null && this.#loop.running) {
-      return this.#loop.ask(message ?? "Input:");
+      return this.#loop.openPrompt(normalized);
     }
-    if (this.#askFallback !== null) {
-      return this.#askFallback(message ?? "", false);
+    if (this.#askFallback !== null && normalized.kind !== "select") {
+      return this.#askFallback(normalized.message, normalized.kind === "secret");
     }
     return Promise.reject(
       new Error("interactive prompt requires a running terminal loop"),
@@ -976,15 +996,11 @@ export class TerminalUI {
   }
 
   promptSecret(message: string): Promise<string> {
-    if (this.#loop !== null && this.#loop.running) {
-      return this.#loop.ask(message, { secret: true });
-    }
-    if (this.#askFallback !== null) {
-      return this.#askFallback(message, true);
-    }
-    return Promise.reject(
-      new Error("interactive prompt requires a running terminal loop"),
-    );
+    return this.prompt({
+      id: "legacy-secret-prompt",
+      kind: "secret",
+      message,
+    }).then((value) => value ?? "");
   }
 
   // -- loop lifecycle -----------------------------------------------------
@@ -1027,6 +1043,14 @@ export class TerminalUI {
 
   flushEventRenderer(): void {
     this.#loop?.drain();
+  }
+
+  focusedComponentId(): string {
+    return this.#loop?.focusedComponentId() ?? COMPOSER_COMPONENT;
+  }
+
+  handleActiveViewInput(event: TuiInputEvent): boolean {
+    return this.#loop?.handleActiveViewInput(event) ?? false;
   }
 
   // -- callbacks ----------------------------------------------------------
@@ -1196,7 +1220,10 @@ export class TerminalUI {
     const { width, editor } = options;
     const contentWidth = width >= 4 ? width - 4 : width;
     const { lines: history, activeStart } = this.#buildHistoryFrameParts(contentWidth);
-    const completion = this.#completionLines(contentWidth, editor);
+    const completion = [
+      ...this.#completionLines(contentWidth, editor),
+      ...this.#activeViewLines(contentWidth),
+    ];
     return this.#frameBuilder.build({
       ...options,
       editorStyles: this.#editorStyles(),
@@ -1224,6 +1251,13 @@ export class TerminalUI {
         theme: this.theme,
       }).render(width),
     ];
+  }
+
+  #activeViewLines(width: number): string[] {
+    const rendered = this.#loop?.renderActiveView({ width, theme: this.theme });
+    return rendered === undefined
+      ? []
+      : compileStyledLines(rendered.lines, width, this.theme);
   }
 
   // -- events ---------------------------------------------------------------
