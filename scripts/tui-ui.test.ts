@@ -498,6 +498,64 @@ test("terminal transcript redacts tool command and output before storage", () =>
   assert.ok(!rendered.includes("redaction-fixture"));
 });
 
+test("terminal transcript redacts credential aliases before storage and rendering", () => {
+  const clientSecret = "task3-client-secret-fixture";
+  const privateKey = "task3-private-key-fixture";
+  const authorization = "task3-authorization-fixture";
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-aliases", {
+    name: "bash",
+    arguments: { command: `$ deploy client_secret=${clientSecret}` },
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-aliases", {
+    stream: "stdout",
+    text: `private_key=${privateKey}`,
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-aliases", {
+    stream: "stderr",
+    text: `authorization=${authorization}`,
+  }));
+
+  const block = ui.blockFor("tool", "call-aliases");
+  assert.equal(block.kind, "tool");
+  assert.ok(!block.subject.includes(clientSecret));
+  assert.ok(!block.stdout.includes(privateKey));
+  assert.ok(!block.stderr.includes(authorization));
+
+  ui.applyDisplayAction(makeToggleToolOutputDisplayAction(true));
+  const rendered = ui.buildHistoryLines(80).join("\n");
+  assert.ok(rendered.includes("[REDACTED]"));
+  assert.ok(!rendered.includes(clientSecret));
+  assert.ok(!rendered.includes(privateKey));
+  assert.ok(!rendered.includes(authorization));
+});
+
+test("trailing empty credential assignments preserve following tool output", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.applyProjectedEvent(event("tool.started", "call-empty", { name: "bash", arguments: {} }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stdout",
+    text: "token=",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stdout",
+    text: "ordinary stdout\n",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stderr",
+    text: "secret=",
+  }));
+  ui.applyProjectedEvent(event("tool.output_delta", "call-empty", {
+    stream: "stderr",
+    text: "ordinary stderr\n",
+  }));
+
+  const block = ui.blockFor("tool", "call-empty");
+  assert.equal(block.kind, "tool");
+  assert.ok(block.stdout.includes("ordinary stdout"));
+  assert.ok(block.stderr.includes("ordinary stderr"));
+});
+
 test("input bytes do not mutate before loop drains", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
