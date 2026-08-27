@@ -291,6 +291,7 @@ test("slash commands and model arguments are completed", () => {
 
   assert.ok(commandsFound.some((item) => item.value === "/model"));
   assert.ok(providerItems.some((item) => item.value === "anthropic"));
+  assert.ok(providerItems.some((item) => item.value === "deepseek-v4-pro"));
   assert.ok(modelItems.some((item) => item.value === "claude-sonnet-4-5"));
   assert.ok(effortItems.some((item) => item.value === "low"));
   assert.ok(effortItems.some((item) => item.value === "current"));
@@ -379,6 +380,40 @@ test("/model current reports the active provider and model", async () => {
 
   assert.equal(handled.status, "handled");
   assert.deepEqual(outputs, ["Current model: deepseek / deepseek-v4-flash"]);
+});
+
+test("/model opens the current provider model list", async () => {
+  const prompts: string[] = [];
+  const { commands, outputs, agent } = makeCommands({
+    input: async (prompt) => {
+      prompts.push(prompt);
+      return "2";
+    },
+  });
+
+  const handled = await commands.execute("/model");
+
+  assert.equal(handled.status, "handled");
+  assert.equal(agent.provider, "deepseek");
+  assert.equal(agent.model, "deepseek-v4-pro");
+  assert.equal(outputs.includes("Model providers:"), false);
+  assert.ok(outputs.includes("Available models:"));
+  assert.ok(outputs.includes("  2. deepseek-v4-pro - deepseek-v4-pro"));
+  assert.deepEqual(prompts, ["Select model or search: "]);
+});
+
+test("/model with one non-provider argument selects a model on the current provider", async () => {
+  const { commands, outputs, agent } = makeCommands();
+
+  const handled = await commands.execute("/model deepseek-v4-pro");
+
+  assert.equal(handled.status, "handled");
+  assert.equal(agent.provider, "deepseek");
+  assert.equal(agent.model, "deepseek-v4-pro");
+  assert.deepEqual(agent.modelSwitches, [
+    { provider: "deepseek", model: "deepseek-v4-pro" },
+  ]);
+  assert.ok(outputs.includes("Switched to deepseek / deepseek-v4-pro"));
 });
 
 test("/effort current reports the active reasoning effort", async () => {

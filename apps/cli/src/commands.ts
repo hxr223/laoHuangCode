@@ -450,8 +450,8 @@ export class SessionCommands {
     this.registry = new CommandRegistry([
       {
         name: "/model",
-        description: "选择供应商和模型",
-        usage: "/model [provider] [model]",
+        description: "选择当前供应商的模型或切换供应商",
+        usage: "/model [provider|model] [model]",
         handler: (args) => this.handleModel(args),
         allowedStates: IDLE_ONLY,
         argumentCompleter: (args) => this.modelCompletions(args),
@@ -658,17 +658,16 @@ export class SessionCommands {
       return true;
     }
     if (args.length > 2) {
-      this.#output("Usage: /model [provider] [model]");
+      this.#output("Usage: /model [provider|model] [model]");
       return true;
     }
 
-    const provider = args[0];
-    const model = args.length === 2 ? args[1] : undefined;
+    const route = this.resolveModelRoute(args);
     let selection: ModelSelection | null;
     try {
       selection = await this.#selector.select({
-        providerName: provider,
-        modelName: model,
+        providerName: route.provider,
+        modelName: route.model,
         promptForMissingKey: false,
       });
     } catch (error) {
@@ -876,6 +875,9 @@ export class SessionCommands {
   ): Iterable<readonly [string, string]> {
     if (args.length === 0) {
       yield ["current", "显示当前模型"] as const;
+      for (const model of this.#catalog.listModels(this.#currentConfig.provider)) {
+        yield [model.id, `${this.#currentConfig.provider} 模型`] as const;
+      }
       for (const provider of this.#catalog.listProviders()) {
         yield [provider.id, "模型供应商"] as const;
       }
@@ -890,6 +892,23 @@ export class SessionCommands {
         yield [model.id, `${provider.name} 模型`] as const;
       }
     }
+  }
+
+  private resolveModelRoute(args: readonly string[]): {
+    readonly provider: string;
+    readonly model: string | undefined;
+  } {
+    if (args.length === 0) {
+      return { provider: this.#currentConfig.provider, model: undefined };
+    }
+    if (args.length === 2) {
+      return { provider: args[0]!, model: args[1] };
+    }
+    const argument = args[0]!;
+    if (this.#catalog.getProvider(argument) !== undefined) {
+      return { provider: argument, model: undefined };
+    }
+    return { provider: this.#currentConfig.provider, model: argument };
   }
 
   private *effortCompletions(
