@@ -198,7 +198,12 @@ export class CodingAgent {
       options.projectRoot == null ? null : realpathOrSelf(options.projectRoot);
     this.startupCwd =
       options.startupCwd == null ? null : realpathOrSelf(options.startupCwd);
-    this.messages = [{ role: "system", content: buildSystemPrompt(this.tools) }];
+    this.messages = [
+      {
+        role: "system",
+        content: buildSystemPrompt(this.tools, { promptCwd: this.startupCwd }),
+      },
+    ];
   }
 
   /** Bookkeeping for loaded project instructions (never model-visible). */
