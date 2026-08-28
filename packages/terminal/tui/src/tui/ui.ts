@@ -680,7 +680,7 @@ export class InteractiveTerminalLoop {
     } else if (action === "submit_follow_up") {
       this.#applyFollowUpSubmit();
     } else if (action === "dismiss") {
-      this.#applyEditorAction(inputAction(InputActionKind.Dismiss));
+      this.#applyDismissAction();
     } else if (action === "cancel") {
       this.#applyEditorAction(inputAction(InputActionKind.Cancel));
     } else if (action === "toggle_tool_output") {
@@ -690,6 +690,19 @@ export class InteractiveTerminalLoop {
       this.#ui.handleKeyAction(action);
       this.#needsRender = true;
     }
+  }
+
+  #applyDismissAction(): void {
+    if (this.#applyCompletionAction(inputAction(InputActionKind.Dismiss))) {
+      this.#needsRender = true;
+      return;
+    }
+    if (this.#ui.isRunning()) {
+      this.#ui.cancelFromKeybinding();
+      this.#needsRender = true;
+      return;
+    }
+    this.#applyEditorAction(inputAction(InputActionKind.Dismiss));
   }
 
   #applyFollowUpSubmit(): void {
