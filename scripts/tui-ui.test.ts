@@ -603,6 +603,48 @@ test("ctrl s submits a steer action from the live loop", () => {
   ]);
 });
 
+test("escape cancels a running task when there is no dismissible completion", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  let cancelCount = 0;
+  const ui = new TerminalUI({
+    driver: terminal,
+    cancelCallback: () => {
+      cancelCount += 1;
+    },
+  });
+
+  ui.setRuntimeRunningCallback(() => true);
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+
+  assert.equal(cancelCount, 1);
+});
+
+test("escape dismisses completion before cancelling a running task", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  let cancelCount = 0;
+  const ui = new TerminalUI({
+    driver: terminal,
+    commandRegistry: createRegistry([{ name: "/help", description: "Show help" }]),
+    cancelCallback: () => {
+      cancelCount += 1;
+    },
+  });
+
+  ui.setRuntimeRunningCallback(() => true);
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("/h"));
+  ui.drainLoop();
+  assert.notDeepEqual(ui.interactiveLoop?.editor.completions, []);
+
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+
+  assert.equal(cancelCount, 0);
+  assert.deepEqual(ui.interactiveLoop?.editor.completions, []);
+});
+
 test("enhanced shift tab does not invoke a reasoning effort action", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const actions: string[] = [];
