@@ -58,6 +58,16 @@ test("built prompt matches the stable snapshot", async (t) => {
   assert.equal(buildSystemPrompt(tools), EXPECTED_PROMPT);
 });
 
+test("built prompt can include the startup working directory", async (t) => {
+  const tools = createTestToolRegistry(await makeTempDir(t));
+  const promptCwd = "/tmp/laohuang-project";
+
+  assert.equal(
+    buildSystemPrompt(tools, { promptCwd }),
+    `${EXPECTED_PROMPT}\n\nCurrent working directory: ${promptCwd}`,
+  );
+});
+
 test("tool sections appear in the fixed read/write/edit/bash order", async (t) => {
   const tools = createTestToolRegistry(await makeTempDir(t));
   const prompt = buildSystemPrompt(tools);
@@ -109,7 +119,9 @@ test("tools payload is deterministic in order and content", async (t) => {
 });
 
 test("agent history starts with the built system prompt", async (t) => {
-  const tools = createTestToolRegistry(await makeTempDir(t));
+  const cwd = await makeTempDir(t);
+  const realCwd = await fs.realpath(cwd);
+  const tools = createTestToolRegistry(cwd);
   const modelAdapter: ModelAdapter = {
     name: "test",
     runAttempt(_request: ModelRequest): Promise<ModelResult> {
@@ -128,10 +140,11 @@ test("agent history starts with the built system prompt", async (t) => {
     provider: "openai",
     baseUrl: null,
     tools,
+    startupCwd: cwd,
   });
 
   assert.deepEqual(agent.messages[0], {
     role: "system",
-    content: EXPECTED_PROMPT,
+    content: buildSystemPrompt(tools, { promptCwd: realCwd }),
   });
 });

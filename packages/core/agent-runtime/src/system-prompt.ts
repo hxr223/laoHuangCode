@@ -4,9 +4,9 @@
  * The builder owns the title, the general guidelines, and the fixed tool
  * section order (read, write, edit, bash). Each tool's section body comes
  * from that tool's `promptGuidelines` (tools.ts). The result is computed
- * once per CodingAgent and stays byte-stable for the agent's lifetime;
- * it never contains schemas, full tool descriptions, cwd, absolute paths,
- * or project-instruction content.
+ * once per CodingAgent and stays byte-stable for the agent's lifetime.
+ * It may include startup runtime facts such as cwd, but never contains
+ * schemas, full tool descriptions, or project-instruction content.
  */
 
 import type { ToolSpec } from "@laohuang/tools";
@@ -14,6 +14,10 @@ import type { ToolSpec } from "@laohuang/tools";
 /** Structural minimum a registry must provide to the prompt builder. */
 export interface ToolSpecSource {
   readonly orderedSpecs: readonly ToolSpec[];
+}
+
+export interface SystemPromptOptions {
+  readonly promptCwd?: string | null;
 }
 
 const TITLE = "You are laoHuangCode, a coding agent.";
@@ -29,7 +33,10 @@ const GENERAL_GUIDELINES: readonly string[] = [
 /** Fixed section order, independent of how the registry stores specs. */
 const SECTION_ORDER: readonly string[] = ["read", "write", "edit", "bash"];
 
-export function buildSystemPrompt(registry: ToolSpecSource): string {
+export function buildSystemPrompt(
+  registry: ToolSpecSource,
+  options: SystemPromptOptions = {},
+): string {
   const specsByName = new Map(
     registry.orderedSpecs.map((spec) => [spec.name, spec]),
   );
@@ -49,5 +56,8 @@ export function buildSystemPrompt(registry: ToolSpecSource): string {
     "Tool guidelines:",
     "",
     sections.join("\n\n"),
+    ...(options.promptCwd == null
+      ? []
+      : ["", `Current working directory: ${options.promptCwd}`]),
   ].join("\n");
 }
