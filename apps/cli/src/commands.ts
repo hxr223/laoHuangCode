@@ -402,6 +402,7 @@ export interface SessionControllerLike {
     readonly updatedAt: string;
     readonly lastUserText?: string;
   }>;
+  createNew(): Promise<void>;
   resume(sessionId: string): Promise<void>;
   fork(entryId: string, mode: "before" | "at"): Promise<{
     readonly sessionId: string;
@@ -551,6 +552,13 @@ export class SessionCommands {
         description: "清空当前对话上下文",
         usage: "/clear",
         handler: (args) => this.handleClear(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/new",
+        description: "创建新会话",
+        usage: "/new",
+        handler: (args) => this.handleNew(args),
         allowedStates: IDLE_ONLY,
       },
       {
@@ -761,6 +769,22 @@ export class SessionCommands {
       `Current session: ${controller.currentSessionId}\nPath: ${controller.currentPath ?? ""}`,
       "info",
     );
+    return true;
+  }
+
+  private async handleNew(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /new", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session creation is unavailable.", "error");
+      return true;
+    }
+    await controller.createNew();
+    await this.#onSessionChanged?.();
+    this.notice(`Created session ${controller.currentSessionId ?? ""}.`, tones.switched);
     return true;
   }
 
