@@ -577,10 +577,11 @@ export class SessionCommands {
       },
       {
         name: "/resume",
-        description: "恢复指定会话",
-        usage: "/resume <session-id>",
+        description: "选择或恢复指定会话",
+        usage: "/resume [session-id]",
         handler: (args) => this.handleResume(args),
         allowedStates: IDLE_ONLY,
+        argumentCompleter: (args) => this.resumeCompletions(args),
       },
       {
         name: "/fork",
@@ -808,8 +809,8 @@ export class SessionCommands {
   }
 
   private async handleResume(args: string[]): Promise<boolean> {
-    if (args.length !== 1) {
-      this.notice("Usage: /resume <session-id>", tones.invalid);
+    if (args.length > 1) {
+      this.notice("Usage: /resume [session-id]", tones.invalid);
       return true;
     }
     const controller = this.#sessionController;
@@ -817,9 +818,35 @@ export class SessionCommands {
       this.notice("Session resume is unavailable.", "error");
       return true;
     }
-    await controller.resume(args[0]!);
+    let sessionId = args[0];
+    if (sessionId === undefined) {
+      const sessions = controller.list();
+      if (sessions.length === 0) {
+        this.notice("No sessions for this project.", "info");
+        return true;
+      }
+      sessionId = await this.#presenter.select({
+        id: "session-resume",
+        title: "Resume session",
+        items: sessions.map((session) => ({
+          value: session.sessionId,
+          label: session.sessionId,
+          description: session.lastUserText === undefined || session.lastUserText === ""
+            ? session.updatedAt
+            : `${session.updatedAt}  ${session.lastUserText}`,
+        })),
+        currentValue: controller.currentSessionId ?? undefined,
+        searchable: true,
+        searchPlaceholder: "Search sessions",
+        maxVisible: 20,
+      }) ?? undefined;
+      if (sessionId === undefined) {
+        return true;
+      }
+    }
+    await controller.resume(sessionId);
     await this.#onSessionChanged?.();
-    this.notice(`Resumed session ${args[0]}.`, tones.switched);
+    this.notice(`Resumed session ${sessionId}.`, tones.switched);
     return true;
   }
 
@@ -1288,6 +1315,20 @@ export class SessionCommands {
     yield ["current", "当前思考等级"] as const;
     for (const effort of this.supportedReasoningEfforts()) {
       yield [effort, effort === "off" ? "关闭思考" : "设置思考等级"] as const;
+    }
+  }
+
+  private *resumeCompletions(
+    args: readonly string[],
+  ): Iterable<readonly [string, string]> {
+    if (args.length > 0) {
+      return;
+    }
+    for (const session of this.#sessionController?.list() ?? []) {
+      const description = session.lastUserText === undefined || session.lastUserText === ""
+        ? session.updatedAt
+        : `${session.updatedAt}  ${session.lastUserText}`;
+      yield [session.sessionId, description] as const;
     }
   }
 

@@ -169,6 +169,103 @@ test("session lifecycle commands delegate to the session controller", async () =
   assert.equal(sessionChanges, 5);
 });
 
+test("resume without an id selects a recent session and restores it", async () => {
+  const presenter = new RecordingPresenter({ selections: ["session-2"] });
+  const calls: string[] = [];
+  let sessionChanges = 0;
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    onSessionChanged: () => { sessionChanges += 1; },
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session-1.jsonl",
+      list: () => [
+        {
+          sessionId: "session-1",
+          updatedAt: "2026-08-31T15:30:00.000Z",
+          lastUserText: "current conversation",
+        },
+        {
+          sessionId: "session-2",
+          updatedAt: "2026-08-30T08:15:00.000Z",
+          lastUserText: "fix the build",
+        },
+      ],
+      createNew: async () => {},
+      resume: async (sessionId: string) => { calls.push(sessionId); },
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => ({}),
+      resetContext: () => {},
+    },
+  });
+
+  const result = await commands.execute("/resume");
+
+  assert.equal(result.status, "handled");
+  assert.deepEqual(presenter.selections, [{
+    id: "session-resume",
+    title: "Resume session",
+    items: [
+      {
+        value: "session-1",
+        label: "session-1",
+        description: "2026-08-31T15:30:00.000Z  current conversation",
+      },
+      {
+        value: "session-2",
+        label: "session-2",
+        description: "2026-08-30T08:15:00.000Z  fix the build",
+      },
+    ],
+    currentValue: "session-1",
+    searchable: true,
+    searchPlaceholder: "Search sessions",
+    maxVisible: 20,
+  }]);
+  assert.deepEqual(calls, ["session-2"]);
+  assert.equal(sessionChanges, 1);
+  assert.deepEqual(noticeTexts(presenter), ["Resumed session session-2."]);
+});
+
+test("resume completes session ids with recent conversation details", () => {
+  const { commands } = createSessionCommandFixture({
+    presenter: new RecordingPresenter(),
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session-1.jsonl",
+      list: () => [
+        {
+          sessionId: "session-1",
+          updatedAt: "2026-08-31T15:30:00.000Z",
+          lastUserText: "current conversation",
+        },
+        {
+          sessionId: "session-2",
+          updatedAt: "2026-08-30T08:15:00.000Z",
+          lastUserText: "fix the build",
+        },
+      ],
+      createNew: async () => {},
+      resume: async () => {},
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => ({}),
+      resetContext: () => {},
+    },
+  });
+
+  assert.deepEqual(commands.registry.complete("/resume session-2", { state: "IDLE" }), [{
+    value: "session-2",
+    description: "2026-08-30T08:15:00.000Z  fix the build",
+    start: -9,
+  }]);
+  assert.deepEqual(
+    commands.registry.complete("/resume session-2 ", { state: "IDLE" }),
+    [],
+  );
+});
+
 test("clear appends a session context reset while trimming live model history", async () => {
   const presenter = new RecordingPresenter();
   const agent = new FakeAgent({ model: "deepseek-v4-flash" });
