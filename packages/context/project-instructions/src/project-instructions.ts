@@ -103,6 +103,21 @@ export class ProjectInstructionState {
     return this.records.get(displayPath);
   }
 
+  /** Stable recovery snapshot of all loaded instruction records. */
+  snapshot(): readonly InstructionFileRecord[] {
+    return [...this.records.values()];
+  }
+
+  static fromSnapshot(
+    records: readonly InstructionFileRecord[],
+  ): ProjectInstructionState {
+    const state = new ProjectInstructionState();
+    for (const record of records) {
+      state.record(record);
+    }
+    return state;
+  }
+
   get loadedPaths(): readonly string[] {
     return [...this.records.keys()];
   }

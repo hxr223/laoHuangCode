@@ -54,6 +54,12 @@ import { RepeatToolPolicy } from "./core/repeat-tool-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
 import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime } from "@laohuang/tools";
+import type {
+  AgentContextGovernor,
+} from "./core/agent-step-runner.ts";
+import type {
+  ConversationHistoryLike,
+} from "./core/history-committer.ts";
 
 /** Raised when the model response cannot drive the agent loop. */
 export class AgentError extends Error {
@@ -124,6 +130,8 @@ export interface CodingAgentOptions {
   projectRoot?: string | null;
   /** Startup cwd for project-instruction discovery. */
   startupCwd?: string | null;
+  conversationHistory?: ConversationHistoryLike | null;
+  contextGovernor?: AgentContextGovernor | null;
 }
 
 /** Execution context handed to every tool call in a batch. */
@@ -173,6 +181,8 @@ export class CodingAgent {
   private turn = 0;
   private activeContext: AgentRuntimeContext | null = null;
   private activeRequestId: string | null = null;
+  private readonly conversationHistory: ConversationHistoryLike | null;
+  private readonly contextGovernor: AgentContextGovernor | null;
 
   constructor(options: CodingAgentOptions) {
     this.repeatToolReminderThresholds = normalizeReminderThresholds(
@@ -186,6 +196,8 @@ export class CodingAgent {
     this.baseUrl = options.baseUrl ?? null;
     this.reasoningEffort = options.reasoningEffort ?? "high";
     this.adapter = options.modelAdapter;
+    this.conversationHistory = options.conversationHistory ?? null;
+    this.contextGovernor = options.contextGovernor ?? null;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
@@ -265,7 +277,9 @@ export class CodingAgent {
           context,
           cancelToken,
           createCancelled: (message) => new AgentCancelled(message),
+          conversationHistory: this.conversationHistory,
         }),
+        contextGovernor: this.contextGovernor,
         repeatToolPolicy: new RepeatToolPolicy(this.repeatToolReminderThresholds),
         userInput,
         context,
@@ -319,6 +333,11 @@ export class CodingAgent {
       return;
     }
     raiseIfCancelled(cancelToken);
+    this.conversationHistory?.appendUser({
+      message: { role: "user", content: baseline.rendered },
+      inputEventIds: [],
+      source: "direct",
+    });
     this.messages.push({ role: "user", content: baseline.rendered });
   }
 
@@ -358,6 +377,11 @@ export class CodingAgent {
     if (rendered === "") {
       return;
     }
+    this.conversationHistory?.appendUser({
+      message: { role: "user", content: rendered },
+      inputEventIds: [],
+      source: "direct",
+    });
     this.messages.push({ role: "user", content: rendered });
   }
 

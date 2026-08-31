@@ -116,6 +116,79 @@ test("slash commands and model arguments are completed", () => {
   assert.deepEqual(plainFound, []);
 });
 
+test("session lifecycle commands delegate to the session controller", async () => {
+  const presenter = new RecordingPresenter();
+  const calls: string[] = [];
+  const composerTexts: string[] = [];
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    onComposerText: (text) => { composerTexts.push(text); },
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session.jsonl",
+      list: () => [{ sessionId: "session-1", updatedAt: "2026-08-31T00:00:00.000Z" }],
+      resume: async (sessionId: string) => { calls.push(`resume:${sessionId}`); },
+      fork: async (entryId: string, mode: "before" | "at") => {
+        calls.push(`fork:${entryId}:${mode}`);
+        return { sessionId: "child", path: "/tmp/child.jsonl", editorText: "edit me" };
+      },
+      clone: async () => { calls.push("clone"); return { sessionId: "clone", path: "/tmp/clone.jsonl" }; },
+      compact: async () => { calls.push("compact"); return {}; },
+      resetContext: () => { calls.push("reset"); },
+    },
+  });
+
+  await commands.execute("/session");
+  await commands.execute("/sessions");
+  await commands.execute("/resume session-2");
+  await commands.execute("/fork entry-1 before");
+  await commands.execute("/clone");
+  await commands.execute("/compact");
+
+  assert.deepEqual(calls, [
+    "resume:session-2",
+    "fork:entry-1:before",
+    "clone",
+    "compact",
+  ]);
+  assert.deepEqual(composerTexts, ["edit me"]);
+  assert.deepEqual(noticeTexts(presenter), [
+    "Current session: session-1\nPath: /tmp/session.jsonl",
+    "session-1  2026-08-31T00:00:00.000Z",
+    "Resumed session session-2.",
+    "Forked session child.",
+    "Cloned session clone.",
+    "Compacted current session.",
+  ]);
+});
+
+test("clear appends a session context reset while trimming live model history", async () => {
+  const presenter = new RecordingPresenter();
+  const agent = new FakeAgent({ model: "deepseek-v4-flash" });
+  agent.messages.push({ role: "user", content: "old" });
+  const calls: string[] = [];
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    agent,
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session.jsonl",
+      list: () => [],
+      resume: async () => {},
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => ({}),
+      resetContext: () => { calls.push("reset"); },
+    },
+  });
+
+  await commands.execute("/clear");
+
+  assert.deepEqual(calls, ["reset"]);
+  assert.deepEqual(agent.messages, [{ role: "system", content: "system prompt" }]);
+  assert.deepEqual(noticeTexts(presenter), ["Conversation cleared."]);
+});
+
 test("running completion filters mutating commands", () => {
   const { commands } = createSessionCommandFixture({
     presenter: new RecordingPresenter(),

@@ -41,6 +41,10 @@ import {
   createWelcomeBlock,
   TranscriptStore,
 } from "../packages/terminal/tui/src/tui/transcript-store.ts";
+import {
+  projectTranscript,
+  type RestoredTranscriptItem,
+} from "@laohuang/session-store";
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
 import {
   PI_DARK,
@@ -1027,6 +1031,107 @@ test("two completed turns remain in history without tail truncation", () => {
   assert.ok(rendered.includes("second answer"));
 });
 
+test("terminal ui replaces transcript from restored session and continues live events", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const restored: readonly RestoredTranscriptItem[] = [
+    { kind: "user", text: "old question" },
+    { kind: "assistant", text: "old answer", reasoning: "old thinking" },
+    { kind: "tool", callId: "call-1", name: "bash", subject: "pwd", result: "ok", isError: false },
+    { kind: "notice", text: "torn tail ignored", tone: "warning" },
+  ];
+
+  ui.replaceTranscript(restored);
+  ui.applyProjectedEvent(event("model.text_delta", "new-response", { text: "new answer" }));
+  ui.applyProjectedEvent(event("model.response_committed", "new-response"));
+
+  const lines = ui.buildHistoryLines(80).join("\n");
+  assert.match(lines, /old question/);
+  assert.match(lines, /old answer/);
+  assert.match(lines, /old thinking/);
+  assert.match(lines, /bash/);
+  assert.match(lines, /torn tail ignored/);
+  assert.match(lines, /new answer/);
+});
+
+test("transcript projector restores user assistant tool and reset notices", () => {
+  const items = projectTranscript([
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 1,
+      id: "e1",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "user_message",
+      payload: {
+        message: { role: "user", content: "hello" },
+        inputEventIds: [],
+        source: "direct",
+      },
+    },
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 2,
+      id: "e2",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "assistant_message",
+      payload: {
+        message: {
+          role: "assistant",
+          provider: "pi-ai",
+          model: "gpt-test",
+          content: [
+            { type: "reasoning", text: "think" },
+            { type: "text", text: "answer" },
+            { type: "tool-call", call: { id: "call-1", name: "read", arguments: { path: "a.txt" } } },
+          ],
+        },
+        requestId: "request-1",
+        finishReason: "tool-calls",
+      },
+    },
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 3,
+      id: "e3",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "tool_result",
+      payload: {
+        message: {
+          role: "tool-result",
+          toolCallId: "call-1",
+          toolName: "read",
+          content: "file",
+          isError: false,
+        },
+        requestId: "request-1",
+        recovered: false,
+      },
+    },
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 4,
+      id: "e4",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "context_reset",
+      payload: { resetThroughSeq: 3, reason: "user_clear" },
+    },
+  ]);
+
+  assert.deepEqual(items, [
+    { kind: "user", text: "hello" },
+    { kind: "assistant", text: "answer", reasoning: "think" },
+    { kind: "tool", callId: "call-1", name: "read", subject: "call-1", result: "file", isError: false },
+    { kind: "notice", text: "Conversation context was cleared.", tone: "info" },
+  ]);
+});
+
 test("second request cannot mutate frozen first response", () => {
   const ui = new TerminalUI({ theme: "dark" });
   ui.applyProjectedEvent(event("model.text_delta", "r1", { text: "one" }));
@@ -1547,7 +1652,7 @@ test("interactive command component journey preserves scrollback and cursor", as
 
   await type("/");
   const slashCompletion = terminal.logicalLines.join("\n");
-  assert.ok(slashCompletion.includes("/help"), slashCompletion);
+  assert.ok(slashCompletion.includes("/apikey"), slashCompletion);
   await type("h");
   const shrunkCompletion = terminal.viewportLines.join("\n");
   assert.ok(shrunkCompletion.includes("/help"));

@@ -9,6 +9,19 @@ import type {
   QueueStatusViewModel,
 } from "./components/views/contracts.ts";
 
+export type RestoredTranscriptItemLike =
+  | { readonly kind: "user"; readonly text: string }
+  | { readonly kind: "assistant"; readonly text: string; readonly reasoning?: string }
+  | {
+      readonly kind: "tool";
+      readonly callId: string;
+      readonly name: string;
+      readonly subject: string;
+      readonly result: string;
+      readonly isError: boolean;
+    }
+  | { readonly kind: "notice"; readonly text: string; readonly tone: "info" | "warning" | "error" };
+
 interface BaseTranscriptBlock {
   readonly key: string;
   mutable: boolean;
@@ -214,6 +227,35 @@ export class TranscriptStore {
   append(block: TranscriptBlock): void {
     this.#blocks.push(block);
     if (block.key) this.#byCorrelation.set(`${block.kind}:${block.key}`, block);
+  }
+
+  replace(items: readonly RestoredTranscriptItemLike[]): void {
+    this.#blocks.splice(0);
+    this.#byCorrelation.clear();
+    this.#nextBlockId = 0;
+    for (const item of items) {
+      if (item.kind === "user") {
+        this.append(createUserBlock(this.newBlockId(), item.text));
+      } else if (item.kind === "assistant") {
+        if (item.reasoning !== undefined && item.reasoning !== "") {
+          this.append(createThinkingBlock(this.newBlockId(), item.reasoning, false));
+        }
+        this.append(createAssistantBlock(this.newBlockId(), item.text, false));
+      } else if (item.kind === "tool") {
+        const block = createToolBlock(item.callId, {
+          name: item.name,
+          subject: item.subject,
+          status: item.isError ? "failed" : "completed",
+          expanded: this.#toolOutputExpanded,
+        });
+        block.stdout = item.isError ? "" : item.result;
+        block.stderr = item.isError ? item.result : "";
+        block.mutable = false;
+        this.append(block);
+      } else {
+        this.append(createNoticeBlock(this.newBlockId(), item.text, item.tone));
+      }
+    }
   }
 
   blockFor(kind: string, key: string): TranscriptBlock {
