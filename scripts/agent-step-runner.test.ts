@@ -91,6 +91,14 @@ function createRunner(options: {
   messages: ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   adapter: ModelAdapter;
   context?: AgentStepRunnerContext | null;
+  contextGovernor?: {
+    prepare(input: {
+      messages: readonly ModelRequest["messages"][number][];
+      tools: readonly unknown[];
+      provider: string;
+      model: string;
+    }): Promise<{ messages: readonly ModelRequest["messages"][number][] }>;
+  } | null;
   executeTool?: () => Promise<ToolResult>;
   getReasoningEffort?: () => ReasoningEffort;
 }): AgentStepRunner {
@@ -116,6 +124,7 @@ function createRunner(options: {
     toolDefinitions: [],
     toolExecution: "parallel",
     history: committer,
+    contextGovernor: options.contextGovernor ?? null,
     repeatToolPolicy: new RepeatToolPolicy([3, 5, 8]),
     userInput: "first user message",
     context,
@@ -152,6 +161,30 @@ test("commits the user message through the context before requesting the model",
   assert.deepEqual(adapter.requests[0]?.messages.map((message) => message.role), [
     "system",
     "user",
+  ]);
+});
+
+test("prepares every model request through the context governor", async () => {
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
+  const adapter = new StubAdapter([finalResult("complete")]);
+  let sawCommittedInput = false;
+  const runner = createRunner({
+    messages,
+    adapter,
+    contextGovernor: {
+      async prepare(input) {
+        sawCommittedInput = input.messages.some(
+          (message) => message.role === "user" && message.content === "first user message",
+        );
+        return { messages: [{ role: "user", content: "governed context" }] };
+      },
+    },
+  });
+
+  assert.equal(await runner.run(), "complete");
+  assert.equal(sawCommittedInput, true);
+  assert.deepEqual(adapter.requests[0]?.messages, [
+    { role: "user", content: "governed context" },
   ]);
 });
 

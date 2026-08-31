@@ -5,6 +5,7 @@ export class CliUsageError extends Error {}
 export const USAGE =
   "usage: laohuang [--version] [--profile PROFILE] [--model MODEL] " +
   "[--base-url BASE_URL] [--theme {auto,dark,light}] " +
+  "[--continue | --resume SESSION_ID] " +
   "[config ...] [doctor]";
 
 export const HELP = `${USAGE}
@@ -18,6 +19,8 @@ options:
   --model MODEL      model override for this session
   --base-url URL     API base URL override for this session
   --theme THEME      interactive terminal theme: auto, dark, light (default: auto)
+  --continue         resume the latest session for this project
+  --resume ID        resume a specific session id
 
 subcommands:
   config [set|list|use] [target] [--profile P] [--provider P] [--model M] [--base-url U]
@@ -35,6 +38,8 @@ export interface ParsedArguments {
   provider: string | null;
   configModel: string | null;
   configBaseUrl: string | null;
+  continueSession: boolean;
+  resumeSessionId: string | null;
 }
 
 export type ParseResult =
@@ -65,6 +70,8 @@ export function parseArgs(argv: readonly string[]): ParseResult {
     provider: null,
     configModel: null,
     configBaseUrl: null,
+    continueSession: false,
+    resumeSessionId: null,
   };
   let index = 0;
   const takeValue = (option: string, inline: string | undefined): string => {
@@ -112,9 +119,18 @@ export function parseArgs(argv: readonly string[]): ParseResult {
         args.theme = theme;
         break;
       }
+      case "--continue":
+        args.continueSession = true;
+        break;
+      case "--resume":
+        args.resumeSessionId = takeValue(name, inline);
+        break;
       default:
         throw new CliUsageError(`unrecognized arguments: ${token}`);
     }
+  }
+  if (args.continueSession && args.resumeSessionId !== null) {
+    throw new CliUsageError("--continue and --resume cannot be used together");
   }
 
   if (args.command === "config") {

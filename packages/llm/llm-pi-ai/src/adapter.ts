@@ -70,6 +70,7 @@ export class PiAiAdapter implements ModelAdapter {
     const options: ModelsSimpleStreamOptions = {
       ...(request.cancelToken === undefined ? {} : { signal: request.cancelToken.signal }),
       ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+      ...(request.maxOutputTokens === undefined ? {} : { maxTokens: request.maxOutputTokens }),
       ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
       ...thinkingOption(model, request.reasoningEffort ?? "high"),
       maxRetries: 0,

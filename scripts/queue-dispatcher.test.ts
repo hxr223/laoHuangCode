@@ -16,7 +16,7 @@ import {
   TaskState,
   type RoutedEvent,
   type TaskState as TaskStateValue,
-} from "../packages/core/session-runtime/src/index.ts";
+} from "../packages/session/session-runtime/src/index.ts";
 import type { SessionAction } from "../packages/core/runtime-protocol/src/index.ts";
 
 function action(

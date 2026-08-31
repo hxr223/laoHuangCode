@@ -5,7 +5,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CodingAgent } from "@laohuang/agent-runtime";
-import { ModelRuntime, type ModelCatalog } from "@laohuang/llm";
+import { ModelRuntime, type ModelCatalog, type ModelMessage } from "@laohuang/llm";
+import {
+  COMPACTION_SYSTEM_PROMPT,
+  ContextBuilder,
+  ContextGovernor,
+  type ConversationHistory,
+} from "@laohuang/session-context";
+import { projectTranscript } from "@laohuang/session-store";
 import { createPiAiPlatform } from "@laohuang/llm-pi-ai";
 import {
   ConfigManager,
@@ -19,7 +26,7 @@ import {
   makeCancelIntent,
 } from "@laohuang/runtime-protocol";
 import { findProjectRoot } from "@laohuang/project-instructions";
-import { AgentSession, routeHumanIntent } from "@laohuang/session-runtime";
+import { AgentSession, SessionRecorder, routeHumanIntent } from "@laohuang/session-runtime";
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
 import { ToolRegistry } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
@@ -57,6 +64,7 @@ import {
   parseArgs,
   type ParseResult,
 } from "./args.ts";
+import { SessionController } from "./session-controller.ts";
 import {
   defaultInputFn,
   defaultSecretInputFn,
@@ -326,7 +334,28 @@ export async function main(
   // provider/model are read-only in TS.
   let terminalUi: TerminalUI | null = null;
   let terminalDriver: StdTerminalDriver | null = null;
-  const selectedModel = modelPlatform.catalog.getModel(config.provider, config.model);
+  let selectedModel = modelPlatform.catalog.getModel(config.provider, config.model);
+  const sessionController = new SessionController({
+    sessionsRoot: defaultSessionsRoot(environ),
+    projectRoot,
+    initialCwd: process.cwd(),
+    appVersion: VERSION,
+    provider: config.provider,
+    model: config.model,
+    reasoningEffort: "high",
+  });
+  try {
+    if (args.resumeSessionId !== null) {
+      await sessionController.resume(args.resumeSessionId);
+    } else if (args.continueSession) {
+      await sessionController.continueLatest();
+    } else {
+      await sessionController.createNew();
+    }
+  } catch (error) {
+    writeStderr(`Session error: ${errorMessage(error)}`);
+    return 2;
+  }
   if (interactive) {
     terminalDriver = new StdTerminalDriver();
     terminalUi = new TerminalUI({
@@ -342,19 +371,146 @@ export async function main(
     terminalUi.state.model = config.model;
   }
 
+  const toolRegistry = new ToolRegistry([
+    ...createFileToolDefinitions({ projectRoot }),
+    createBashToolDefinition({ projectRoot }),
+  ]);
+  const activeConversationHistory = {
+    appendUser: (input: Parameters<ConversationHistory["appendUser"]>[0]) => {
+      const activeHistory = sessionController.history;
+      if (activeHistory === null) throw new Error("no active session");
+      return activeHistory.appendUser(input);
+    },
+    appendAssistant: (input: Parameters<ConversationHistory["appendAssistant"]>[0]) => {
+      const activeHistory = sessionController.history;
+      if (activeHistory === null) throw new Error("no active session");
+      return activeHistory.appendAssistant(input);
+    },
+    appendToolResults: (input: Parameters<ConversationHistory["appendToolResults"]>[0]) => {
+      const activeHistory = sessionController.history;
+      if (activeHistory === null) throw new Error("no active session");
+      return activeHistory.appendToolResults(input);
+    },
+    appendReminder: (input: Parameters<ConversationHistory["appendReminder"]>[0]) => {
+      const activeHistory = sessionController.history;
+      if (activeHistory === null) throw new Error("no active session");
+      return activeHistory.appendReminder(input);
+    },
+  };
+  const createContextGovernor = (history: ConversationHistory): ContextGovernor => {
+    const modelInfo = selectedModel;
+    if (modelInfo === undefined) {
+      throw new Error("selected model metadata is unavailable");
+    }
+    return new ContextGovernor({
+      appendCompaction: (payload) => history.appendCompaction(payload),
+      summarize: async ({ serialized, maxSummaryTokens }) => {
+        const summary = await modelRuntime.complete({
+          provider: config.provider,
+          model: config.model,
+          ...(config.baseUrl === null ? {} : { baseUrl: config.baseUrl }),
+          messages: [
+            { role: "system", content: COMPACTION_SYSTEM_PROMPT },
+            { role: "user", content: serialized },
+          ],
+          tools: [],
+          reasoningEffort: "off",
+          temperature: 0,
+          maxOutputTokens: Math.min(maxSummaryTokens, modelInfo.maxTokens),
+          maxAttempts: 1,
+        });
+        return {
+          summary: summary.message.content
+            .filter((block) => block.type === "text")
+            .map((block) => block.text)
+            .join(""),
+          inputTokens: summary.usage.inputTokens,
+          outputTokens: summary.usage.outputTokens,
+        };
+      },
+    });
+  };
   const agent = new CodingAgent({
     modelAdapter: modelPlatform.adapter,
     model: config.model,
-    tools: new ToolRegistry([
-      ...createFileToolDefinitions({ projectRoot }),
-      createBashToolDefinition({ projectRoot }),
-    ]),
+    tools: toolRegistry,
     cliName: "laohuang",
     cliVersion: VERSION,
     provider: config.provider,
     baseUrl: config.baseUrl,
     projectRoot: instructionRoot,
     startupCwd: process.cwd(),
+    conversationHistory: activeConversationHistory,
+    contextGovernor: selectedModel === undefined || sessionController.history === null
+      ? null
+      : {
+          prepare: async ({ tools }): Promise<{ readonly messages: readonly ModelMessage[] }> => {
+            const history = sessionController.history;
+            if (history === null || selectedModel === undefined) {
+              return { messages: [] };
+            }
+            const governor = createContextGovernor(history);
+            const prepared = await governor.prepare({
+              entries: history.entries(),
+              currentProvider: config.provider,
+              currentModel: config.model,
+              tools,
+              budget: {
+                contextWindow: selectedModel.contextWindow,
+                maxOutputTokens: selectedModel.maxTokens,
+              },
+              policy: defaultContextPolicy(),
+            });
+            return { messages: prepared.messages };
+          },
+        },
+  });
+  const history = sessionController.history;
+  if (history !== null) {
+    if (history.entries().length === 0) {
+      const system = agent.messages.find((message: ModelMessage) => message.role === "system");
+      if (system !== undefined) {
+        history.appendSystemContext({
+          message: system,
+          cwd: process.cwd(),
+        });
+      }
+    } else {
+      agent.messages = [...new ContextBuilder().build({
+        entries: history.entries(),
+        currentProvider: config.provider,
+        currentModel: config.model,
+      }).messages];
+      terminalUi?.replaceTranscript(projectTranscript(history.entries()));
+    }
+  }
+  sessionController.setCompactor(async () => {
+    const activeHistory = sessionController.history;
+    if (activeHistory === null) {
+      throw new Error("no active session");
+    }
+    if (selectedModel === undefined) {
+      throw new Error("selected model metadata is unavailable");
+    }
+    const result = await createContextGovernor(activeHistory).compact({
+      entries: activeHistory.entries(),
+      currentProvider: config.provider,
+      currentModel: config.model,
+      tools: toolRegistry.definitions,
+      budget: {
+        contextWindow: selectedModel.contextWindow,
+        maxOutputTokens: selectedModel.maxTokens,
+      },
+      policy: defaultContextPolicy(),
+      trigger: "manual",
+    });
+    agent.messages = [...new ContextBuilder().build({
+      entries: activeHistory.entries(),
+      currentProvider: config.provider,
+      currentModel: config.model,
+    }).messages];
+    terminalUi?.replaceTranscript(projectTranscript(activeHistory.entries()));
+    return result;
   });
   const semanticClassifier = new SmallModelSemanticClassifier({
     modelRuntime,
@@ -368,9 +524,14 @@ export async function main(
   // the app can hand the worker to the session directly.
   let commandDispatcher: CommandHandler | undefined;
   const runtime = new AgentSession(agent, {
+    sessionId: sessionController.currentSessionId ?? undefined,
     semanticClassifier,
     commandDispatcher: (command) =>
       commandDispatcher?.(command) ?? { status: "not_found", command },
+  });
+  const sessionRecorder = new SessionRecorder({
+    eventBus: runtime.eventBus,
+    journal: () => sessionController.currentJournal,
   });
   terminalUi?.setSessionId(runtime.sessionId);
   const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
@@ -408,6 +569,37 @@ export async function main(
       })
     : new TerminalCommandPresenter(terminalUi);
 
+  const refreshSessionView = (): void => {
+    const currentSessionId = sessionController.currentSessionId;
+    if (currentSessionId !== null) {
+      runtime.setSessionId(currentSessionId);
+      terminalUi?.setSessionId(currentSessionId);
+    }
+    const activeHistory = sessionController.history;
+    if (activeHistory === null) {
+      return;
+    }
+    const entries = activeHistory.entries();
+    if (entries.length === 0) {
+      const system = agent.messages.find((message: ModelMessage) => message.role === "system");
+      if (system !== undefined) {
+        activeHistory.appendSystemContext({
+          message: system,
+          cwd: process.cwd(),
+        });
+        agent.messages = [system];
+      }
+      terminalUi?.replaceTranscript([]);
+      return;
+    }
+    agent.messages = [...new ContextBuilder().build({
+      entries,
+      currentProvider: config.provider,
+      currentModel: config.model,
+    }).messages];
+    terminalUi?.replaceTranscript(projectTranscript(entries));
+  };
+
   const commands = new SessionCommands({
     agent,
     selector,
@@ -420,17 +612,27 @@ export async function main(
     providerAuth,
     presenter: commandPresenter,
     session: runtime,
+    sessionController,
+    onComposerText: (text) => terminalUi?.setComposerText(text),
+    onSessionChanged: refreshSessionView,
     onModelSelected: (selection) => {
       semanticClassifier.configure({
         provider: selection.config.provider,
         model: selection.config.model,
         baseUrl: selection.config.baseUrl,
       });
+      config = {
+        ...config,
+        provider: selection.config.provider,
+        model: selection.config.model,
+        baseUrl: selection.config.baseUrl,
+      };
+      selectedModel = modelPlatform.catalog.getModel(
+        selection.config.provider,
+        selection.config.model,
+      );
       if (terminalUi !== null) {
-        const model = modelPlatform.catalog.getModel(
-          selection.config.provider,
-          selection.config.model,
-        );
+        const model = selectedModel;
         terminalUi.state.provider = selection.config.provider;
         terminalUi.state.model = selection.config.model;
         terminalUi.setRuntimeCapabilities({ reasoning: model?.reasoning ?? false });
@@ -506,8 +708,24 @@ export async function main(
     for (const unsubscribe of unsubscribers) {
       unsubscribe();
     }
+    await sessionRecorder.close();
+    await sessionController.close();
   }
   return cleanShutdown ? 0 : 1;
+}
+
+function defaultSessionsRoot(environ: Record<string, string | undefined>): string {
+  return join(environ["HOME"] ?? process.cwd(), ".laohuang", "sessions");
+}
+
+function defaultContextPolicy() {
+  return {
+    auto: true,
+    thresholdRatio: 0.8,
+    retainRatio: 0.16,
+    maxSummaryTokens: 8192,
+    safetyRatio: 0.05,
+  } as const;
 }
 
 export async function runInitialModelSelection(options: {

@@ -3,8 +3,10 @@
   "references": [
     { "path": "./packages/core/runtime-protocol" },
     { "path": "./packages/core/tools" },
+    { "path": "./packages/session/session-store" },
+    { "path": "./packages/session/session-context" },
     { "path": "./packages/core/agent-runtime" },
-    { "path": "./packages/core/session-runtime" },
+    { "path": "./packages/session/session-runtime" },
     { "path": "./packages/terminal/tui" },
     { "path": "./packages/fs/tool-fs" },
     { "path": "./packages/shell/bash-local" },

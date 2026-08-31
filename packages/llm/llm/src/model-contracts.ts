@@ -172,6 +172,7 @@ export interface ModelRequest {
   readonly tools: readonly ToolSpec[];
   readonly reasoningEffort?: ReasoningEffort;
   readonly temperature?: number;
+  readonly maxOutputTokens?: number;
   readonly timeoutMs?: number;
   readonly requestId?: string;
   readonly cancelToken?: CancelToken;
