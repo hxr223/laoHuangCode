@@ -230,6 +230,21 @@ test("model selector filters and returns the highlighted model", () => {
   assert.deepEqual(selections, ["anthropic/claude-sonnet"]);
 });
 
+test("searchable selectors render their requested search placeholder", () => {
+  const view = new ModelSelectorView({
+    title: "Sessions",
+    searchPlaceholder: "Search sessions",
+    items: [{ value: "session-1", label: "session-1" }],
+    onSelect: () => {},
+    onCancel: () => {},
+  });
+
+  const text = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+
+  assert.ok(text.includes("Search sessions"));
+  assert.equal(text.includes("Search models"), false);
+});
+
 test("model selector renders its empty filter state", () => {
   const view = new ModelSelectorView({
     title: "Models",
