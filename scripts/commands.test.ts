@@ -120,13 +120,16 @@ test("session lifecycle commands delegate to the session controller", async () =
   const presenter = new RecordingPresenter();
   const calls: string[] = [];
   const composerTexts: string[] = [];
+  let sessionChanges = 0;
   const { commands } = createSessionCommandFixture({
     presenter,
     onComposerText: (text) => { composerTexts.push(text); },
+    onSessionChanged: () => { sessionChanges += 1; },
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
       list: () => [{ sessionId: "session-1", updatedAt: "2026-08-31T00:00:00.000Z" }],
+      createNew: async () => { calls.push("new"); },
       resume: async (sessionId: string) => { calls.push(`resume:${sessionId}`); },
       fork: async (entryId: string, mode: "before" | "at") => {
         calls.push(`fork:${entryId}:${mode}`);
@@ -140,12 +143,14 @@ test("session lifecycle commands delegate to the session controller", async () =
 
   await commands.execute("/session");
   await commands.execute("/sessions");
+  await commands.execute("/new");
   await commands.execute("/resume session-2");
   await commands.execute("/fork entry-1 before");
   await commands.execute("/clone");
   await commands.execute("/compact");
 
   assert.deepEqual(calls, [
+    "new",
     "resume:session-2",
     "fork:entry-1:before",
     "clone",
@@ -155,11 +160,13 @@ test("session lifecycle commands delegate to the session controller", async () =
   assert.deepEqual(noticeTexts(presenter), [
     "Current session: session-1\nPath: /tmp/session.jsonl",
     "session-1  2026-08-31T00:00:00.000Z",
+    "Created session session-1.",
     "Resumed session session-2.",
     "Forked session child.",
     "Cloned session clone.",
     "Compacted current session.",
   ]);
+  assert.equal(sessionChanges, 5);
 });
 
 test("clear appends a session context reset while trimming live model history", async () => {
@@ -174,6 +181,7 @@ test("clear appends a session context reset while trimming live model history", 
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
       list: () => [],
+      createNew: async () => {},
       resume: async () => {},
       fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
       clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),

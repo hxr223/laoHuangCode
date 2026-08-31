@@ -577,12 +577,25 @@ export async function main(
     if (activeHistory === null) {
       return;
     }
+    const entries = activeHistory.entries();
+    if (entries.length === 0) {
+      const system = agent.messages.find((message: ModelMessage) => message.role === "system");
+      if (system !== undefined) {
+        activeHistory.appendSystemContext({
+          message: system,
+          cwd: process.cwd(),
+        });
+        agent.messages = [system];
+      }
+      terminalUi?.replaceTranscript([]);
+      return;
+    }
     agent.messages = [...new ContextBuilder().build({
-      entries: activeHistory.entries(),
+      entries,
       currentProvider: config.provider,
       currentModel: config.model,
     }).messages];
-    terminalUi?.replaceTranscript(projectTranscript(activeHistory.entries()));
+    terminalUi?.replaceTranscript(projectTranscript(entries));
   };
 
   const commands = new SessionCommands({
