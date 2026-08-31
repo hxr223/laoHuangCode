@@ -202,6 +202,9 @@ export interface SessionCommandFixtureOptions {
   readonly ambientSources?: ReadonlyMap<string, string>;
   readonly agent?: FakeAgent;
   readonly session?: SessionLike | null;
+  readonly sessionController?: ConstructorParameters<typeof SessionCommands>[0]["sessionController"];
+  readonly onComposerText?: ConstructorParameters<typeof SessionCommands>[0]["onComposerText"];
+  readonly onSessionChanged?: ConstructorParameters<typeof SessionCommands>[0]["onSessionChanged"];
 }
 
 export interface SessionCommandFixture {
@@ -236,6 +239,9 @@ export function createSessionCommandFixture(
     },
     presenter: options.presenter,
     session: options.session ?? null,
+    sessionController: options.sessionController,
+    onComposerText: options.onComposerText,
+    onSessionChanged: options.onSessionChanged,
   });
   return { commands, agent, auth, catalog };
 }

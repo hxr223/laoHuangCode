@@ -22,6 +22,7 @@ export interface ModelRuntimeRequest {
   readonly tools: readonly ToolSpec[];
   readonly reasoningEffort?: ReasoningEffort;
   readonly temperature?: number;
+  readonly maxOutputTokens?: number;
   readonly timeoutMs?: number;
   readonly maxAttempts?: number;
   readonly requestId?: string;
@@ -72,6 +73,9 @@ export class ModelRuntime {
           ? {}
           : { reasoningEffort: request.reasoningEffort }),
         ...(request.temperature === undefined ? {} : { temperature: request.temperature }),
+        ...(request.maxOutputTokens === undefined
+          ? {}
+          : { maxOutputTokens: request.maxOutputTokens }),
         ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
         ...(request.requestId === undefined ? {} : { requestId: request.requestId }),
         ...(request.cancelToken == null ? {} : { cancelToken: request.cancelToken }),

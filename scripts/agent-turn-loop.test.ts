@@ -7,7 +7,7 @@ import {
   type AgentTurnContext,
   TaskLifecycle,
   TaskState,
-} from "../packages/core/session-runtime/src/index.ts";
+} from "../packages/session/session-runtime/src/index.ts";
 import type {
   QueueBridge,
   QueueInputBatch,
