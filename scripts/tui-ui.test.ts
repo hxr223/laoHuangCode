@@ -256,11 +256,11 @@ function expectedStructuredStyleSnapshots(width: number): SemanticSnapshot[] {
     [[{ text: "thinking  inspect", style: { foreground: "thinking", italic: true } }]],
     [
       [
-        { text: "● bash", style: { foreground: "success", background: "tool_success_bg" } },
-        { text: "$ echo hello", style: { foreground: "bash", background: "tool_success_bg" } },
+        { text: "● bash", style: { foreground: "success" } },
+        { text: "$ echo hello", style: { foreground: "bash" } },
       ],
-      [{ text: "completed · exit 0 · 12ms", style: { background: "tool_success_bg" } }],
-      [{ text: "hello", style: { background: "tool_success_bg" } }],
+      [{ text: "completed · exit 0 · 12ms" }],
+      [{ text: "hello" }],
     ],
   ];
 }
@@ -1159,7 +1159,7 @@ test("raw frame preserves non-markdown block styles", () => {
   const rendered = ui.buildHistoryLines(80).join("\n");
 
   assert.ok(rendered.includes("\x1b[3;38;2;128;128;128mthinking  plan"));
-  assert.ok(rendered.includes("\x1b[48;2;40;40;50m"));
+  assert.ok(!rendered.includes("\x1b[48;2;40;40;50m"));
   assert.ok(rendered.includes("● bash"));
 });
 
@@ -2140,7 +2140,8 @@ test("single renderer renders assistant markdown", () => {
   assert.ok(!rendered.includes("**"));
   assert.ok(!rendered.includes("`"));
   assert.ok(lines.some((line) => line.includes("\x1b[1m") && line.includes("加粗")));
-  assert.ok(lines.some((line) => line.includes("48;2") && line.includes("代码")));
+  assert.ok(lines.some((line) => line.includes("38;2") && line.includes("代码")));
+  assert.ok(!lines.some((line) => line.includes("48;2") && line.includes("代码")));
 });
 
 test("assistant response is rendered as markdown without chat prefix", () => {

@@ -434,6 +434,8 @@ export async function main(
     modelAdapter: modelPlatform.adapter,
     model: config.model,
     tools: toolRegistry,
+    cliName: "laohuang",
+    cliVersion: VERSION,
     provider: config.provider,
     baseUrl: config.baseUrl,
     projectRoot: instructionRoot,
