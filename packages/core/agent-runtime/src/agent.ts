@@ -119,6 +119,8 @@ export interface CodingAgentOptions {
   repeatToolReminderThresholds?: readonly number[];
   onToolEvent?: ToolEventCallback | null;
   onAgentEvent?: AgentEventCallback | null;
+  cliName?: string | null;
+  cliVersion?: string | null;
   provider: string;
   baseUrl?: string | null;
   reasoningEffort?: ReasoningEffort;
@@ -174,6 +176,8 @@ export class CodingAgent {
   messages: ModelMessage[];
   private readonly onToolEvent: ToolEventCallback | null;
   private readonly onAgentEvent: AgentEventCallback | null;
+  private readonly cliName: string | null;
+  private readonly cliVersion: string | null;
   private readonly instructionRoot: string | null;
   private readonly startupCwd: string | null;
   private baselineInstructionsLoaded = false;
@@ -192,6 +196,8 @@ export class CodingAgent {
     this.tools = options.tools;
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
+    this.cliName = options.cliName ?? null;
+    this.cliVersion = options.cliVersion ?? null;
     this.provider = options.provider;
     this.baseUrl = options.baseUrl ?? null;
     this.reasoningEffort = options.reasoningEffort ?? "high";
@@ -213,7 +219,7 @@ export class CodingAgent {
     this.messages = [
       {
         role: "system",
-        content: buildSystemPrompt(this.tools, { promptCwd: this.startupCwd }),
+        content: this.buildSystemPrompt(),
       },
     ];
   }
@@ -243,6 +249,7 @@ export class CodingAgent {
     this.provider = options.provider;
     this.model = options.model;
     this.baseUrl = options.baseUrl;
+    this.refreshSystemPrompt();
     this.emit("model_switched", {
       provider: options.provider,
       model: options.model,
@@ -383,6 +390,27 @@ export class CodingAgent {
       source: "direct",
     });
     this.messages.push({ role: "user", content: rendered });
+  }
+
+  private buildSystemPrompt(): string {
+    return buildSystemPrompt(this.tools, {
+      cliName: this.cliName,
+      cliVersion: this.cliVersion,
+      provider: this.provider,
+      model: this.model,
+      promptCwd: this.startupCwd,
+    });
+  }
+
+  private refreshSystemPrompt(): void {
+    const first = this.messages[0];
+    if (first?.role !== "system") {
+      return;
+    }
+    this.messages[0] = {
+      role: "system",
+      content: this.buildSystemPrompt(),
+    };
   }
 
 
