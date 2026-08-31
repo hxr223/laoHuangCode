@@ -15,7 +15,7 @@ import type {
 import { buildSystemPrompt } from "../packages/core/agent-runtime/src/system-prompt.ts";
 import { createTestToolRegistry } from "./test-tool-registry.ts";
 
-const EXPECTED_PROMPT = `You are laoHuangCode, a coding agent.
+const EXPECTED_PROMPT = `You are a coding agent operating inside LaoHuang, the laohuang CLI harness.
 
 General guidelines:
 - Follow direct user instructions. Project instructions may provide additional guidance.
@@ -58,14 +58,39 @@ test("built prompt matches the stable snapshot", async (t) => {
   assert.equal(buildSystemPrompt(tools), EXPECTED_PROMPT);
 });
 
-test("built prompt can include the startup working directory", async (t) => {
+test("built prompt can include runtime facts", async (t) => {
   const tools = createTestToolRegistry(await makeTempDir(t));
   const promptCwd = "/tmp/laohuang-project";
 
   assert.equal(
-    buildSystemPrompt(tools, { promptCwd }),
-    `${EXPECTED_PROMPT}\n\nCurrent working directory: ${promptCwd}`,
+    buildSystemPrompt(tools, {
+      cliName: "laohuang",
+      cliVersion: "0.7.0",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      promptCwd,
+    }),
+    `${EXPECTED_PROMPT}\n\nRuntime facts:\n- CLI: laohuang\n- CLI version: 0.7.0\n- Provider/model: deepseek/deepseek-v4-flash\n- Current working directory: ${promptCwd}`,
   );
+});
+
+test("built prompt omits missing runtime facts", async (t) => {
+  const tools = createTestToolRegistry(await makeTempDir(t));
+
+  const prompt = buildSystemPrompt(tools, {
+    cliName: "laohuang",
+    cliVersion: null,
+    provider: "deepseek",
+    model: null,
+    promptCwd: null,
+  });
+
+  assert.ok(prompt.includes("\n\nRuntime facts:\n- CLI: laohuang"));
+  assert.ok(!prompt.includes("CLI version:"));
+  assert.ok(!prompt.includes("Provider/model:"));
+  assert.ok(!prompt.includes("Current working directory:"));
+  assert.ok(!prompt.includes("undefined"));
+  assert.ok(!prompt.includes("null"));
 });
 
 test("tool sections appear in the fixed read/write/edit/bash order", async (t) => {
@@ -140,11 +165,67 @@ test("agent history starts with the built system prompt", async (t) => {
     provider: "openai",
     baseUrl: null,
     tools,
+    cliName: "laohuang",
+    cliVersion: "9.8.7",
     startupCwd: cwd,
   });
 
   assert.deepEqual(agent.messages[0], {
     role: "system",
-    content: buildSystemPrompt(tools, { promptCwd: realCwd }),
+    content: buildSystemPrompt(tools, {
+      cliName: "laohuang",
+      cliVersion: "9.8.7",
+      provider: "openai",
+      model: "test-model",
+      promptCwd: realCwd,
+    }),
+  });
+});
+
+test("agent refreshes model runtime facts after model switch", async (t) => {
+  const cwd = await makeTempDir(t);
+  const realCwd = await fs.realpath(cwd);
+  const tools = createTestToolRegistry(cwd);
+  const modelAdapter: ModelAdapter = {
+    name: "test",
+    runAttempt(_request: ModelRequest): Promise<ModelResult> {
+      throw new Error("not used");
+    },
+    listProviders(): readonly ModelProviderInfo[] {
+      return [{ id: "deepseek", name: "DeepSeek" }];
+    },
+    listModels(provider: string): readonly ModelInfo[] {
+      return [{ provider, id: "deepseek-v4-pro", name: "DeepSeek V4 Pro" }];
+    },
+  };
+  const agent = new CodingAgent({
+    modelAdapter,
+    model: "deepseek-v4-flash",
+    provider: "deepseek",
+    baseUrl: null,
+    tools,
+    cliName: "laohuang",
+    cliVersion: "0.7.0",
+    startupCwd: cwd,
+  });
+
+  agent.switchModel({
+    provider: "deepseek",
+    model: "deepseek-v4-pro",
+    baseUrl: null,
+  });
+
+  assert.equal(agent.messages[0]?.role, "system");
+  assert.match(agent.messages[0].content, /deepseek\/deepseek-v4-pro/);
+  assert.doesNotMatch(agent.messages[0].content, /deepseek-v4-flash/);
+  assert.deepEqual(agent.messages[0], {
+    role: "system",
+    content: buildSystemPrompt(tools, {
+      cliName: "laohuang",
+      cliVersion: "0.7.0",
+      provider: "deepseek",
+      model: "deepseek-v4-pro",
+      promptCwd: realCwd,
+    }),
   });
 });

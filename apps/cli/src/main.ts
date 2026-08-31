@@ -349,6 +349,8 @@ export async function main(
       ...createFileToolDefinitions({ projectRoot }),
       createBashToolDefinition({ projectRoot }),
     ]),
+    cliName: "laohuang",
+    cliVersion: VERSION,
     provider: config.provider,
     baseUrl: config.baseUrl,
     projectRoot: instructionRoot,
