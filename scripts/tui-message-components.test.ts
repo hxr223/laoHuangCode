@@ -111,17 +111,15 @@ function expectedSnapshots(width: number): Snapshot[] {
     ]],
     [
       [
-        { text: "● bash", style: { foreground: "success", background: "tool_success_bg" } },
-        { text: "  $ echo hello", style: { foreground: "bash", background: "tool_success_bg" } },
-        { text: " ".repeat(width - 20), style: { background: "tool_success_bg" } },
+        { text: "● bash", style: { foreground: "success" } },
+        { text: "  $ echo hello", style: { foreground: "bash" } },
+        { text: " ".repeat(width - 20) },
       ],
       [
-        { text: "completed · exit 0 · 12ms", style: { background: "tool_success_bg" } },
-        { text: " ".repeat(width - 25), style: { background: "tool_success_bg" } },
+        { text: `completed · exit 0 · 12ms${" ".repeat(width - 25)}` },
       ],
       [
-        { text: "hello", style: { background: "tool_success_bg" } },
-        { text: " ".repeat(width - 5), style: { background: "tool_success_bg" } },
+        { text: `hello${" ".repeat(width - 5)}` },
       ],
     ],
     [[
@@ -197,6 +195,7 @@ test("markdown uses semantic spans and leaves ordinary body text uncolored", () 
 
   assert.ok(spans.some((item) => item.style?.foreground === "heading"));
   assert.ok(spans.some((item) => item.style?.foreground === "code"));
+  assert.ok(spans.every((item) => item.style?.background === undefined));
   assert.ok(spans.some((item) => item.style?.foreground === "link"));
   assert.ok(spans.some((item) => item.text.includes("and") && item.style?.foreground === undefined));
 });
