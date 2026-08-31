@@ -26,6 +26,19 @@ test("markdown lines fit requested visible width", () => {
   assert.ok(lines.every((line) => visibleWidth(line) <= 12));
 });
 
+test("markdown code spans use foreground color without terminal background", () => {
+  const styled = renderMarkdownStyledLines(
+    "`read` and\n\n```bash\nnpm test\n```",
+    40,
+  ).flatMap((line) => line.spans);
+  const rendered = renderMarkdownLines("`read`", 40, PI_DARK).join("\n");
+
+  assert.ok(styled.some((item) => item.text.includes("read") && item.style?.foreground === "code"));
+  assert.ok(styled.some((item) => item.text.includes("npm test") && item.style?.foreground === "code"));
+  assert.ok(styled.every((item) => item.style?.background === undefined));
+  assert.ok(!rendered.includes("\x1b[48;2;"));
+});
+
 test("markdown truncation preserves the semantic span through the compiler", () => {
   const lines = renderMarkdownLines("**你好abcdef**", 5, PI_DARK);
 

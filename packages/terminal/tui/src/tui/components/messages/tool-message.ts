@@ -1,7 +1,7 @@
 import type { TuiComponent } from "../../component.ts";
 import { Box } from "../primitives/box.ts";
 import { Text } from "../primitives/text.ts";
-import type { ComponentRenderResult, RenderContext, StyledSpan, StyleToken } from "../../render-model.ts";
+import type { ComponentRenderResult, RenderContext, StyledSpan } from "../../render-model.ts";
 import { redactToolText } from "../../display-policy.ts";
 
 export interface ToolMessageOptions {
@@ -25,10 +25,10 @@ export class ToolMessage implements TuiComponent {
     const stdout = redactToolText(options.stdout);
     const stderr = redactToolText(options.stderr);
     const tone = options.status === "running"
-      ? { background: "tool_pending_bg" as const, title: "accent" as const }
+      ? { title: "accent" as const }
       : options.status === "completed"
-        ? { background: "tool_success_bg" as const, title: "success" as const }
-        : { background: "tool_error_bg" as const, title: "warning" as const };
+        ? { title: "success" as const }
+        : { title: "warning" as const };
     const title: StyledSpan[] = [{ text: `● ${name || "tool"}`, style: { foreground: tone.title } }];
     if (subject) {
       title.push({
@@ -48,7 +48,6 @@ export class ToolMessage implements TuiComponent {
         .filter(Boolean)
       : [];
     this.#content = new Box({
-      background: tone.background as StyleToken,
       child: new Text({
         spans: [...title, { text: `\n${[metadata, ...output].join("\n")}` }],
       }),
