@@ -4,3 +4,4 @@ export * from "./core/queue-dispatcher.ts";
 export * from "./core/task-lifecycle.ts";
 export * from "./routing.ts";
 export * from "./session.ts";
+export * from "./session-recorder.ts";

@@ -256,7 +256,7 @@ export interface CloseOptions {
  * its coordination lock.
  */
 export class AgentSession {
-  readonly sessionId: string;
+  #sessionId: string;
   readonly eventBus: EventBus;
   readonly taskLifecycle: TaskLifecycle;
   readonly taskRegistry: TaskRegistry;
@@ -280,7 +280,7 @@ export class AgentSession {
   #finalizePromise: Promise<void> | null = null;
 
   constructor(runner: TaskRunner, options: AgentSessionOptions = {}) {
-    this.sessionId = options.sessionId ?? randomUUID().replaceAll("-", "");
+    this.#sessionId = options.sessionId ?? randomUUID().replaceAll("-", "");
     this.eventBus = options.eventBus ?? new EventBus();
     this.taskRegistry = options.taskRegistry ?? new TaskRegistry();
     this.queueDispatcher = new QueueDispatcher();
@@ -317,6 +317,14 @@ export class AgentSession {
       session_id: this.sessionId,
       payload: {},
     });
+  }
+
+  get sessionId(): string {
+    return this.#sessionId;
+  }
+
+  setSessionId(sessionId: string): void {
+    this.#sessionId = sessionId;
   }
 
   get state(): SessionState {

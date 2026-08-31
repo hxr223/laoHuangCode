@@ -68,6 +68,7 @@ import {
   createWelcomeBlock,
   type TranscriptBlock,
   type NoticeTone,
+  type RestoredTranscriptItemLike,
 } from "./transcript-store.ts";
 import {
   EditorState,
@@ -1120,6 +1121,22 @@ export class TerminalUI {
 
   setSessionId(sessionId: string): void {
     this.#sessionId = sessionId;
+    this.#loop?.requestRender();
+  }
+
+  replaceTranscript(items: readonly RestoredTranscriptItemLike[]): void {
+    this.#transcript.replace(items);
+    this.#loop?.requestRender();
+  }
+
+  setComposerText(text: string): void {
+    const editor = this.#loop?.editor;
+    if (editor === undefined) {
+      return;
+    }
+    editor.text = text;
+    editor.cursor = text.length;
+    editor.setCompletions([]);
     this.#loop?.requestRender();
   }
 

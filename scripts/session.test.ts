@@ -10,7 +10,7 @@ import {
   TaskState,
   type TaskContext,
   type TaskRunnerResult,
-} from "../packages/core/session-runtime/src/index.ts";
+} from "../packages/session/session-runtime/src/index.ts";
 
 /** Promise-based stand-in for the threading.Event gates the Python tests use. */
 function gate(): { promise: Promise<void>; open: () => void } {
@@ -441,7 +441,7 @@ test("close({wait: false}) still drains the event bus", async () => {
 
 test("a pending waitForIdle does not keep the process alive", () => {
   const script = `
-    import { AgentSession } from ${JSON.stringify(new URL("../packages/core/session-runtime/src/index.ts", import.meta.url).href)};
+    import { AgentSession } from ${JSON.stringify(new URL("../packages/session/session-runtime/src/index.ts", import.meta.url).href)};
     const session = new AgentSession(() => new Promise(() => {}), {
       sessionId: "session-1",
     });

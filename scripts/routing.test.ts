@@ -13,7 +13,7 @@ import {
   QueueOverflowError,
   TaskRegistry,
   TaskState,
-} from "../packages/core/session-runtime/src/index.ts";
+} from "../packages/session/session-runtime/src/index.ts";
 
 function userEvent(
   content: string,

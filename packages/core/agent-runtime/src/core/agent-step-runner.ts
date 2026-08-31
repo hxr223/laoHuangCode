@@ -37,6 +37,15 @@ export interface AgentStepRunnerContext extends HistoryCommitContext {
   safePoint?(): PendingInputBatchLike | null | undefined;
 }
 
+export interface AgentContextGovernor {
+  prepare(input: {
+    readonly messages: readonly ModelMessage[];
+    readonly tools: readonly ToolSpec[];
+    readonly provider: string;
+    readonly model: string;
+  }): Promise<{ readonly messages: readonly ModelMessage[] }>;
+}
+
 export interface AgentStepRunnerOptions {
   model: string;
   provider: string;
@@ -46,6 +55,7 @@ export interface AgentStepRunnerOptions {
   toolDefinitions: readonly ToolSpec[];
   toolExecution: ToolExecutionMode;
   history: HistoryCommitter;
+  contextGovernor?: AgentContextGovernor | null;
   repeatToolPolicy: RepeatToolPolicy;
   userInput: string;
   context: AgentStepRunnerContext | null;
@@ -101,15 +111,25 @@ export class AgentStepRunner {
         ? this.options.requestId
         : randomUUID();
       this.options.onRequestId(requestId);
+      const candidateMessages = history.snapshot();
+      const prepared = this.options.contextGovernor === null ||
+        this.options.contextGovernor === undefined
+        ? { messages: candidateMessages }
+        : await this.options.contextGovernor.prepare({
+          messages: candidateMessages,
+          tools: this.options.toolDefinitions,
+          provider: this.options.provider,
+          model: this.options.model,
+        });
+      const requestMessages = [...prepared.messages];
       this.emit("model_request", {
         round: modelRound,
         request_id: requestId,
-        message_count: history.snapshot().length,
+        message_count: requestMessages.length,
         tool_rounds: toolRounds,
         model_requests: modelRequests,
         total_tokens: totalTokens,
       });
-      const requestMessages = history.snapshot();
 
       let result;
       try {
@@ -181,7 +201,10 @@ export class AgentStepRunner {
         model_requests: modelRequests,
       });
 
-      if (!history.commitAssistant(result.message)) {
+      if (!history.commitAssistant(result.message, {
+        requestId,
+        finishReason: result.finishReason,
+      })) {
         this.emit("model_response_aborted", {
           round: modelRound,
           request_id: requestId,

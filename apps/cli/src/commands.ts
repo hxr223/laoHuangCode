@@ -394,6 +394,26 @@ export interface SessionLike {
   queueStatus(): QueueStatus;
 }
 
+export interface SessionControllerLike {
+  readonly currentSessionId: string | null;
+  readonly currentPath: string | null;
+  list(): ReadonlyArray<{
+    readonly sessionId: string;
+    readonly updatedAt: string;
+    readonly lastUserText?: string;
+  }>;
+  createNew(): Promise<void>;
+  resume(sessionId: string): Promise<void>;
+  fork(entryId: string, mode: "before" | "at"): Promise<{
+    readonly sessionId: string;
+    readonly path: string;
+    readonly editorText: string;
+  }>;
+  clone(): Promise<{ readonly sessionId: string; readonly path: string }>;
+  compact(): Promise<unknown>;
+  resetContext(): void;
+}
+
 export interface SessionCommandsOptions {
   readonly agent: AgentLike;
   readonly selector: ModelSelector;
@@ -405,7 +425,10 @@ export interface SessionCommandsOptions {
   readonly currentConfig: SelectionConfig;
   readonly presenter: CommandPresenter;
   readonly session?: SessionLike | null | undefined;
+  readonly sessionController?: SessionControllerLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
+  readonly onComposerText?: ((text: string) => void) | undefined;
+  readonly onSessionChanged?: (() => void | Promise<void>) | undefined;
 }
 
 const ALL_STATES: ReadonlySet<string> = new Set([
@@ -443,7 +466,10 @@ export class SessionCommands {
   >;
   readonly #presenter: CommandPresenter;
   readonly #session: SessionLike | null;
+  readonly #sessionController: SessionControllerLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
+  readonly #onComposerText: ((text: string) => void) | null;
+  readonly #onSessionChanged: (() => void | Promise<void>) | null;
   #currentConfig: SelectionConfig;
 
   constructor(options: SessionCommandsOptions) {
@@ -454,7 +480,10 @@ export class SessionCommands {
     this.#currentConfig = options.currentConfig;
     this.#presenter = options.presenter;
     this.#session = options.session ?? null;
+    this.#sessionController = options.sessionController ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
+    this.#onComposerText = options.onComposerText ?? null;
+    this.#onSessionChanged = options.onSessionChanged ?? null;
     this.registry = new CommandRegistry([
       {
         name: "/model",
@@ -523,6 +552,55 @@ export class SessionCommands {
         description: "清空当前对话上下文",
         usage: "/clear",
         handler: (args) => this.handleClear(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/new",
+        description: "创建新会话",
+        usage: "/new",
+        handler: (args) => this.handleNew(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/session",
+        description: "查看当前会话",
+        usage: "/session",
+        handler: (args) => this.handleSession(args),
+        allowedStates: ALL_STATES,
+      },
+      {
+        name: "/sessions",
+        description: "列出当前项目会话",
+        usage: "/sessions",
+        handler: (args) => this.handleSessions(args),
+        allowedStates: ALL_STATES,
+      },
+      {
+        name: "/resume",
+        description: "恢复指定会话",
+        usage: "/resume <session-id>",
+        handler: (args) => this.handleResume(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/fork",
+        description: "从用户消息分叉会话",
+        usage: "/fork <entry-id> [before|at]",
+        handler: (args) => this.handleFork(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/clone",
+        description: "克隆当前会话",
+        usage: "/clone",
+        handler: (args) => this.handleClone(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/compact",
+        description: "手动压缩当前上下文",
+        usage: "/compact",
+        handler: (args) => this.handleCompact(args),
         allowedStates: IDLE_ONLY,
       },
       {
@@ -672,7 +750,130 @@ export class SessionCommands {
     } else if (this.#agent.messages !== undefined && this.#agent.messages.length > 0) {
       this.#agent.messages.splice(1);
     }
+    this.#sessionController?.resetContext();
     this.notice("Conversation cleared.", tones.cleared);
+    return true;
+  }
+
+  private handleSession(args: string[]): boolean {
+    if (args.length > 0) {
+      this.notice("Usage: /session", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null || controller.currentSessionId === null) {
+      this.notice("No active session.", "warning");
+      return true;
+    }
+    this.notice(
+      `Current session: ${controller.currentSessionId}\nPath: ${controller.currentPath ?? ""}`,
+      "info",
+    );
+    return true;
+  }
+
+  private async handleNew(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /new", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session creation is unavailable.", "error");
+      return true;
+    }
+    await controller.createNew();
+    await this.#onSessionChanged?.();
+    this.notice(`Created session ${controller.currentSessionId ?? ""}.`, tones.switched);
+    return true;
+  }
+
+  private handleSessions(args: string[]): boolean {
+    if (args.length > 0) {
+      this.notice("Usage: /sessions", tones.invalid);
+      return true;
+    }
+    const sessions = this.#sessionController?.list() ?? [];
+    if (sessions.length === 0) {
+      this.notice("No sessions for this project.", "info");
+      return true;
+    }
+    for (const session of sessions) {
+      const tail = session.lastUserText === undefined || session.lastUserText === ""
+        ? ""
+        : `  ${session.lastUserText}`;
+      this.notice(`${session.sessionId}  ${session.updatedAt}${tail}`, "info");
+    }
+    return true;
+  }
+
+  private async handleResume(args: string[]): Promise<boolean> {
+    if (args.length !== 1) {
+      this.notice("Usage: /resume <session-id>", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session resume is unavailable.", "error");
+      return true;
+    }
+    await controller.resume(args[0]!);
+    await this.#onSessionChanged?.();
+    this.notice(`Resumed session ${args[0]}.`, tones.switched);
+    return true;
+  }
+
+  private async handleFork(args: string[]): Promise<boolean> {
+    if (
+      args.length < 1 ||
+      args.length > 2 ||
+      (args[1] !== undefined && args[1] !== "before" && args[1] !== "at")
+    ) {
+      this.notice("Usage: /fork <entry-id> [before|at]", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session fork is unavailable.", "error");
+      return true;
+    }
+    const result = await controller.fork(args[0]!, args[1] ?? "before");
+    await this.#onSessionChanged?.();
+    if (result.editorText !== "") {
+      this.#onComposerText?.(result.editorText);
+    }
+    this.notice(`Forked session ${result.sessionId}.`, tones.switched);
+    return true;
+  }
+
+  private async handleClone(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /clone", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session clone is unavailable.", "error");
+      return true;
+    }
+    const result = await controller.clone();
+    await this.#onSessionChanged?.();
+    this.notice(`Cloned session ${result.sessionId}.`, tones.switched);
+    return true;
+  }
+
+  private async handleCompact(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /compact", tones.invalid);
+      return true;
+    }
+    if (this.#sessionController === null) {
+      this.notice("Session compaction is unavailable.", "error");
+      return true;
+    }
+    await this.#sessionController.compact();
+    await this.#onSessionChanged?.();
+    this.notice("Compacted current session.", tones.switched);
     return true;
   }
 
