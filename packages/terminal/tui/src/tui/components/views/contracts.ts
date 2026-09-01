@@ -6,6 +6,7 @@ export interface SelectionRequest {
   readonly items: readonly SelectItem[];
   readonly currentValue?: string;
   readonly searchable?: boolean;
+  readonly searchPlaceholder?: string;
   readonly maxVisible?: number;
 }
 

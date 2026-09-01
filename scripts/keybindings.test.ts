@@ -41,14 +41,14 @@ test("allows the same key to be reused in different contexts", () => {
 test("reports conflicts for duplicate keys in the same context", () => {
   const bindings: readonly Keybinding[] = [
     { context: "editor", key: "ctrl+o", action: "toggle_tool_output" },
-    { context: "editor", key: "ctrl+o", action: "clear_screen" },
+    { context: "editor", key: "ctrl+o", action: "toggle_thinking" },
   ];
 
   assert.deepEqual(new KeybindingsManager(bindings).conflicts(), [
     {
       context: "editor",
       key: "ctrl+o",
-      actions: ["toggle_tool_output", "clear_screen"],
+      actions: ["toggle_tool_output", "toggle_thinking"],
     },
   ]);
 });

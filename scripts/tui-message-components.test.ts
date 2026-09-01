@@ -7,6 +7,7 @@ import { ThinkingMessage } from "../packages/terminal/tui/src/tui/components/mes
 import { ToolMessage } from "../packages/terminal/tui/src/tui/components/messages/tool-message.ts";
 import { UserMessage } from "../packages/terminal/tui/src/tui/components/messages/user-message.ts";
 import { WelcomeMessage } from "../packages/terminal/tui/src/tui/components/messages/welcome-message.ts";
+import { Transcript } from "../packages/terminal/tui/src/tui/components/transcript.ts";
 import { renderMarkdownStyledLines } from "../packages/terminal/tui/src/tui/markdown.ts";
 import {
   createAssistantBlock,
@@ -111,17 +112,15 @@ function expectedSnapshots(width: number): Snapshot[] {
     ]],
     [
       [
-        { text: "● bash", style: { foreground: "success", background: "tool_success_bg" } },
-        { text: "  $ echo hello", style: { foreground: "bash", background: "tool_success_bg" } },
-        { text: " ".repeat(width - 20), style: { background: "tool_success_bg" } },
+        { text: "● bash", style: { foreground: "success" } },
+        { text: "  $ echo hello", style: { foreground: "bash" } },
+        { text: " ".repeat(width - 20) },
       ],
       [
-        { text: "completed · exit 0 · 12ms", style: { background: "tool_success_bg" } },
-        { text: " ".repeat(width - 25), style: { background: "tool_success_bg" } },
+        { text: `completed · exit 0 · 12ms${" ".repeat(width - 25)}` },
       ],
       [
-        { text: "hello", style: { background: "tool_success_bg" } },
-        { text: " ".repeat(width - 5), style: { background: "tool_success_bg" } },
+        { text: `hello${" ".repeat(width - 5)}` },
       ],
     ],
     [[
@@ -197,8 +196,22 @@ test("markdown uses semantic spans and leaves ordinary body text uncolored", () 
 
   assert.ok(spans.some((item) => item.style?.foreground === "heading"));
   assert.ok(spans.some((item) => item.style?.foreground === "code"));
+  assert.ok(spans.every((item) => item.style?.background === undefined));
   assert.ok(spans.some((item) => item.style?.foreground === "link"));
   assert.ok(spans.some((item) => item.text.includes("and") && item.style?.foreground === undefined));
+});
+
+test("transcript reuses frozen block render lines between same-width renders", () => {
+  const transcript = new Transcript({
+    blocks: [createAssistantBlock("a1", "# Heading\n\nbody", false)],
+  });
+  const first = transcript.renderWithMetadata({ width: 40, theme: PI_DARK });
+  const second = transcript.renderWithMetadata({ width: 40, theme: PI_DARK });
+  const resized = transcript.renderWithMetadata({ width: 20, theme: PI_DARK });
+
+  assert.ok(first.lines.length > 0);
+  assert.equal(second.lines[0], first.lines[0]);
+  assert.notEqual(resized.lines[0], first.lines[0]);
 });
 
 test("typed transcript constructors produce every current block variant", () => {

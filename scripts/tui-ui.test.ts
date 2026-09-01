@@ -41,6 +41,10 @@ import {
   createWelcomeBlock,
   TranscriptStore,
 } from "../packages/terminal/tui/src/tui/transcript-store.ts";
+import {
+  projectTranscript,
+  type RestoredTranscriptItem,
+} from "@laohuang/session-store";
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
 import {
   PI_DARK,
@@ -234,29 +238,29 @@ function expectedStructuredStyleSnapshots(width: number): SemanticSnapshot[] {
     ],
     [
       [],
-      [{ text: "Authentication", style: { foreground: "accent", background: "card" } }],
+      [{ text: "Authentication", style: { foreground: "accent" } }],
       [],
-      [{ text: "Enter API key", style: { background: "card" } }],
+      [{ text: "Enter API key" }],
       [],
       [
-        { text: "❯", style: { foreground: "accent", background: "card" } },
-        { text: "•••", style: { background: "card" } },
+        { text: "❯", style: { foreground: "accent" } },
+        { text: "•••" },
       ],
       [],
       [{
         text: "Enter to submit, Esc to cancel",
-        style: { foreground: "dim", background: "card" },
+        style: { foreground: "dim" },
       }],
       [],
     ],
     [[{ text: "thinking  inspect", style: { foreground: "thinking", italic: true } }]],
     [
       [
-        { text: "● bash", style: { foreground: "success", background: "tool_success_bg" } },
-        { text: "$ echo hello", style: { foreground: "bash", background: "tool_success_bg" } },
+        { text: "● bash", style: { foreground: "success" } },
+        { text: "$ echo hello", style: { foreground: "bash" } },
       ],
-      [{ text: "completed · exit 0 · 12ms", style: { background: "tool_success_bg" } }],
-      [{ text: "hello", style: { background: "tool_success_bg" } }],
+      [{ text: "completed · exit 0 · 12ms" }],
+      [{ text: "hello" }],
     ],
   ];
 }
@@ -333,6 +337,8 @@ test("completion height follows actual candidates and uses structured selection 
 test("status line dims metadata while provider and model use terminal default", () => {
   const state = createUIState();
   state.pendingCount = 1;
+  state.contextTokens = 512;
+  state.contextWindow = 8192;
   state.provider = "openai";
   state.model = "gpt-test";
   const rendered = new StatusLine({
@@ -342,7 +348,8 @@ test("status line dims metadata while provider and model use terminal default", 
   }).render({ width: 100, theme: PI_DARK });
   const spans = rendered.lines[0]?.spans ?? [];
 
-  assert.equal(spans.find((item) => item.text === "/worktree")?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text.includes("context: 6% (512/8.2K)"))?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text === "/worktree"), undefined);
   assert.equal(spans.find((item) => item.text.includes("queue"))?.style?.foreground, "dim");
   assert.equal(spans.find((item) => item.text === "openai/gpt-test")?.style, undefined);
   assert.equal(spans.find((item) => item.text === "effort high")?.style?.foreground, "dim");
@@ -406,8 +413,43 @@ test("transcript component reports the first mutable rendered row", () => {
 
   const rendered = transcript.renderWithMetadata({ width: 80, theme: ui.theme });
 
-  assert.equal(rendered.activeStart, 1);
+  assert.equal(lineText(rendered.lines[1]!), "");
+  assert.equal(rendered.activeStart, 2);
   assert.ok(lineText(rendered.lines[rendered.activeStart]!).includes("streaming answer"));
+});
+
+test("transcript component separates adjacent rendered blocks", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const transcript = new Transcript({
+    blocks: [
+      createUserBlock("u1", "first question"),
+      createAssistantBlock("r1", "first answer", false),
+      createUserBlock("u2", "second question"),
+    ],
+  });
+
+  const rendered = transcript.renderWithMetadata({ width: 80, theme: ui.theme });
+
+  assert.equal(lineText(rendered.lines[1]!), "");
+  assert.equal(lineText(rendered.lines[3]!), "");
+});
+
+test("main screen separates transcript from composer", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.acceptUserInput("first question");
+
+  const frame = ui.buildFrame({ width: 40, editor: new EditorState() });
+  const composerStart = frame.lines.findIndex((line) =>
+    stripTerminalControls(line).startsWith("╭"),
+  );
+  const inputStart = frame.lines.findIndex((line) =>
+    stripTerminalControls(line).includes("> "),
+  );
+
+  assert.notEqual(composerStart, -1);
+  assert.notEqual(inputStart, -1);
+  assert.equal(stripTerminalControls(frame.lines[composerStart - 1]!), "");
+  assert.equal(frame.cursorRow, inputStart);
 });
 
 test("transcript component returns newline-free logical rows", () => {
@@ -601,6 +643,48 @@ test("ctrl s submits a steer action from the live loop", () => {
     { text: "change direction", strategy: "steer" },
     { text: "", strategy: "steer" },
   ]);
+});
+
+test("escape cancels a running task when there is no dismissible completion", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  let cancelCount = 0;
+  const ui = new TerminalUI({
+    driver: terminal,
+    cancelCallback: () => {
+      cancelCount += 1;
+    },
+  });
+
+  ui.setRuntimeRunningCallback(() => true);
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+
+  assert.equal(cancelCount, 1);
+});
+
+test("escape dismisses completion before cancelling a running task", () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  let cancelCount = 0;
+  const ui = new TerminalUI({
+    driver: terminal,
+    commandRegistry: createRegistry([{ name: "/help", description: "Show help" }]),
+    cancelCallback: () => {
+      cancelCount += 1;
+    },
+  });
+
+  ui.setRuntimeRunningCallback(() => true);
+  ui.startLoop(() => {});
+  ui.feedInputBytes(bytes("/h"));
+  ui.drainLoop();
+  assert.notDeepEqual(ui.interactiveLoop?.editor.completions, []);
+
+  ui.feedInputBytes(bytes("\x1b"));
+  ui.drainLoop();
+
+  assert.equal(cancelCount, 0);
+  assert.deepEqual(ui.interactiveLoop?.editor.completions, []);
 });
 
 test("enhanced shift tab does not invoke a reasoning effort action", () => {
@@ -985,6 +1069,96 @@ test("two completed turns remain in history without tail truncation", () => {
   assert.ok(rendered.includes("second answer"));
 });
 
+test("terminal ui replaces transcript from restored session and continues live events", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const restored: readonly RestoredTranscriptItem[] = [
+    { kind: "user", text: "old question" },
+    { kind: "assistant", text: "old answer", reasoning: "old thinking" },
+    { kind: "tool", callId: "call-1", name: "bash", subject: "pwd", result: "ok", isError: false },
+    { kind: "notice", text: "torn tail ignored", tone: "warning" },
+  ];
+
+  ui.replaceTranscript(restored);
+  ui.applyProjectedEvent(event("model.text_delta", "new-response", { text: "new answer" }));
+  ui.applyProjectedEvent(event("model.response_committed", "new-response"));
+
+  const lines = ui.buildHistoryLines(80).join("\n");
+  assert.match(lines, /old question/);
+  assert.match(lines, /old answer/);
+  assert.match(lines, /old thinking/);
+  assert.match(lines, /bash/);
+  assert.match(lines, /torn tail ignored/);
+  assert.match(lines, /new answer/);
+});
+
+test("transcript projector restores user assistant and tool notices", () => {
+  const items = projectTranscript([
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 1,
+      id: "e1",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "user_message",
+      payload: {
+        message: { role: "user", content: "hello" },
+        inputEventIds: [],
+        source: "direct",
+      },
+    },
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 2,
+      id: "e2",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "assistant_message",
+      payload: {
+        message: {
+          role: "assistant",
+          provider: "pi-ai",
+          model: "gpt-test",
+          content: [
+            { type: "reasoning", text: "think" },
+            { type: "text", text: "answer" },
+            { type: "tool-call", call: { id: "call-1", name: "read", arguments: { path: "a.txt" } } },
+          ],
+        },
+        requestId: "request-1",
+        finishReason: "tool-calls",
+      },
+    },
+    {
+      schemaVersion: 1,
+      sessionId: "session",
+      seq: 3,
+      id: "e3",
+      timestamp: "2026-08-31T00:00:00.000Z",
+      kind: "entry",
+      entryType: "tool_result",
+      payload: {
+        message: {
+          role: "tool-result",
+          toolCallId: "call-1",
+          toolName: "read",
+          content: "file",
+          isError: false,
+        },
+        requestId: "request-1",
+        recovered: false,
+      },
+    },
+  ]);
+
+  assert.deepEqual(items, [
+    { kind: "user", text: "hello" },
+    { kind: "assistant", text: "answer", reasoning: "think" },
+    { kind: "tool", callId: "call-1", name: "read", subject: "call-1", result: "file", isError: false },
+  ]);
+});
+
 test("second request cannot mutate frozen first response", () => {
   const ui = new TerminalUI({ theme: "dark" });
   ui.applyProjectedEvent(event("model.text_delta", "r1", { text: "one" }));
@@ -1012,7 +1186,7 @@ test("raw frame preserves non-markdown block styles", () => {
   const rendered = ui.buildHistoryLines(80).join("\n");
 
   assert.ok(rendered.includes("\x1b[3;38;2;128;128;128mthinking  plan"));
-  assert.ok(rendered.includes("\x1b[48;2;40;40;50m"));
+  assert.ok(!rendered.includes("\x1b[48;2;40;40;50m"));
   assert.ok(rendered.includes("● bash"));
 });
 
@@ -1505,7 +1679,7 @@ test("interactive command component journey preserves scrollback and cursor", as
 
   await type("/");
   const slashCompletion = terminal.logicalLines.join("\n");
-  assert.ok(slashCompletion.includes("/help"), slashCompletion);
+  assert.ok(slashCompletion.includes("/apikey"), slashCompletion);
   await type("h");
   const shrunkCompletion = terminal.viewportLines.join("\n");
   assert.ok(shrunkCompletion.includes("/help"));
@@ -1993,7 +2167,8 @@ test("single renderer renders assistant markdown", () => {
   assert.ok(!rendered.includes("**"));
   assert.ok(!rendered.includes("`"));
   assert.ok(lines.some((line) => line.includes("\x1b[1m") && line.includes("加粗")));
-  assert.ok(lines.some((line) => line.includes("48;2") && line.includes("代码")));
+  assert.ok(lines.some((line) => line.includes("38;2") && line.includes("代码")));
+  assert.ok(!lines.some((line) => line.includes("48;2") && line.includes("代码")));
 });
 
 test("assistant response is rendered as markdown without chat prefix", () => {

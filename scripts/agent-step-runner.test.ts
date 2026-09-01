@@ -91,8 +91,21 @@ function createRunner(options: {
   messages: ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   adapter: ModelAdapter;
   context?: AgentStepRunnerContext | null;
+  contextGovernor?: {
+    prepare(input: {
+      messages: readonly ModelRequest["messages"][number][];
+      tools: readonly unknown[];
+      provider: string;
+      model: string;
+    }): Promise<{
+      messages: readonly ModelRequest["messages"][number][];
+      contextTokens?: number;
+      contextWindow?: number;
+    }>;
+  } | null;
   executeTool?: () => Promise<ToolResult>;
   getReasoningEffort?: () => ReasoningEffort;
+  emit?: (eventType: string, payload: Record<string, unknown>) => void;
 }): AgentStepRunner {
   const token = new TestCancelToken() as unknown as CancelToken;
   const context = options.context ?? null;
@@ -116,6 +129,7 @@ function createRunner(options: {
     toolDefinitions: [],
     toolExecution: "parallel",
     history: committer,
+    contextGovernor: options.contextGovernor ?? null,
     repeatToolPolicy: new RepeatToolPolicy([3, 5, 8]),
     userInput: "first user message",
     context,
@@ -124,7 +138,7 @@ function createRunner(options: {
     isRequestActive: () => true,
     getReasoningEffort: options.getReasoningEffort ?? (() => "high"),
     onRequestId: () => {},
-    emit: () => {},
+    emit: options.emit ?? (() => {}),
     emitLegacy: () => {},
     injectBaselineInstructions: () => {},
     discoverForTouchedPaths: () => {},
@@ -153,6 +167,55 @@ test("commits the user message through the context before requesting the model",
     "system",
     "user",
   ]);
+});
+
+test("prepares every model request through the context governor", async () => {
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
+  const adapter = new StubAdapter([finalResult("complete")]);
+  let sawCommittedInput = false;
+  const runner = createRunner({
+    messages,
+    adapter,
+    contextGovernor: {
+      async prepare(input) {
+        sawCommittedInput = input.messages.some(
+          (message) => message.role === "user" && message.content === "first user message",
+        );
+        return { messages: [{ role: "user", content: "governed context" }] };
+      },
+    },
+  });
+
+  assert.equal(await runner.run(), "complete");
+  assert.equal(sawCommittedInput, true);
+  assert.deepEqual(adapter.requests[0]?.messages, [
+    { role: "user", content: "governed context" },
+  ]);
+});
+
+test("model request events include prepared context usage", async () => {
+  const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
+  const adapter = new StubAdapter([finalResult("complete")]);
+  const events: Array<{ eventType: string; payload: Record<string, unknown> }> = [];
+  const runner = createRunner({
+    messages,
+    adapter,
+    contextGovernor: {
+      async prepare() {
+        return {
+          messages: [{ role: "user", content: "governed context" }],
+          contextTokens: 1234,
+          contextWindow: 1_000_000,
+        };
+      },
+    },
+    emit: (eventType, payload) => events.push({ eventType, payload }),
+  });
+
+  assert.equal(await runner.run(), "complete");
+  const request = events.find((event) => event.eventType === "model_request");
+  assert.equal(request?.payload["context_tokens"], 1234);
+  assert.equal(request?.payload["context_window"], 1_000_000);
 });
 
 test("commits the assistant tool call before its paired tool result", async () => {

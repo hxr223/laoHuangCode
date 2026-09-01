@@ -36,7 +36,7 @@ test("PiAiAdapter rejects unknown providers and models before streaming", async 
   assert.equal(fake.streams.length, 0);
 });
 
-test("PiAiAdapter passes baseUrl, timeout, temperature, and cancel signal", async () => {
+test("PiAiAdapter passes baseUrl, timeout, temperature, max tokens, and cancel signal", async () => {
   const token = new CancelToken();
   const fake = new FakeModels();
   const adapter = new PiAiAdapter(
@@ -48,6 +48,7 @@ test("PiAiAdapter passes baseUrl, timeout, temperature, and cancel signal", asyn
     baseUrl: "https://api.deepseek.example",
     temperature: 0.2,
     timeoutMs: 3000,
+    maxOutputTokens: 2048,
     cancelToken: token,
   }));
 
@@ -57,6 +58,7 @@ test("PiAiAdapter passes baseUrl, timeout, temperature, and cancel signal", asyn
   assert.equal("apiKey" in fake.streams[0]!.options, false);
   assert.equal(fake.streams[0]?.options.temperature, 0.2);
   assert.equal(fake.streams[0]?.options.timeoutMs, 3000);
+  assert.equal(fake.streams[0]?.options.maxTokens, 2048);
   assert.equal(fake.streams[0]?.options.signal, token.signal);
   assert.equal(fake.streams[0]?.options.maxRetries, 0);
 });

@@ -394,6 +394,28 @@ export interface SessionLike {
   queueStatus(): QueueStatus;
 }
 
+export interface SessionControllerLike {
+  readonly currentSessionId: string | null;
+  readonly currentPath: string | null;
+  list(): ReadonlyArray<{
+    readonly sessionId: string;
+    readonly updatedAt: string;
+    readonly title?: string;
+    readonly lastUserText?: string;
+    readonly cwd?: string;
+    readonly projectRoot?: string;
+  }>;
+  createNew(): Promise<void>;
+  resume(sessionId: string): Promise<void>;
+  fork(entryId: string, mode: "before" | "at"): Promise<{
+    readonly sessionId: string;
+    readonly path: string;
+    readonly editorText: string;
+  }>;
+  clone(): Promise<{ readonly sessionId: string; readonly path: string }>;
+  compact(): Promise<unknown>;
+}
+
 export interface SessionCommandsOptions {
   readonly agent: AgentLike;
   readonly selector: ModelSelector;
@@ -405,7 +427,12 @@ export interface SessionCommandsOptions {
   readonly currentConfig: SelectionConfig;
   readonly presenter: CommandPresenter;
   readonly session?: SessionLike | null | undefined;
+  readonly sessionController?: SessionControllerLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
+  readonly onComposerText?: ((text: string) => void) | undefined;
+  readonly onSessionChanged?: (() => void | Promise<void>) | undefined;
+  readonly homeDirectory?: string | undefined;
+  readonly now?: (() => Date) | undefined;
 }
 
 const ALL_STATES: ReadonlySet<string> = new Set([
@@ -430,6 +457,80 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface SessionDisplaySummary {
+  readonly updatedAt: string;
+  readonly title?: string;
+  readonly lastUserText?: string;
+  readonly cwd?: string;
+  readonly projectRoot?: string;
+}
+
+function sessionDisplayTitle(session: SessionDisplaySummary): string {
+  const title = cleanSingleLine(session.title);
+  if (title !== "") {
+    return title;
+  }
+  const lastUserText = cleanSingleLine(session.lastUserText);
+  return lastUserText === "" ? "Untitled session" : lastUserText;
+}
+
+function sessionDisplayDescription(
+  session: SessionDisplaySummary,
+  options: { readonly homeDirectory: string | null; readonly now: Date },
+): string {
+  const displayPath = displayPathFor(session.cwd ?? session.projectRoot ?? "", options.homeDirectory);
+  const updated = relativeTimeLabel(session.updatedAt, options.now);
+  return displayPath === "" ? updated : `${updated}  ${displayPath}`;
+}
+
+function cleanSingleLine(value: string | undefined): string {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function displayPathFor(path: string, homeDirectory: string | null): string {
+  if (path === "" || homeDirectory === null || homeDirectory === "") {
+    return path;
+  }
+  const home = homeDirectory.endsWith("/") ? homeDirectory.slice(0, -1) : homeDirectory;
+  if (path === home) {
+    return "~";
+  }
+  return path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+}
+
+function relativeTimeLabel(updatedAt: string, now: Date): string {
+  const updated = new Date(updatedAt);
+  const timestamp = updated.getTime();
+  if (!Number.isFinite(timestamp)) {
+    return updatedAt;
+  }
+  const elapsedMs = Math.max(0, now.getTime() - timestamp);
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+  if (elapsedSeconds < 60) {
+    return "just now";
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+  }
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays === 1) {
+    return `yesterday ${twoDigits(updated.getHours())}:${twoDigits(updated.getMinutes())}`;
+  }
+  if (elapsedDays < 365) {
+    return `${twoDigits(updated.getMonth() + 1)}-${twoDigits(updated.getDate())} ${twoDigits(updated.getHours())}:${twoDigits(updated.getMinutes())}`;
+  }
+  return `${updated.getFullYear()}-${twoDigits(updated.getMonth() + 1)}-${twoDigits(updated.getDate())} ${twoDigits(updated.getHours())}:${twoDigits(updated.getMinutes())}`;
+}
+
+function twoDigits(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
 /** Handle session-local model and credential commands. */
 export class SessionCommands {
   readonly registry: CommandRegistry;
@@ -443,7 +544,12 @@ export class SessionCommands {
   >;
   readonly #presenter: CommandPresenter;
   readonly #session: SessionLike | null;
+  readonly #sessionController: SessionControllerLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
+  readonly #onComposerText: ((text: string) => void) | null;
+  readonly #onSessionChanged: (() => void | Promise<void>) | null;
+  readonly #homeDirectory: string | null;
+  readonly #now: () => Date;
   #currentConfig: SelectionConfig;
 
   constructor(options: SessionCommandsOptions) {
@@ -454,7 +560,12 @@ export class SessionCommands {
     this.#currentConfig = options.currentConfig;
     this.#presenter = options.presenter;
     this.#session = options.session ?? null;
+    this.#sessionController = options.sessionController ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
+    this.#onComposerText = options.onComposerText ?? null;
+    this.#onSessionChanged = options.onSessionChanged ?? null;
+    this.#homeDirectory = options.homeDirectory ?? null;
+    this.#now = options.now ?? (() => new Date());
     this.registry = new CommandRegistry([
       {
         name: "/model",
@@ -519,10 +630,53 @@ export class SessionCommands {
         argumentCompleter: queueCompletions,
       },
       {
-        name: "/clear",
-        description: "清空当前对话上下文",
-        usage: "/clear",
-        handler: (args) => this.handleClear(args),
+        name: "/new",
+        description: "创建新会话",
+        usage: "/new",
+        handler: (args) => this.handleNew(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/session",
+        description: "查看当前会话",
+        usage: "/session",
+        handler: (args) => this.handleSession(args),
+        allowedStates: ALL_STATES,
+      },
+      {
+        name: "/sessions",
+        description: "列出当前项目会话",
+        usage: "/sessions",
+        handler: (args) => this.handleSessions(args),
+        allowedStates: ALL_STATES,
+      },
+      {
+        name: "/resume",
+        description: "选择或恢复指定会话",
+        usage: "/resume [session-id]",
+        handler: (args) => this.handleResume(args),
+        allowedStates: IDLE_ONLY,
+        argumentCompleter: (args) => this.resumeCompletions(args),
+      },
+      {
+        name: "/fork",
+        description: "从用户消息分叉会话",
+        usage: "/fork <entry-id> [before|at]",
+        handler: (args) => this.handleFork(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/clone",
+        description: "克隆当前会话",
+        usage: "/clone",
+        handler: (args) => this.handleClone(args),
+        allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/compact",
+        description: "手动压缩当前上下文",
+        usage: "/compact",
+        handler: (args) => this.handleCompact(args),
         allowedStates: IDLE_ONLY,
       },
       {
@@ -661,18 +815,157 @@ export class SessionCommands {
     return true;
   }
 
-  private handleClear(args: string[]): boolean {
+  private handleSession(args: string[]): boolean {
     if (args.length > 0) {
-      this.notice("Usage: /clear", tones.invalid);
+      this.notice("Usage: /session", tones.invalid);
       return true;
     }
-    const clear = this.#agent.clearHistory;
-    if (typeof clear === "function") {
-      clear.call(this.#agent);
-    } else if (this.#agent.messages !== undefined && this.#agent.messages.length > 0) {
-      this.#agent.messages.splice(1);
+    const controller = this.#sessionController;
+    if (controller === null || controller.currentSessionId === null) {
+      this.notice("No active session.", "warning");
+      return true;
     }
-    this.notice("Conversation cleared.", tones.cleared);
+    this.notice(
+      `Current session: ${controller.currentSessionId}\nPath: ${controller.currentPath ?? ""}`,
+      "info",
+    );
+    return true;
+  }
+
+  private async handleNew(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /new", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session creation is unavailable.", "error");
+      return true;
+    }
+    await controller.createNew();
+    await this.#onSessionChanged?.();
+    this.notice("Started a new session.", tones.switched);
+    return true;
+  }
+
+  private handleSessions(args: string[]): boolean {
+    if (args.length > 0) {
+      this.notice("Usage: /sessions", tones.invalid);
+      return true;
+    }
+    const sessions = this.#sessionController?.list() ?? [];
+    if (sessions.length === 0) {
+      this.notice("No sessions for this project.", "info");
+      return true;
+    }
+    const now = this.#now();
+    for (const session of sessions) {
+      this.notice(
+        `${sessionDisplayTitle(session)}\n${sessionDisplayDescription(session, {
+          homeDirectory: this.#homeDirectory,
+          now,
+        })}`,
+        "info",
+      );
+    }
+    return true;
+  }
+
+  private async handleResume(args: string[]): Promise<boolean> {
+    if (args.length > 1) {
+      this.notice("Usage: /resume [session-id]", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session resume is unavailable.", "error");
+      return true;
+    }
+    let sessionId = args[0];
+    if (sessionId === undefined) {
+      const sessions = controller.list();
+      if (sessions.length === 0) {
+        this.notice("No sessions for this project.", "info");
+        return true;
+      }
+      const now = this.#now();
+      sessionId = await this.#presenter.select({
+        id: "session-resume",
+        title: "Resume session",
+        items: sessions.map((session) => ({
+          value: session.sessionId,
+          label: sessionDisplayTitle(session),
+          description: sessionDisplayDescription(session, {
+            homeDirectory: this.#homeDirectory,
+            now,
+          }),
+        })),
+        currentValue: controller.currentSessionId ?? undefined,
+        searchable: true,
+        searchPlaceholder: "Search sessions",
+        maxVisible: 20,
+      }) ?? undefined;
+      if (sessionId === undefined) {
+        return true;
+      }
+    }
+    await controller.resume(sessionId);
+    await this.#onSessionChanged?.();
+    this.notice("Resumed session.", tones.switched);
+    return true;
+  }
+
+  private async handleFork(args: string[]): Promise<boolean> {
+    if (
+      args.length < 1 ||
+      args.length > 2 ||
+      (args[1] !== undefined && args[1] !== "before" && args[1] !== "at")
+    ) {
+      this.notice("Usage: /fork <entry-id> [before|at]", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session fork is unavailable.", "error");
+      return true;
+    }
+    const result = await controller.fork(args[0]!, args[1] ?? "before");
+    await this.#onSessionChanged?.();
+    if (result.editorText !== "") {
+      this.#onComposerText?.(result.editorText);
+    }
+    this.notice(`Forked session ${result.sessionId}.`, tones.switched);
+    return true;
+  }
+
+  private async handleClone(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /clone", tones.invalid);
+      return true;
+    }
+    const controller = this.#sessionController;
+    if (controller === null) {
+      this.notice("Session clone is unavailable.", "error");
+      return true;
+    }
+    const result = await controller.clone();
+    await this.#onSessionChanged?.();
+    this.notice(`Cloned session ${result.sessionId}.`, tones.switched);
+    return true;
+  }
+
+  private async handleCompact(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      this.notice("Usage: /compact", tones.invalid);
+      return true;
+    }
+    if (this.#sessionController === null) {
+      this.notice("Session compaction is unavailable.", "error");
+      return true;
+    }
+    await this.#sessionController.compact();
+    await this.#onSessionChanged?.();
+    this.notice("Compacted current session.", tones.switched);
     return true;
   }
 
@@ -991,6 +1284,10 @@ export class SessionCommands {
       payload: {
         provider: this.#currentConfig.provider,
         model: this.#currentConfig.model,
+        context_window: this.#catalog.getModel(
+          this.#currentConfig.provider,
+          this.#currentConfig.model,
+        )?.contextWindow ?? 0,
         previous_provider: previousProvider,
         previous_model: previousModel,
       },
@@ -1087,6 +1384,20 @@ export class SessionCommands {
     yield ["current", "当前思考等级"] as const;
     for (const effort of this.supportedReasoningEfforts()) {
       yield [effort, effort === "off" ? "关闭思考" : "设置思考等级"] as const;
+    }
+  }
+
+  private *resumeCompletions(
+    args: readonly string[],
+  ): Iterable<readonly [string, string]> {
+    if (args.length > 0) {
+      return;
+    }
+    for (const session of this.#sessionController?.list() ?? []) {
+      const description = session.lastUserText === undefined || session.lastUserText === ""
+        ? session.updatedAt
+        : `${session.updatedAt}  ${session.lastUserText}`;
+      yield [session.sessionId, description] as const;
     }
   }
 

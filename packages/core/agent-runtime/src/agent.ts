@@ -54,6 +54,12 @@ import { RepeatToolPolicy } from "./core/repeat-tool-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
 import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime } from "@laohuang/tools";
+import type {
+  AgentContextGovernor,
+} from "./core/agent-step-runner.ts";
+import type {
+  ConversationHistoryLike,
+} from "./core/history-committer.ts";
 
 /** Raised when the model response cannot drive the agent loop. */
 export class AgentError extends Error {
@@ -113,6 +119,8 @@ export interface CodingAgentOptions {
   repeatToolReminderThresholds?: readonly number[];
   onToolEvent?: ToolEventCallback | null;
   onAgentEvent?: AgentEventCallback | null;
+  cliName?: string | null;
+  cliVersion?: string | null;
   provider: string;
   baseUrl?: string | null;
   reasoningEffort?: ReasoningEffort;
@@ -124,6 +132,8 @@ export interface CodingAgentOptions {
   projectRoot?: string | null;
   /** Startup cwd for project-instruction discovery. */
   startupCwd?: string | null;
+  conversationHistory?: ConversationHistoryLike | null;
+  contextGovernor?: AgentContextGovernor | null;
 }
 
 /** Execution context handed to every tool call in a batch. */
@@ -166,6 +176,8 @@ export class CodingAgent {
   messages: ModelMessage[];
   private readonly onToolEvent: ToolEventCallback | null;
   private readonly onAgentEvent: AgentEventCallback | null;
+  private readonly cliName: string | null;
+  private readonly cliVersion: string | null;
   private readonly instructionRoot: string | null;
   private readonly startupCwd: string | null;
   private baselineInstructionsLoaded = false;
@@ -173,6 +185,8 @@ export class CodingAgent {
   private turn = 0;
   private activeContext: AgentRuntimeContext | null = null;
   private activeRequestId: string | null = null;
+  private readonly conversationHistory: ConversationHistoryLike | null;
+  private readonly contextGovernor: AgentContextGovernor | null;
 
   constructor(options: CodingAgentOptions) {
     this.repeatToolReminderThresholds = normalizeReminderThresholds(
@@ -182,10 +196,14 @@ export class CodingAgent {
     this.tools = options.tools;
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
+    this.cliName = options.cliName ?? null;
+    this.cliVersion = options.cliVersion ?? null;
     this.provider = options.provider;
     this.baseUrl = options.baseUrl ?? null;
     this.reasoningEffort = options.reasoningEffort ?? "high";
     this.adapter = options.modelAdapter;
+    this.conversationHistory = options.conversationHistory ?? null;
+    this.contextGovernor = options.contextGovernor ?? null;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
@@ -198,7 +216,12 @@ export class CodingAgent {
       options.projectRoot == null ? null : realpathOrSelf(options.projectRoot);
     this.startupCwd =
       options.startupCwd == null ? null : realpathOrSelf(options.startupCwd);
-    this.messages = [{ role: "system", content: buildSystemPrompt(this.tools) }];
+    this.messages = [
+      {
+        role: "system",
+        content: this.buildSystemPrompt(),
+      },
+    ];
   }
 
   /** Bookkeeping for loaded project instructions (never model-visible). */
@@ -226,6 +249,7 @@ export class CodingAgent {
     this.provider = options.provider;
     this.model = options.model;
     this.baseUrl = options.baseUrl;
+    this.refreshSystemPrompt();
     this.emit("model_switched", {
       provider: options.provider,
       model: options.model,
@@ -260,7 +284,9 @@ export class CodingAgent {
           context,
           cancelToken,
           createCancelled: (message) => new AgentCancelled(message),
+          conversationHistory: this.conversationHistory,
         }),
+        contextGovernor: this.contextGovernor,
         repeatToolPolicy: new RepeatToolPolicy(this.repeatToolReminderThresholds),
         userInput,
         context,
@@ -314,6 +340,11 @@ export class CodingAgent {
       return;
     }
     raiseIfCancelled(cancelToken);
+    this.conversationHistory?.appendUser({
+      message: { role: "user", content: baseline.rendered },
+      inputEventIds: [],
+      source: "direct",
+    });
     this.messages.push({ role: "user", content: baseline.rendered });
   }
 
@@ -353,7 +384,33 @@ export class CodingAgent {
     if (rendered === "") {
       return;
     }
+    this.conversationHistory?.appendUser({
+      message: { role: "user", content: rendered },
+      inputEventIds: [],
+      source: "direct",
+    });
     this.messages.push({ role: "user", content: rendered });
+  }
+
+  private buildSystemPrompt(): string {
+    return buildSystemPrompt(this.tools, {
+      cliName: this.cliName,
+      cliVersion: this.cliVersion,
+      provider: this.provider,
+      model: this.model,
+      promptCwd: this.startupCwd,
+    });
+  }
+
+  private refreshSystemPrompt(): void {
+    const first = this.messages[0];
+    if (first?.role !== "system") {
+      return;
+    }
+    this.messages[0] = {
+      role: "system",
+      content: this.buildSystemPrompt(),
+    };
   }
 
 

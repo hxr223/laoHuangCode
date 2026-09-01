@@ -26,6 +26,8 @@ export interface UIState {
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
+  contextTokens: number;
+  contextWindow: number;
 }
 
 export function createUIState(): UIState {
@@ -40,6 +42,8 @@ export function createUIState(): UIState {
     totalTokens: 0,
     inputTokens: 0,
     outputTokens: 0,
+    contextTokens: 0,
+    contextWindow: 0,
   };
 }
 
@@ -139,6 +143,7 @@ export class UIEventReducer {
 
     if (kind === "model.request_started") {
       this.state.sessionState = "RUNNING_MODEL";
+      this.#updateContextUsage(payload);
       this.state.activeResponse = {
         requestId: correlationId,
         text: "",
@@ -244,6 +249,7 @@ export class UIEventReducer {
       this.state.model = String(
         "model" in payload ? payload.model : this.state.model,
       );
+      this.#updateContextUsage(payload);
       return createUpdate(kind, { payload });
     }
 
@@ -256,6 +262,15 @@ export class UIEventReducer {
     }
     if ("held_count" in payload) {
       this.state.heldCount = toInt(payload.held_count);
+    }
+  }
+
+  #updateContextUsage(payload: Record<string, unknown>): void {
+    if ("context_tokens" in payload) {
+      this.state.contextTokens = toInt(payload.context_tokens);
+    }
+    if ("context_window" in payload) {
+      this.state.contextWindow = toInt(payload.context_window);
     }
   }
 
