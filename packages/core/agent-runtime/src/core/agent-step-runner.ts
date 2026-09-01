@@ -43,7 +43,11 @@ export interface AgentContextGovernor {
     readonly tools: readonly ToolSpec[];
     readonly provider: string;
     readonly model: string;
-  }): Promise<{ readonly messages: readonly ModelMessage[] }>;
+  }): Promise<{
+    readonly messages: readonly ModelMessage[];
+    readonly contextTokens?: number;
+    readonly contextWindow?: number;
+  }>;
 }
 
 export interface AgentStepRunnerOptions {
@@ -129,6 +133,8 @@ export class AgentStepRunner {
         tool_rounds: toolRounds,
         model_requests: modelRequests,
         total_tokens: totalTokens,
+        ...(prepared.contextTokens === undefined ? {} : { context_tokens: prepared.contextTokens }),
+        ...(prepared.contextWindow === undefined ? {} : { context_window: prepared.contextWindow }),
       });
 
       let result;

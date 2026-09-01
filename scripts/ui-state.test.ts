@@ -31,6 +31,22 @@ test("model deltas are provisional until committed", () => {
   assert.equal(reducer.state.activeResponse?.status, "committed");
 });
 
+test("model request started updates context window usage", () => {
+  const reducer = new UIEventReducer();
+
+  reducer.apply({
+    kind: "model.request_started",
+    correlation_id: "request-1",
+    payload: {
+      context_tokens: 2048,
+      context_window: 1_000_000,
+    },
+  });
+
+  assert.equal(reducer.state.contextTokens, 2048);
+  assert.equal(reducer.state.contextWindow, 1_000_000);
+});
+
 test("parallel tool output is grouped by correlation id", () => {
   const reducer = new UIEventReducer();
   for (const toolId of ["call-1", "call-2"]) {

@@ -76,26 +76,41 @@ test("kimi-style screen exposes welcome, responsive status, and cursor data", ()
   assert.deepEqual(frame.cursor, { row: frame.screen.cursorRow, col: 8 });
 });
 
-test("status drops cwd then tokens before truncating provider and model", () => {
+test("status shows context usage instead of cwd", () => {
   const state = createUIState();
   state.pendingCount = 2;
   state.inputTokens = 120;
   state.outputTokens = 45;
   state.totalTokens = 165;
-  state.provider = "long-provider";
-  state.model = "long-model-name";
+  state.contextTokens = 1234;
+  state.contextWindow = 1_000_000;
 
   const frame = new FrameBuilder({
     state,
     transcript: new TranscriptStore(),
     projectRoot: "/a/very/long/project/root",
     effort: "high",
-  }).build({ width: 30, editor: new EditorState() });
+  }).build({ width: 80, editor: new EditorState() });
 
+  assert.ok(frame.statusBar.includes("context: 0% (1.2K/1M)"));
   assert.ok(frame.statusBar.includes("queue 2 pending / 0 held"));
   assert.ok(!frame.statusBar.includes("/a/very/long"));
   assert.ok(!frame.statusBar.includes("↑120"));
-  assert.ok(frame.screen.lines.every((line) => visibleWidth(line) <= 29));
+  assert.ok(frame.statusBar.includes("effort high"));
+
+  state.provider = "long-provider";
+  state.model = "long-model-name";
+  const narrow = new FrameBuilder({
+    state,
+    transcript: new TranscriptStore(),
+    projectRoot: "/a/very/long/project/root",
+    effort: "high",
+  }).build({ width: 30, editor: new EditorState() });
+
+  assert.ok(narrow.statusBar.includes("context: 0%"));
+  assert.ok(!narrow.statusBar.includes("/a/very/long"));
+  assert.ok(!narrow.statusBar.includes("↑120"));
+  assert.ok(narrow.screen.lines.every((line) => visibleWidth(line) <= 29));
 
   const wide = new FrameBuilder({
     state,
