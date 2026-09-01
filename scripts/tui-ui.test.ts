@@ -1053,7 +1053,7 @@ test("terminal ui replaces transcript from restored session and continues live e
   assert.match(lines, /new answer/);
 });
 
-test("transcript projector restores user assistant tool and reset notices", () => {
+test("transcript projector restores user assistant and tool notices", () => {
   const items = projectTranscript([
     {
       schemaVersion: 1,
@@ -1112,23 +1112,12 @@ test("transcript projector restores user assistant tool and reset notices", () =
         recovered: false,
       },
     },
-    {
-      schemaVersion: 1,
-      sessionId: "session",
-      seq: 4,
-      id: "e4",
-      timestamp: "2026-08-31T00:00:00.000Z",
-      kind: "entry",
-      entryType: "context_reset",
-      payload: { resetThroughSeq: 3, reason: "user_clear" },
-    },
   ]);
 
   assert.deepEqual(items, [
     { kind: "user", text: "hello" },
     { kind: "assistant", text: "answer", reasoning: "think" },
     { kind: "tool", callId: "call-1", name: "read", subject: "call-1", result: "file", isError: false },
-    { kind: "notice", text: "Conversation context was cleared.", tone: "info" },
   ]);
 });
 

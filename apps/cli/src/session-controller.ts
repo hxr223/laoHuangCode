@@ -134,13 +134,6 @@ export class SessionController {
     return result;
   }
 
-  resetContext(): void {
-    if (this.#history === null) {
-      throw new Error("no active session");
-    }
-    this.#history.reset("user_clear");
-  }
-
   setCompactor(compactor: SessionCompactor | null): void {
     this.#compactor = compactor;
   }

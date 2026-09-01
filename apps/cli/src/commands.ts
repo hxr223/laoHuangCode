@@ -414,7 +414,6 @@ export interface SessionControllerLike {
   }>;
   clone(): Promise<{ readonly sessionId: string; readonly path: string }>;
   compact(): Promise<unknown>;
-  resetContext(): void;
 }
 
 export interface SessionCommandsOptions {
@@ -631,13 +630,6 @@ export class SessionCommands {
         argumentCompleter: queueCompletions,
       },
       {
-        name: "/clear",
-        description: "清空当前对话上下文",
-        usage: "/clear",
-        handler: (args) => this.handleClear(args),
-        allowedStates: IDLE_ONLY,
-      },
-      {
         name: "/new",
         description: "创建新会话",
         usage: "/new",
@@ -820,22 +812,6 @@ export class SessionCommands {
         deadLetters: status.deadLetters ?? 0,
       },
     });
-    return true;
-  }
-
-  private handleClear(args: string[]): boolean {
-    if (args.length > 0) {
-      this.notice("Usage: /clear", tones.invalid);
-      return true;
-    }
-    const clear = this.#agent.clearHistory;
-    if (typeof clear === "function") {
-      clear.call(this.#agent);
-    } else if (this.#agent.messages !== undefined && this.#agent.messages.length > 0) {
-      this.#agent.messages.splice(1);
-    }
-    this.#sessionController?.resetContext();
-    this.notice("Conversation cleared.", tones.cleared);
     return true;
   }
 

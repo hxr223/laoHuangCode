@@ -141,7 +141,6 @@ test("session lifecycle commands delegate to the session controller", async () =
       },
       clone: async () => { calls.push("clone"); return { sessionId: "clone", path: "/tmp/clone.jsonl" }; },
       compact: async () => { calls.push("compact"); return {}; },
-      resetContext: () => { calls.push("reset"); },
     },
   });
 
@@ -203,7 +202,6 @@ test("resume without an id selects a recent session and restores it", async () =
       fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
       clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
       compact: async () => ({}),
-      resetContext: () => {},
     },
   });
 
@@ -258,7 +256,6 @@ test("resume completes session ids with recent conversation details", () => {
       fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
       clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
       compact: async () => ({}),
-      resetContext: () => {},
     },
   });
 
@@ -273,32 +270,20 @@ test("resume completes session ids with recent conversation details", () => {
   );
 });
 
-test("clear appends a session context reset while trimming live model history", async () => {
+test("/clear is not a registered session command", async () => {
   const presenter = new RecordingPresenter();
-  const agent = new FakeAgent({ model: "deepseek-v4-flash" });
-  agent.messages.push({ role: "user", content: "old" });
-  const calls: string[] = [];
-  const { commands } = createSessionCommandFixture({
-    presenter,
-    agent,
-    sessionController: {
-      currentSessionId: "session-1",
-      currentPath: "/tmp/session.jsonl",
-      list: () => [],
-      createNew: async () => {},
-      resume: async () => {},
-      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
-      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
-      compact: async () => ({}),
-      resetContext: () => { calls.push("reset"); },
-    },
+  const { commands } = createSessionCommandFixture({ presenter });
+
+  assert.equal(
+    commands.registry.all().some((command) => command.name === "/clear"),
+    false,
+  );
+  assert.deepEqual(commands.registry.complete("/cle", { state: "IDLE" }), []);
+  assert.deepEqual(await commands.execute("/clear"), {
+    status: "not_found",
+    command: "/clear",
   });
-
-  await commands.execute("/clear");
-
-  assert.deepEqual(calls, ["reset"]);
-  assert.deepEqual(agent.messages, [{ role: "system", content: "system prompt" }]);
-  assert.deepEqual(noticeTexts(presenter), ["Conversation cleared."]);
+  assert.deepEqual(presenter.notices, []);
 });
 
 test("running completion filters mutating commands", () => {
@@ -410,7 +395,7 @@ test("queue commands delegate to the agent session", async () => {
   ]);
 });
 
-test("cancel and clear emit typed success or warning notices", async () => {
+test("cancel emits typed warning notices", async () => {
   const session: SessionLike = {
     queueStatus: () => ({}),
     clearQueues: () => 0,
@@ -423,13 +408,11 @@ test("cancel and clear emit typed success or warning notices", async () => {
   agent.messages.push({ role: "user", content: "hello" });
 
   await commands.execute("/cancel");
-  await commands.execute("/clear");
 
   assert.deepEqual(presenter.notices, [
     { text: "Cancelling current task…", tone: "warning" },
-    { text: "Conversation cleared.", tone: "success" },
   ]);
-  assert.equal(agent.messages.length, 1);
+  assert.equal(agent.messages.length, 2);
 });
 
 test("blocked commands emit warning notices", async () => {
@@ -444,11 +427,11 @@ test("blocked commands emit warning notices", async () => {
   const presenter = new RecordingPresenter();
   const { commands } = createSessionCommandFixture({ presenter, session });
 
-  const result = await commands.execute("/clear");
+  const result = await commands.execute("/new");
 
   assert.equal(result.status, "blocked");
   assert.deepEqual(presenter.notices, [{
-    text: "/clear is unavailable while the task is running_model.",
+    text: "/new is unavailable while the task is running_model.",
     tone: "warning",
   }]);
 });

@@ -662,10 +662,6 @@ export async function main(
         void commandDispatcher?.("/model");
         return;
       }
-      if (action === "clear_screen") {
-        void commandDispatcher?.("/clear");
-        return;
-      }
       if (action === "toggle_thinking") {
         terminalUi.toggleReasoningFromKeybinding();
         return;

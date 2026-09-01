@@ -88,11 +88,6 @@ export interface ReminderPayload {
   readonly reason: "repeat_tool" | "runtime";
 }
 
-export interface ContextResetPayload {
-  readonly resetThroughSeq: number;
-  readonly reason: "user_clear";
-}
-
 export interface CompactionPayload {
   readonly summary: string;
   readonly summarizedFromSeq: number;
@@ -115,7 +110,6 @@ export type SessionEntryType =
   | "assistant_message"
   | "tool_result"
   | "reminder"
-  | "context_reset"
   | "compaction";
 
 export type SessionEntry =
@@ -151,11 +145,6 @@ export type SessionEntry =
     })
   | (SessionItemBase & {
       readonly kind: "entry";
-      readonly entryType: "context_reset";
-      readonly payload: ContextResetPayload;
-    })
-  | (SessionItemBase & {
-      readonly kind: "entry";
       readonly entryType: "compaction";
       readonly payload: CompactionPayload;
     });
@@ -166,7 +155,6 @@ export type UserMessageEntry = Extract<SessionEntry, { readonly entryType: "user
 export type AssistantMessageEntry = Extract<SessionEntry, { readonly entryType: "assistant_message" }>;
 export type ToolResultEntry = Extract<SessionEntry, { readonly entryType: "tool_result" }>;
 export type ReminderEntry = Extract<SessionEntry, { readonly entryType: "reminder" }>;
-export type ContextResetEntry = Extract<SessionEntry, { readonly entryType: "context_reset" }>;
 export type CompactionEntry = Extract<SessionEntry, { readonly entryType: "compaction" }>;
 
 export type SessionRecordType =
@@ -218,7 +206,6 @@ const ENTRY_TYPES: ReadonlySet<string> = new Set([
   "assistant_message",
   "tool_result",
   "reminder",
-  "context_reset",
   "compaction",
 ]);
 
