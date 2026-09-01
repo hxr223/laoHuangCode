@@ -238,18 +238,18 @@ function expectedStructuredStyleSnapshots(width: number): SemanticSnapshot[] {
     ],
     [
       [],
-      [{ text: "Authentication", style: { foreground: "accent", background: "card" } }],
+      [{ text: "Authentication", style: { foreground: "accent" } }],
       [],
-      [{ text: "Enter API key", style: { background: "card" } }],
+      [{ text: "Enter API key" }],
       [],
       [
-        { text: "❯", style: { foreground: "accent", background: "card" } },
-        { text: "•••", style: { background: "card" } },
+        { text: "❯", style: { foreground: "accent" } },
+        { text: "•••" },
       ],
       [],
       [{
         text: "Enter to submit, Esc to cancel",
-        style: { foreground: "dim", background: "card" },
+        style: { foreground: "dim" },
       }],
       [],
     ],
