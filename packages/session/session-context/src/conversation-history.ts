@@ -184,14 +184,6 @@ export class ConversationHistory {
     });
   }
 
-  reset(reason: "user_clear"): SessionEntry {
-    const resetThroughSeq = this.#entries.at(-1)?.seq ?? 0;
-    return this.append({
-      entryType: "context_reset",
-      payload: { resetThroughSeq, reason },
-    });
-  }
-
   appendCompaction(input: CompactionPayload): CompactionEntry {
     return this.append({
       entryType: "compaction",

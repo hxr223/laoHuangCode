@@ -76,7 +76,7 @@ function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[
   const units: SemanticUnit[] = [];
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
-    if (entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "context_reset" || entry.entryType === "compaction") {
+    if (entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "compaction") {
       continue;
     }
     if (entry.entryType === "assistant_message") {

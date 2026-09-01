@@ -65,7 +65,7 @@ test("session controller reports unknown session ids", async () => {
   await assert.rejects(controller.resume("missing"), /unknown session/);
 });
 
-test("session controller wires context reset and manual compaction to active history", async () => {
+test("session controller wires manual compaction to active history", async () => {
   const controller = new SessionController({
     sessionsRoot: makeTempRoot(),
     projectRoot: "/tmp/project",
@@ -81,10 +81,6 @@ test("session controller wires context reset and manual compaction to active his
     inputEventIds: [],
     source: "direct",
   });
-
-  controller.resetContext();
-
-  assert.equal(controller.history?.entries().at(-1)?.entryType, "context_reset");
 
   let compacted = false;
   controller.setCompactor(async () => {

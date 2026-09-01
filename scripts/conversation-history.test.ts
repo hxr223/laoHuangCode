@@ -90,28 +90,6 @@ test("conversation history appends assistant and ordered tool result entries", (
   journal.close();
 });
 
-test("context reset is append-only and preserves prior entries", () => {
-  const journal = openJournal();
-  const history = ConversationHistory.fromReplay(readSessionFile(journal.path), journal);
-  history.appendUser({
-    message: { role: "user", content: "before clear" },
-    inputEventIds: [],
-    source: "direct",
-  });
-  const reset = history.reset("user_clear");
-
-  assert.equal(reset.payload.resetThroughSeq, 1);
-  assert.deepEqual(readSessionFile(journal.path).items.map((item) => item.kind), [
-    "entry",
-    "entry",
-  ]);
-  assert.deepEqual(history.entries().map((entry) => entry.entryType), [
-    "user_message",
-    "context_reset",
-  ]);
-  journal.close();
-});
-
 test("conversation history repairs interrupted open tool calls on replay", () => {
   const journal = openJournal();
   journal.appendEntry({

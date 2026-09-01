@@ -27,10 +27,9 @@ test("context builder emits full un-compacted history in deterministic order", (
   ]);
   assert.deepEqual(built.sourceEntryIds, ["e1", "e2", "e3", "e4"]);
   assert.equal(built.activeCompactionId, null);
-  assert.equal(built.resetEntryId, null);
 });
 
-test("context builder applies supersede, reset, summary, retained tail, and newer entries", () => {
+test("context builder applies supersede, summary, retained tail, and newer entries", () => {
   const built = new ContextBuilder().build({
     entries: [
       system(1, "old system"),
@@ -38,23 +37,17 @@ test("context builder applies supersede, reset, summary, retained tail, and newe
       project(3, "old project"),
       { ...project(4, "new project"), payload: { message: { role: "user", content: "new project" }, files: [], supersedesEntryIds: ["e3"] } },
       user(5, "old user"),
+      user(6, "summarized user"),
+      user(7, "retained user"),
       {
-        ...base(6),
-        kind: "entry",
-        entryType: "context_reset",
-        payload: { resetThroughSeq: 5, reason: "user_clear" },
-      },
-      user(7, "summarized user"),
-      user(8, "retained user"),
-      {
-        ...base(9),
+        ...base(8),
         kind: "entry",
         entryType: "compaction",
         payload: {
           summary: "summary text",
-          summarizedFromSeq: 7,
-          summarizedThroughSeq: 7,
-          retainedFromSeq: 8,
+          summarizedFromSeq: 5,
+          summarizedThroughSeq: 6,
+          retainedFromSeq: 7,
           tokensBefore: 100,
           retainedTokens: 20,
           summaryInputTokens: 50,
@@ -64,7 +57,7 @@ test("context builder applies supersede, reset, summary, retained tail, and newe
           trigger: "manual",
         },
       },
-      user(10, "new user"),
+      user(9, "new user"),
     ] as SessionEntry[],
     currentProvider: "pi-ai",
     currentModel: "gpt-test",
@@ -80,9 +73,8 @@ test("context builder applies supersede, reset, summary, retained tail, and newe
       "new user",
     ],
   );
-  assert.deepEqual(built.sourceEntryIds, ["e2", "e4", "e9", "e8", "e10"]);
-  assert.equal(built.activeCompactionId, "e9");
-  assert.equal(built.resetEntryId, "e6");
+  assert.deepEqual(built.sourceEntryIds, ["e2", "e4", "e8", "e7", "e9"]);
+  assert.equal(built.activeCompactionId, "e8");
 });
 
 test("context builder strips adapter replay for assistant messages from another route", () => {

@@ -5,7 +5,6 @@ import {
 import type {
   AssistantMessageEntry,
   CompactionEntry,
-  ContextResetEntry,
   ProjectInstructionsEntry,
   SessionEntry,
   SystemContextEntry,
@@ -21,7 +20,6 @@ export interface BuiltContext {
   readonly messages: readonly ModelMessage[];
   readonly sourceEntryIds: readonly string[];
   readonly activeCompactionId: string | null;
-  readonly resetEntryId: string | null;
 }
 
 export class ContextBuildError extends Error {
@@ -38,9 +36,7 @@ export class ContextBuilder {
   build(input: BuildContextInput): BuiltContext {
     const sorted = [...input.entries].sort((left, right) => left.seq - right.seq);
     const superseded = supersededEntryIds(sorted);
-    const reset = latestEntry(sorted, "context_reset");
-    const resetThroughSeq = reset?.payload.resetThroughSeq ?? 0;
-    const activeCompaction = latestCompaction(sorted, resetThroughSeq);
+    const activeCompaction = latestCompaction(sorted);
     const selected: SelectedMessage[] = [];
     const system = latestActive(sorted, "system_context", superseded);
     if (system !== null) {
@@ -60,7 +56,7 @@ export class ContextBuilder {
         },
       });
     }
-    for (const entry of conversationTail(sorted, resetThroughSeq, activeCompaction)) {
+    for (const entry of conversationTail(sorted, activeCompaction)) {
       const message = modelMessageForEntry(entry, input.currentProvider, input.currentModel);
       if (message !== null) {
         selected.push({ entryId: entry.id, message });
@@ -71,7 +67,6 @@ export class ContextBuilder {
       messages: selected.map((item) => item.message),
       sourceEntryIds: selected.map((item) => item.entryId),
       activeCompactionId: activeCompaction?.id ?? null,
-      resetEntryId: reset?.id ?? null,
     };
   }
 }
@@ -96,19 +91,6 @@ function supersededEntryIds(entries: readonly SessionEntry[]): ReadonlySet<strin
   return superseded;
 }
 
-function latestEntry<T extends SessionEntry["entryType"]>(
-  entries: readonly SessionEntry[],
-  entryType: T,
-): Extract<SessionEntry, { readonly entryType: T }> | null {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]!;
-    if (entry.entryType === entryType) {
-      return entry as Extract<SessionEntry, { readonly entryType: T }>;
-    }
-  }
-  return null;
-}
-
 function latestActive<T extends "system_context" | "project_instructions">(
   entries: readonly SessionEntry[],
   entryType: T,
@@ -123,13 +105,10 @@ function latestActive<T extends "system_context" | "project_instructions">(
   return null;
 }
 
-function latestCompaction(
-  entries: readonly SessionEntry[],
-  resetThroughSeq: number,
-): CompactionEntry | null {
+function latestCompaction(entries: readonly SessionEntry[]): CompactionEntry | null {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index]!;
-    if (entry.entryType === "compaction" && entry.seq > resetThroughSeq) {
+    if (entry.entryType === "compaction") {
       return entry;
     }
   }
@@ -138,16 +117,13 @@ function latestCompaction(
 
 function conversationTail(
   entries: readonly SessionEntry[],
-  resetThroughSeq: number,
   activeCompaction: CompactionEntry | null,
 ): readonly SessionEntry[] {
-  const boundary = activeCompaction?.payload.retainedFromSeq ?? (resetThroughSeq + 1);
+  const boundary = activeCompaction?.payload.retainedFromSeq ?? 1;
   return entries.filter((entry) =>
     entry.seq >= boundary &&
-    entry.seq > resetThroughSeq &&
     entry.entryType !== "system_context" &&
     entry.entryType !== "project_instructions" &&
-    entry.entryType !== "context_reset" &&
     entry.entryType !== "compaction"
   );
 }
