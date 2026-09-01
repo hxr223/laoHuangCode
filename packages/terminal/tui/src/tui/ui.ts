@@ -68,6 +68,7 @@ import {
   createWelcomeBlock,
   type TranscriptBlock,
   type NoticeTone,
+  type RestoredTranscriptItemLike,
 } from "./transcript-store.ts";
 import {
   EditorState,
@@ -680,7 +681,7 @@ export class InteractiveTerminalLoop {
     } else if (action === "submit_follow_up") {
       this.#applyFollowUpSubmit();
     } else if (action === "dismiss") {
-      this.#applyEditorAction(inputAction(InputActionKind.Dismiss));
+      this.#applyDismissAction();
     } else if (action === "cancel") {
       this.#applyEditorAction(inputAction(InputActionKind.Cancel));
     } else if (action === "toggle_tool_output") {
@@ -690,6 +691,19 @@ export class InteractiveTerminalLoop {
       this.#ui.handleKeyAction(action);
       this.#needsRender = true;
     }
+  }
+
+  #applyDismissAction(): void {
+    if (this.#applyCompletionAction(inputAction(InputActionKind.Dismiss))) {
+      this.#needsRender = true;
+      return;
+    }
+    if (this.#ui.isRunning()) {
+      this.#ui.cancelFromKeybinding();
+      this.#needsRender = true;
+      return;
+    }
+    this.#applyEditorAction(inputAction(InputActionKind.Dismiss));
   }
 
   #applyFollowUpSubmit(): void {
@@ -880,6 +894,7 @@ export interface TerminalUIOptions {
   projectRoot?: string;
   provider?: string;
   model?: string;
+  contextWindow?: number;
   effort?: string;
   version?: string;
   sessionId?: string;
@@ -916,6 +931,12 @@ function resolveFallbackMarkdownWidth(): number {
   return typeof columns === "number" && columns > 0 ? columns : FALLBACK_MARKDOWN_WIDTH;
 }
 
+function normalizePositiveInteger(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : 0;
+}
+
 /**
  * Render interactive agent sessions with the append-only transcript model.
  *
@@ -945,6 +966,7 @@ export class TerminalUI {
   #askFallback: ((message: string, secret: boolean) => Promise<string>) | null;
   #loop: InteractiveTerminalLoop | null = null;
   readonly #transcript: TranscriptStore;
+  readonly #transcriptView: Transcript;
   #showReasoning = true;
   #displayPolicy = new DisplayPolicy({
     audience: "terminal",
@@ -976,9 +998,13 @@ export class TerminalUI {
     this.state = createUIState();
     this.state.provider = options.provider ?? "";
     this.state.model = options.model ?? "";
+    this.state.contextWindow = normalizePositiveInteger(options.contextWindow);
     this.reducer = new UIEventReducer(this.state);
     this.#transcript = new TranscriptStore({
       errorStyle: `bold ${this.theme.color("error")}`,
+    });
+    this.#transcriptView = new Transcript({
+      blocks: this.#transcript.blocks(),
     });
     this.#frameBuilder = new FrameBuilder({
       state: this.state,
@@ -1107,6 +1133,23 @@ export class TerminalUI {
 
   setSessionId(sessionId: string): void {
     this.#sessionId = sessionId;
+    this.#loop?.requestRender();
+  }
+
+  replaceTranscript(items: readonly RestoredTranscriptItemLike[]): void {
+    this.#transcript.replace(items);
+    this.#transcriptView.invalidate();
+    this.#loop?.requestRender();
+  }
+
+  setComposerText(text: string): void {
+    const editor = this.#loop?.editor;
+    if (editor === undefined) {
+      return;
+    }
+    editor.text = text;
+    editor.cursor = text.length;
+    editor.setCompletions([]);
     this.#loop?.requestRender();
   }
 
@@ -1242,9 +1285,7 @@ export class TerminalUI {
   }
 
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
-    const rendered = new Transcript({
-      blocks: this.#transcript.blocks(),
-    }).renderWithMetadata({ width, theme: this.theme });
+    const rendered = this.#transcriptView.renderWithMetadata({ width, theme: this.theme });
     return {
       lines: compileStyledLines(rendered.lines, Math.max(12, width), this.theme),
       activeStart: rendered.activeStart,
@@ -1264,7 +1305,7 @@ export class TerminalUI {
       theme: this.theme,
     });
     const rendered = new MainScreen({
-      transcript: new Transcript({ blocks: this.#transcript.blocks() }),
+      transcript: this.#transcriptView,
       composer: new Composer({
         editor,
         prompt: options.prompt ?? "> ",

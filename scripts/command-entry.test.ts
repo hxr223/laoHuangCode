@@ -179,7 +179,7 @@ test("command entry reports unknown commands without handling them", async () =>
   assert.deepEqual(result, { status: "not_found", command: "/hep" });
 });
 
-test("command entry blocks clear while a task runs", async () => {
+test("command entry reports clear as an unknown command", async () => {
   const { commands, presenter } = makeCommands({
     session: {
       activeTask: { state: "RUNNING_MODEL" },
@@ -193,10 +193,8 @@ test("command entry blocks clear while a task runs", async () => {
 
   const result = await commands.execute("/clear");
 
-  assert.deepEqual(result, { status: "blocked", command: "/clear" });
-  assert.deepEqual(noticeTexts(presenter), [
-    "/clear is unavailable while the task is running_model.",
-  ]);
+  assert.deepEqual(result, { status: "not_found", command: "/clear" });
+  assert.deepEqual(noticeTexts(presenter), []);
 });
 
 test("command entry permits model current while a task runs", async () => {

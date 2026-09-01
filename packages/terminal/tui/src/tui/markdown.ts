@@ -148,7 +148,6 @@ function renderBlocks(
       index += 1;
       const codeStyle: InlineStyle = {
         foreground: "code",
-        background: "card",
       };
       const codeLines: Segment[][] = [];
       while (index < lines.length) {
@@ -491,7 +490,7 @@ const INLINE_PATTERNS: InlinePattern[] = [
   {
     // Inline code: no further parsing inside backticks.
     pattern: /`([^`]+)`/,
-    style: () => ({ foreground: "code", background: "card" }),
+    style: () => ({ foreground: "code" }),
   },
   {
     pattern: /\*\*([^*]+)\*\*/,

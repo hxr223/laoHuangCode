@@ -116,6 +116,18 @@ test("forwards reasoning effort to the adapter request", async () => {
   assert.equal(adapter.requests[0]?.reasoningEffort, "low");
 });
 
+test("forwards max output tokens to the adapter request", async () => {
+  const adapter = new StubAdapter(async () => result());
+  const runtime = new ModelRuntime(adapter);
+
+  await runtime.complete({
+    ...request(),
+    maxOutputTokens: 1024,
+  });
+
+  assert.equal(adapter.requests[0]?.maxOutputTokens, 1024);
+});
+
 test("does not invoke the adapter after model cancellation", async () => {
   const token = new CancelToken();
   token.cancel("user stopped");

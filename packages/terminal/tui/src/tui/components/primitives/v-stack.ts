@@ -3,6 +3,7 @@ import {
   plainLine,
   type ComponentRenderResult,
   type RenderContext,
+  type StyledLine,
 } from "../../render-model.ts";
 
 export interface VStackOptions {
@@ -23,14 +24,29 @@ export class VStack implements TuiComponent {
   }
 
   render(context: RenderContext): ComponentRenderResult {
-    const lines = [];
+    const lines: StyledLine[] = [];
+    let cursor: ComponentRenderResult["cursor"] | undefined;
+    let rowOffset = 0;
     for (const [index, child] of this.#children.entries()) {
       if (index > 0) {
-        lines.push(...Array.from({ length: this.#gap }, () => plainLine("")));
+        const gaps = Array.from({ length: this.#gap }, () => plainLine(""));
+        lines.push(...gaps);
+        rowOffset += gaps.length;
       }
-      lines.push(...child.render(context).lines);
+      const rendered = child.render(context);
+      if (cursor === undefined && rendered.cursor !== undefined) {
+        cursor = {
+          row: rowOffset + rendered.cursor.row,
+          column: rendered.cursor.column,
+        };
+      }
+      lines.push(...rendered.lines);
+      rowOffset += rendered.lines.length;
     }
-    return { lines };
+    return {
+      lines,
+      ...(cursor === undefined ? {} : { cursor }),
+    };
   }
 
   invalidate(): void {

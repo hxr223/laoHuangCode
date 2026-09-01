@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   VERSION,
   main as cliMain,
+  resetEmptySessionTranscript,
   runInitialModelSelection,
 } from "../apps/cli/src/main.ts";
 import { parseArgs } from "../apps/cli/src/args.ts";
@@ -74,6 +75,22 @@ async function withTempDir(run: (directory: string) => Promise<void>): Promise<v
     rmSync(directory, { recursive: true, force: true });
   }
 }
+
+test("empty session refresh replaces transcript then appends welcome", () => {
+  const calls: string[] = [];
+  const view: Pick<TerminalUI, "replaceTranscript" | "showWelcome"> = {
+    replaceTranscript: (items) => {
+      calls.push(`replace:${items.length}`);
+    },
+    showWelcome: () => {
+      calls.push("welcome");
+    },
+  };
+
+  resetEmptySessionTranscript(view);
+
+  assert.deepEqual(calls, ["replace:0", "welcome"]);
+});
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {

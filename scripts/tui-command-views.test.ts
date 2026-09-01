@@ -158,9 +158,12 @@ test("transcript dispatches each static command result variant", () => {
 
   assert.deepEqual(transcript.render({ width: 80, theme: PI_DARK }).lines.map(lineText), [
     "/help  显示帮助",
+    "",
     "Anthropic  available  configured  verified",
+    "",
     "Anthropic  available  configured  verified",
     "static models  1 model",
+    "",
     "pending  0  pending tokens  0  held  0  held tokens  0  dead letters  0",
   ]);
 });
@@ -228,6 +231,21 @@ test("model selector filters and returns the highlighted model", () => {
   view.handleInput(keyEvent("enter"));
 
   assert.deepEqual(selections, ["anthropic/claude-sonnet"]);
+});
+
+test("searchable selectors render their requested search placeholder", () => {
+  const view = new ModelSelectorView({
+    title: "Sessions",
+    searchPlaceholder: "Search sessions",
+    items: [{ value: "session-1", label: "session-1" }],
+    onSelect: () => {},
+    onCancel: () => {},
+  });
+
+  const text = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+
+  assert.ok(text.includes("Search sessions"));
+  assert.equal(text.includes("Search models"), false);
 });
 
 test("model selector renders its empty filter state", () => {

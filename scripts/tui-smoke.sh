@@ -108,7 +108,7 @@ tmux new-session -d -s "$SESSION_NAME" -x 80 -y 24 \
 if [[ "$INTERACTIVE_SMOKE" == "1" ]]; then
   capture_and_validate "startup" "Welcome to LaoHuang Code!"
   tmux send-keys -t "$SESSION_NAME" "/"
-  capture_and_validate "slash completion" "/help  查看命令帮助"
+  capture_and_validate "slash completion" "› /apikey"
   tmux send-keys -t "$SESSION_NAME" Escape
   capture_and_validate "dismiss slash completion" "│> /" "› /apikey"
   tmux send-keys -t "$SESSION_NAME" BSpace

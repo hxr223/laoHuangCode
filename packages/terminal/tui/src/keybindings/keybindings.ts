@@ -3,7 +3,6 @@ import { keySignature, parseKey } from "./key-parser.ts";
 
 export type ActionId =
   | "toggle_tool_output"
-  | "clear_screen"
   | "editor_newline"
   | "select_model"
   | "steer_now"

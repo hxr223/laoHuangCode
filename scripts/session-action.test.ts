@@ -9,7 +9,7 @@ import {
   makePromptIntent,
   makeSteerIntent,
 } from "../packages/core/runtime-protocol/src/index.ts";
-import { routeHumanIntent } from "../packages/core/session-runtime/src/index.ts";
+import { routeHumanIntent } from "../packages/session/session-runtime/src/index.ts";
 import {
   makeAnswerAction,
   makeApprovalAction,
@@ -17,7 +17,7 @@ import {
   makeCommandAction,
   makePromptAction,
 } from "../packages/core/runtime-protocol/src/index.ts";
-import { SessionState, AgentSession } from "../packages/core/session-runtime/src/index.ts";
+import { SessionState, AgentSession } from "../packages/session/session-runtime/src/index.ts";
 
 test("idle submit creates a prompt action", () => {
   const action = routeHumanIntent(

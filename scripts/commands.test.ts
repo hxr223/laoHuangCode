@@ -116,6 +116,204 @@ test("slash commands and model arguments are completed", () => {
   assert.deepEqual(plainFound, []);
 });
 
+test("session lifecycle commands delegate to the session controller", async () => {
+  const presenter = new RecordingPresenter();
+  const calls: string[] = [];
+  const composerTexts: string[] = [];
+  let sessionChanges = 0;
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    onComposerText: (text) => { composerTexts.push(text); },
+    onSessionChanged: () => { sessionChanges += 1; },
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session.jsonl",
+      list: () => [{
+        sessionId: "session-1",
+        updatedAt: "2026-08-31T23:57:00.000Z",
+        cwd: "/Users/huangxurui/data/code/laoHuangCode",
+      }],
+      createNew: async () => { calls.push("new"); },
+      resume: async (sessionId: string) => { calls.push(`resume:${sessionId}`); },
+      fork: async (entryId: string, mode: "before" | "at") => {
+        calls.push(`fork:${entryId}:${mode}`);
+        return { sessionId: "child", path: "/tmp/child.jsonl", editorText: "edit me" };
+      },
+      clone: async () => { calls.push("clone"); return { sessionId: "clone", path: "/tmp/clone.jsonl" }; },
+      compact: async () => { calls.push("compact"); return {}; },
+    },
+  });
+
+  await commands.execute("/session");
+  await commands.execute("/sessions");
+  await commands.execute("/new");
+  await commands.execute("/resume session-2");
+  await commands.execute("/fork entry-1 before");
+  await commands.execute("/clone");
+  await commands.execute("/compact");
+
+  assert.deepEqual(calls, [
+    "new",
+    "resume:session-2",
+    "fork:entry-1:before",
+    "clone",
+    "compact",
+  ]);
+  assert.deepEqual(composerTexts, ["edit me"]);
+  assert.deepEqual(noticeTexts(presenter), [
+    "Current session: session-1\nPath: /tmp/session.jsonl",
+    "Untitled session\n3 minutes ago  ~/data/code/laoHuangCode",
+    "Started a new session.",
+    "Resumed session.",
+    "Forked session child.",
+    "Cloned session clone.",
+    "Compacted current session.",
+  ]);
+  assert.equal(sessionChanges, 5);
+});
+
+test("compact reports an error when there is no summarizable context", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session.jsonl",
+      list: () => [],
+      createNew: async () => {},
+      resume: async () => {},
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => {
+        throw new Error("No messages to compact in current history.");
+      },
+    },
+  });
+
+  const result = await commands.execute("/compact");
+
+  assert.equal(result.status, "error");
+  assert.match(
+    result.status === "error" ? result.error.message : "",
+    /No messages to compact in current history\./,
+  );
+  assert.deepEqual(presenter.notices, []);
+});
+
+test("resume without an id selects a recent session and restores it", async () => {
+  const presenter = new RecordingPresenter({ selections: ["session-2"] });
+  const calls: string[] = [];
+  let sessionChanges = 0;
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    onSessionChanged: () => { sessionChanges += 1; },
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session-1.jsonl",
+      list: () => [
+        {
+          sessionId: "session-1",
+          updatedAt: "2026-08-31T23:57:00.000Z",
+          cwd: "/Users/huangxurui/data/code/laoHuangCode",
+          title: "Current work",
+          lastUserText: "current conversation",
+        },
+        {
+          sessionId: "session-2",
+          updatedAt: "2026-08-31T22:00:00.000Z",
+          cwd: "/Users/huangxurui/data/code/laoHuangCode",
+          lastUserText: "fix the build",
+        },
+      ],
+      createNew: async () => {},
+      resume: async (sessionId: string) => { calls.push(sessionId); },
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => ({}),
+    },
+  });
+
+  const result = await commands.execute("/resume");
+
+  assert.equal(result.status, "handled");
+  assert.deepEqual(presenter.selections, [{
+    id: "session-resume",
+    title: "Resume session",
+    items: [
+      {
+        value: "session-1",
+        label: "Current work",
+        description: "3 minutes ago  ~/data/code/laoHuangCode",
+      },
+      {
+        value: "session-2",
+        label: "fix the build",
+        description: "2 hours ago  ~/data/code/laoHuangCode",
+      },
+    ],
+    currentValue: "session-1",
+    searchable: true,
+    searchPlaceholder: "Search sessions",
+    maxVisible: 20,
+  }]);
+  assert.deepEqual(calls, ["session-2"]);
+  assert.equal(sessionChanges, 1);
+  assert.deepEqual(noticeTexts(presenter), ["Resumed session."]);
+});
+
+test("resume completes session ids with recent conversation details", () => {
+  const { commands } = createSessionCommandFixture({
+    presenter: new RecordingPresenter(),
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session-1.jsonl",
+      list: () => [
+        {
+          sessionId: "session-1",
+          updatedAt: "2026-08-31T15:30:00.000Z",
+          lastUserText: "current conversation",
+        },
+        {
+          sessionId: "session-2",
+          updatedAt: "2026-08-30T08:15:00.000Z",
+          lastUserText: "fix the build",
+        },
+      ],
+      createNew: async () => {},
+      resume: async () => {},
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => ({}),
+    },
+  });
+
+  assert.deepEqual(commands.registry.complete("/resume session-2", { state: "IDLE" }), [{
+    value: "session-2",
+    description: "2026-08-30T08:15:00.000Z  fix the build",
+    start: -9,
+  }]);
+  assert.deepEqual(
+    commands.registry.complete("/resume session-2 ", { state: "IDLE" }),
+    [],
+  );
+});
+
+test("/clear is not a registered session command", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands } = createSessionCommandFixture({ presenter });
+
+  assert.equal(
+    commands.registry.all().some((command) => command.name === "/clear"),
+    false,
+  );
+  assert.deepEqual(commands.registry.complete("/cle", { state: "IDLE" }), []);
+  assert.deepEqual(await commands.execute("/clear"), {
+    status: "not_found",
+    command: "/clear",
+  });
+  assert.deepEqual(presenter.notices, []);
+});
+
 test("running completion filters mutating commands", () => {
   const { commands } = createSessionCommandFixture({
     presenter: new RecordingPresenter(),
@@ -225,7 +423,7 @@ test("queue commands delegate to the agent session", async () => {
   ]);
 });
 
-test("cancel and clear emit typed success or warning notices", async () => {
+test("cancel emits typed warning notices", async () => {
   const session: SessionLike = {
     queueStatus: () => ({}),
     clearQueues: () => 0,
@@ -238,13 +436,11 @@ test("cancel and clear emit typed success or warning notices", async () => {
   agent.messages.push({ role: "user", content: "hello" });
 
   await commands.execute("/cancel");
-  await commands.execute("/clear");
 
   assert.deepEqual(presenter.notices, [
     { text: "Cancelling current task…", tone: "warning" },
-    { text: "Conversation cleared.", tone: "success" },
   ]);
-  assert.equal(agent.messages.length, 1);
+  assert.equal(agent.messages.length, 2);
 });
 
 test("blocked commands emit warning notices", async () => {
@@ -259,11 +455,11 @@ test("blocked commands emit warning notices", async () => {
   const presenter = new RecordingPresenter();
   const { commands } = createSessionCommandFixture({ presenter, session });
 
-  const result = await commands.execute("/clear");
+  const result = await commands.execute("/new");
 
   assert.equal(result.status, "blocked");
   assert.deepEqual(presenter.notices, [{
-    text: "/clear is unavailable while the task is running_model.",
+    text: "/new is unavailable while the task is running_model.",
     tone: "warning",
   }]);
 });

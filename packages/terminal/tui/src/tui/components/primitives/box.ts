@@ -35,12 +35,19 @@ export class Box implements TuiComponent {
     const child = this.#child.render({ ...context, width: Math.max(1, width - this.#paddingX * 2) });
     const blank = (): StyledLine => line(span(" ".repeat(width), backgroundStyle(this.#background)));
     const lines = child.lines.map((value) => this.#renderLine(value, width));
+    const cursor = child.cursor === undefined
+      ? undefined
+      : {
+        row: child.cursor.row + this.#paddingY,
+        column: child.cursor.column + this.#paddingX,
+      };
     return {
       lines: [
         ...Array.from({ length: this.#paddingY }, blank),
         ...lines,
         ...Array.from({ length: this.#paddingY }, blank),
       ],
+      ...(cursor === undefined ? {} : { cursor }),
     };
   }
 

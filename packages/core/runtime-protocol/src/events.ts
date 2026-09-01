@@ -106,6 +106,8 @@ export interface TaskStateChangedPayload extends EventPayloadBase {
 
 export interface ModelRequestStartedPayload extends EventPayloadBase {
   request_id: string;
+  context_tokens?: number;
+  context_window?: number;
 }
 
 export interface ModelDeltaPayload extends EventPayloadBase {
@@ -448,7 +450,11 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
     spec(EventKind.ModelRequestStarted, {
       sources: [EventSource.Model],
       required_payload: ["request_id"],
-      payload_types: { request_id: "string" },
+      payload_types: {
+        request_id: "string",
+        context_tokens: "integer",
+        context_window: "integer",
+      },
       require_task_id: true,
       require_correlation_id: true,
       max_payload_chars: 100_000,

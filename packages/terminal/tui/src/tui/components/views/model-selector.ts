@@ -11,6 +11,7 @@ export interface ModelSelectorViewOptions {
   readonly title: string;
   readonly items: readonly SelectItem[];
   readonly currentValue?: string;
+  readonly searchPlaceholder?: string;
   readonly maxVisible?: number;
   readonly onSelect: (value: string) => void;
   readonly onCancel: () => void;
@@ -39,7 +40,7 @@ export class ModelSelectorView implements FocusableComponent {
       this.#selectList.setSelectedValue(options.currentValue);
     }
     this.#searchInput = new SearchInput({
-      placeholder: "Search models",
+      placeholder: options.searchPlaceholder ?? "Search models",
       onChange: (value) => this.#filterModels(value),
     });
     this.#syncFocus();
