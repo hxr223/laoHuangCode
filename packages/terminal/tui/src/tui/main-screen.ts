@@ -3,10 +3,11 @@ import type { CompletionPopup } from "./components/completion-list.ts";
 import type { Composer } from "./components/composer.ts";
 import type { StatusLine } from "./components/status-line.ts";
 import type { Transcript } from "./components/transcript.ts";
-import type {
-  ComponentRenderResult,
-  RenderContext,
-  StyledLine,
+import {
+  plainLine,
+  type ComponentRenderResult,
+  type RenderContext,
+  type StyledLine,
 } from "./render-model.ts";
 
 export interface MainScreenOptions {
@@ -54,8 +55,12 @@ export class MainScreen implements TuiComponent {
       row: Math.max(0, dock.lines.length - 1),
       column: 0,
     };
+    const dockGap = transcript.lines.length > 0 && dock.lines.length > 0
+      ? [plainLine("")]
+      : [];
     const contentLines = [
       ...transcript.lines,
+      ...dockGap,
       ...dock.lines,
       ...completion.lines,
       ...status.lines,
@@ -63,7 +68,7 @@ export class MainScreen implements TuiComponent {
     return {
       lines: contentLines,
       cursor: {
-        row: transcript.lines.length + dockCursor.row,
+        row: transcript.lines.length + dockGap.length + dockCursor.row,
         column: Math.min(width - 1, dockCursor.column),
       },
       activeStart: transcript.activeStart ?? transcript.lines.length,

@@ -1,5 +1,5 @@
 import type { TuiComponent } from "../component.ts";
-import type { ComponentRenderResult, RenderContext, StyledLine } from "../render-model.ts";
+import { plainLine, type ComponentRenderResult, type RenderContext, type StyledLine } from "../render-model.ts";
 import type { TranscriptBlock } from "../transcript-store.ts";
 import { AssistantMessage } from "./messages/assistant-message.ts";
 import { NoticeMessage } from "./messages/notice-message.ts";
@@ -46,6 +46,9 @@ export class Transcript implements TuiComponent {
     let activeStart: number | null = null;
     const seenKeys = new Set<string>();
     for (const block of this.#blocks) {
+      if (lines.length > 0) {
+        lines.push(plainLine(""));
+      }
       if (block.mutable && activeStart === null) activeStart = lines.length;
       seenKeys.add(cacheKey(block));
       lines.push(...this.#renderBlockCached(block, { ...context, width: usableWidth }));

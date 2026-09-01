@@ -413,8 +413,43 @@ test("transcript component reports the first mutable rendered row", () => {
 
   const rendered = transcript.renderWithMetadata({ width: 80, theme: ui.theme });
 
-  assert.equal(rendered.activeStart, 1);
+  assert.equal(lineText(rendered.lines[1]!), "");
+  assert.equal(rendered.activeStart, 2);
   assert.ok(lineText(rendered.lines[rendered.activeStart]!).includes("streaming answer"));
+});
+
+test("transcript component separates adjacent rendered blocks", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  const transcript = new Transcript({
+    blocks: [
+      createUserBlock("u1", "first question"),
+      createAssistantBlock("r1", "first answer", false),
+      createUserBlock("u2", "second question"),
+    ],
+  });
+
+  const rendered = transcript.renderWithMetadata({ width: 80, theme: ui.theme });
+
+  assert.equal(lineText(rendered.lines[1]!), "");
+  assert.equal(lineText(rendered.lines[3]!), "");
+});
+
+test("main screen separates transcript from composer", () => {
+  const ui = new TerminalUI({ theme: "dark" });
+  ui.acceptUserInput("first question");
+
+  const frame = ui.buildFrame({ width: 40, editor: new EditorState() });
+  const composerStart = frame.lines.findIndex((line) =>
+    stripTerminalControls(line).startsWith("╭"),
+  );
+  const inputStart = frame.lines.findIndex((line) =>
+    stripTerminalControls(line).includes("> "),
+  );
+
+  assert.notEqual(composerStart, -1);
+  assert.notEqual(inputStart, -1);
+  assert.equal(stripTerminalControls(frame.lines[composerStart - 1]!), "");
+  assert.equal(frame.cursorRow, inputStart);
 });
 
 test("transcript component returns newline-free logical rows", () => {
