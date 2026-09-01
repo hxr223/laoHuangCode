@@ -115,6 +115,13 @@ export interface MainOptions {
   stdout?: { isTTY?: boolean | undefined } | undefined;
 }
 
+export function resetEmptySessionTranscript(
+  terminalUi: Pick<TerminalUI, "replaceTranscript" | "showWelcome"> | null,
+): void {
+  terminalUi?.replaceTranscript([]);
+  terminalUi?.showWelcome();
+}
+
 export async function main(
   argv?: readonly string[] | null,
   options: MainOptions = {},
@@ -598,7 +605,7 @@ export async function main(
         });
         agent.messages = [system];
       }
-      terminalUi?.replaceTranscript([]);
+      resetEmptySessionTranscript(terminalUi);
       return;
     }
     agent.messages = [...new ContextBuilder().build({

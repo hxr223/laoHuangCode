@@ -20,9 +20,17 @@ export interface TranscriptRenderResult {
   readonly activeStart: number | null;
 }
 
+interface CachedBlockRender {
+  readonly component: TuiComponent;
+  readonly width: number;
+  readonly signature: string;
+  readonly lines: readonly StyledLine[];
+}
+
 /** Renders append-only transcript blocks and reports the mutable region start. */
 export class Transcript implements TuiComponent {
   readonly #blocks: readonly TranscriptBlock[];
+  readonly #cache = new Map<string, CachedBlockRender>();
 
   constructor(options: TranscriptOptions) {
     this.#blocks = options.blocks;
@@ -36,41 +44,90 @@ export class Transcript implements TuiComponent {
     const usableWidth = Math.max(12, context.width);
     const lines: StyledLine[] = [];
     let activeStart: number | null = null;
+    const seenKeys = new Set<string>();
     for (const block of this.#blocks) {
       if (block.mutable && activeStart === null) activeStart = lines.length;
-      lines.push(...this.#renderBlock(block, { ...context, width: usableWidth }));
+      seenKeys.add(cacheKey(block));
+      lines.push(...this.#renderBlockCached(block, { ...context, width: usableWidth }));
+    }
+    for (const key of this.#cache.keys()) {
+      if (!seenKeys.has(key)) this.#cache.delete(key);
     }
     return { lines, activeStart };
   }
 
-  invalidate(): void {}
+  invalidate(): void {
+    this.#cache.clear();
+  }
 
-  #renderBlock(block: TranscriptBlock, context: RenderContext): readonly StyledLine[] {
+  #renderBlockCached(block: TranscriptBlock, context: RenderContext): readonly StyledLine[] {
+    const key = cacheKey(block);
+    const signature = blockSignature(block);
+    const cached = this.#cache.get(key);
+    if (
+      cached !== undefined &&
+      cached.width === context.width &&
+      cached.signature === signature
+    ) {
+      return cached.lines;
+    }
+    if (cached !== undefined && cached.signature === signature) {
+      const lines = cached.component.render(context).lines;
+      this.#cache.set(key, {
+        ...cached,
+        width: context.width,
+        lines,
+      });
+      return lines;
+    }
+    const component = this.#createBlockComponent(block);
+    const lines = component.render(context).lines;
+    this.#cache.set(key, {
+      component,
+      width: context.width,
+      signature,
+      lines,
+    });
+    return lines;
+  }
+
+  #createBlockComponent(block: TranscriptBlock): TuiComponent {
     switch (block.kind) {
       case "assistant":
-        return new AssistantMessage(block).render(context).lines;
+        return new AssistantMessage(block);
       case "user":
-        return new UserMessage(block).render(context).lines;
+        return new UserMessage(block);
       case "thinking":
-        return new ThinkingMessage(block).render(context).lines;
+        return new ThinkingMessage(block);
       case "tool":
-        return new ToolMessage(block).render(context).lines;
+        return new ToolMessage(block);
       case "notice":
-        return new NoticeMessage(block).render(context).lines;
+        return new NoticeMessage(block);
       case "welcome":
-        return new WelcomeMessage(block).render(context).lines;
+        return new WelcomeMessage(block);
       case "help":
-        return new HelpView(block).render(context).lines;
+        return new HelpView(block);
       case "provider_list":
-        return new ProviderStatusView(block).render(context).lines;
+        return new ProviderStatusView(block);
       case "provider_detail":
-        return new ProviderDetailView(block.provider).render(context).lines;
+        return new ProviderDetailView(block.provider);
       case "queue_status":
-        return new QueueStatusView(block.queue).render(context).lines;
+        return new QueueStatusView(block.queue);
       default:
         return assertNever(block);
     }
   }
+}
+
+function cacheKey(block: TranscriptBlock): string {
+  return `${block.kind}:${block.key}`;
+}
+
+function blockSignature(block: TranscriptBlock): string {
+  if (block.revision !== undefined) {
+    return `revision:${block.revision}`;
+  }
+  return `content:${JSON.stringify(block)}`;
 }
 
 function assertNever(value: never): never {

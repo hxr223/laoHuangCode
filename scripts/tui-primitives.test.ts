@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import type { TuiComponent } from "../packages/terminal/tui/src/tui/component.ts";
 import { Box } from "../packages/terminal/tui/src/tui/components/primitives/box.ts";
 import { SearchInput } from "../packages/terminal/tui/src/tui/components/primitives/search-input.ts";
 import { SelectList } from "../packages/terminal/tui/src/tui/components/primitives/select-list.ts";
 import { Text } from "../packages/terminal/tui/src/tui/components/primitives/text.ts";
 import { VStack } from "../packages/terminal/tui/src/tui/components/primitives/v-stack.ts";
 import { makeKeyInput, type KeyId, type TuiInputEvent } from "../packages/terminal/tui/src/keybindings/key-id.ts";
-import { lineText, span } from "../packages/terminal/tui/src/tui/render-model.ts";
+import { line, lineText, span } from "../packages/terminal/tui/src/tui/render-model.ts";
 import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
 
 function keyEvent(id: KeyId): TuiInputEvent {
@@ -68,6 +69,23 @@ test("stack gaps and boxes preserve child content with background padding", () =
   assert.equal(rendered.lines[0]?.spans.at(-1)?.style?.background, "card");
 });
 
+test("stack offsets child cursor by preceding rows and gaps", () => {
+  const focusedChild: TuiComponent = {
+    render: () => ({
+      lines: [line(span("input")), line(span("more"))],
+      cursor: { row: 1, column: 3 },
+    }),
+    invalidate: () => {},
+  };
+
+  const rendered = new VStack({
+    children: [new Text({ text: "header" }), focusedChild],
+    gap: 2,
+  }).render({ width: 10, theme: PI_DARK });
+
+  assert.deepEqual(rendered.cursor, { row: 4, column: 3 });
+});
+
 test("box renders background padding for an empty child", () => {
   const box = new Box({
     child: new VStack({ children: [] }),
@@ -84,6 +102,21 @@ test("box renders background padding for an empty child", () => {
     ),
     true,
   );
+});
+
+test("box offsets child cursor by padding", () => {
+  const child: TuiComponent = {
+    render: () => ({
+      lines: [line(span("one")), line(span("two"))],
+      cursor: { row: 1, column: 2 },
+    }),
+    invalidate: () => {},
+  };
+
+  const rendered = new Box({ child, paddingX: 2, paddingY: 1 })
+    .render({ width: 10, theme: PI_DARK });
+
+  assert.deepEqual(rendered.cursor, { row: 2, column: 4 });
 });
 
 test("select list wraps, selects, and cancels", () => {

@@ -25,6 +25,7 @@ export type RestoredTranscriptItemLike =
 interface BaseTranscriptBlock {
   readonly key: string;
   mutable: boolean;
+  revision?: number;
 }
 
 export type NoticeTone = "info" | "success" | "warning" | "error" | "dim";
@@ -101,7 +102,7 @@ export type TranscriptBlock =
   | QueueStatusTranscriptBlock;
 
 export function createUserBlock(key: string, text: string): UserTranscriptBlock {
-  return { kind: "user", key, text, mutable: false };
+  return { kind: "user", key, text, mutable: false, revision: 0 };
 }
 
 export function createAssistantBlock(
@@ -109,7 +110,7 @@ export function createAssistantBlock(
   text = "",
   mutable = true,
 ): AssistantTranscriptBlock {
-  return { kind: "assistant", key, text, mutable };
+  return { kind: "assistant", key, text, mutable, revision: 0 };
 }
 
 export function createThinkingBlock(
@@ -117,7 +118,7 @@ export function createThinkingBlock(
   text = "",
   mutable = true,
 ): ThinkingTranscriptBlock {
-  return { kind: "thinking", key, text, mutable };
+  return { kind: "thinking", key, text, mutable, revision: 0 };
 }
 
 export function createToolBlock(
@@ -128,6 +129,7 @@ export function createToolBlock(
     kind: "tool",
     key,
     mutable: true,
+    revision: 0,
     name: redactToolText(fields.name),
     subject: redactToolText(fields.subject),
     status: fields.status,
@@ -144,42 +146,42 @@ export function createNoticeBlock(
   text: string,
   tone: NoticeTone = "info",
 ): NoticeTranscriptBlock {
-  return { kind: "notice", key, text, tone, mutable: false };
+  return { kind: "notice", key, text, tone, mutable: false, revision: 0 };
 }
 
 export function createWelcomeBlock(
   title: string,
   details: readonly string[],
 ): WelcomeTranscriptBlock {
-  return { kind: "welcome", key: "welcome", title, details, mutable: false };
+  return { kind: "welcome", key: "welcome", title, details, mutable: false, revision: 0 };
 }
 
 export function createHelpBlock(
   key: string,
   commands: readonly HelpCommandViewModel[],
 ): HelpTranscriptBlock {
-  return { kind: "help", key, commands, mutable: false };
+  return { kind: "help", key, commands, mutable: false, revision: 0 };
 }
 
 export function createProviderListBlock(
   key: string,
   providers: readonly ProviderSummaryViewModel[],
 ): ProviderListTranscriptBlock {
-  return { kind: "provider_list", key, providers, mutable: false };
+  return { kind: "provider_list", key, providers, mutable: false, revision: 0 };
 }
 
 export function createProviderDetailBlock(
   key: string,
   provider: ProviderDetailViewModel,
 ): ProviderDetailTranscriptBlock {
-  return { kind: "provider_detail", key, provider, mutable: false };
+  return { kind: "provider_detail", key, provider, mutable: false, revision: 0 };
 }
 
 export function createQueueStatusBlock(
   key: string,
   queue: QueueStatusViewModel,
 ): QueueStatusTranscriptBlock {
-  return { kind: "queue_status", key, queue, mutable: false };
+  return { kind: "queue_status", key, queue, mutable: false, revision: 0 };
 }
 
 export interface TranscriptStoreOptions {
@@ -198,6 +200,10 @@ export function noticeTone(style: unknown): NoticeTone {
   if (value.includes("green")) return "success";
   if (value.includes("dim")) return "dim";
   return "info";
+}
+
+function touchBlock(block: BaseTranscriptBlock): void {
+  block.revision = (block.revision ?? 0) + 1;
 }
 
 /** Holds mutable active blocks and freezes them as their lifecycle completes. */
@@ -284,12 +290,18 @@ export class TranscriptStore {
     if (kind === "model.text_delta") {
       this.freezeThinking();
       const item = this.#getOrCreateAssistant(correlationId);
-      if (item.mutable) item.text += update.text;
+      if (item.mutable) {
+        item.text += update.text;
+        touchBlock(item);
+      }
       return;
     }
     if (kind === "model.reasoning_delta") {
       const item = this.#getOrCreateThinking(correlationId);
-      if (item.mutable) item.text += update.text;
+      if (item.mutable) {
+        item.text += update.text;
+        touchBlock(item);
+      }
       return;
     }
     if (["model.response_committed", "model.response_aborted", "model.request_failed"].includes(kind)) {
@@ -320,12 +332,14 @@ export class TranscriptStore {
             "stdout",
             update.text,
           )).slice(-this.#toolBufferLimit);
+          touchBlock(item);
         } else if (update.stream === "stderr") {
           item.stderr = (item.stderr + this.#toolOutputRedactor.redact(
             correlationId,
             "stderr",
             update.text,
           )).slice(-this.#toolBufferLimit);
+          touchBlock(item);
         }
       }
       return;
@@ -340,6 +354,7 @@ export class TranscriptStore {
         ? Math.trunc(update.payload.duration_ms)
         : null;
       item.mutable = false;
+      touchBlock(item);
       this.#toolOutputRedactor.clear(correlationId);
       return;
     }
@@ -369,7 +384,10 @@ export class TranscriptStore {
   setToolOutputExpanded(expanded: boolean): void {
     this.#toolOutputExpanded = expanded;
     for (const block of this.#blocks) {
-      if (block.kind === "tool") block.expanded = expanded;
+      if (block.kind === "tool" && block.expanded !== expanded) {
+        block.expanded = expanded;
+        touchBlock(block);
+      }
     }
   }
 
