@@ -38,6 +38,14 @@ function runScript(script: string, args: string[], env: NodeJS.ProcessEnv = {}) 
   });
 }
 
+function currentPackageVersion(): string {
+  const manifest = JSON.parse(
+    readFileSync(join(PROJECT_ROOT, "apps", "cli", "package.json"), "utf8"),
+  ) as { version?: unknown };
+  assert.equal(typeof manifest.version, "string");
+  return manifest.version;
+}
+
 test("check-package-version verifies the package version is publishable", () => {
   withTempDir((directory) => {
     const binDir = join(directory, "bin");
@@ -78,6 +86,7 @@ process.exit(2);
 
 test("package-smoke packs, installs, and runs the published binary shape", () => {
   withTempDir((directory) => {
+    const version = currentPackageVersion();
     const binDir = join(directory, "bin");
     mkdirSync(binDir);
     writeExecutable(
@@ -91,15 +100,15 @@ if (command === "run build") {
   process.exit(0);
 }
 if (command === "pack --workspace laohuang --json") {
-  writeFileSync("laohuang-0.7.0.tgz", "fake tarball", "utf8");
-  console.log(JSON.stringify([{ filename: "laohuang-0.7.0.tgz" }]));
+  writeFileSync("laohuang-${version}.tgz", "fake tarball", "utf8");
+  console.log(JSON.stringify([{ filename: "laohuang-${version}.tgz" }]));
   process.exit(0);
 }
 if (args[0] === "install") {
   const binDir = join(process.cwd(), "node_modules", ".bin");
   mkdirSync(binDir, { recursive: true });
   const cliPath = join(binDir, "laohuang");
-  writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('0.7.0')\\n", "utf8");
+  writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('${version}')\\n", "utf8");
   chmodSync(cliPath, 0o755);
   process.exit(0);
 }
@@ -114,7 +123,7 @@ process.exit(2);
 
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /package smoke passed/);
-    assert.equal(existsSync(join(PROJECT_ROOT, "laohuang-0.7.0.tgz")), false);
+    assert.equal(existsSync(join(PROJECT_ROOT, `laohuang-${version}.tgz`)), false);
   });
 });
 
