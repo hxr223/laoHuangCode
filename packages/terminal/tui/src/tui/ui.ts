@@ -966,6 +966,7 @@ export class TerminalUI {
   #askFallback: ((message: string, secret: boolean) => Promise<string>) | null;
   #loop: InteractiveTerminalLoop | null = null;
   readonly #transcript: TranscriptStore;
+  readonly #transcriptView: Transcript;
   #showReasoning = true;
   #displayPolicy = new DisplayPolicy({
     audience: "terminal",
@@ -1001,6 +1002,9 @@ export class TerminalUI {
     this.reducer = new UIEventReducer(this.state);
     this.#transcript = new TranscriptStore({
       errorStyle: `bold ${this.theme.color("error")}`,
+    });
+    this.#transcriptView = new Transcript({
+      blocks: this.#transcript.blocks(),
     });
     this.#frameBuilder = new FrameBuilder({
       state: this.state,
@@ -1134,6 +1138,7 @@ export class TerminalUI {
 
   replaceTranscript(items: readonly RestoredTranscriptItemLike[]): void {
     this.#transcript.replace(items);
+    this.#transcriptView.invalidate();
     this.#loop?.requestRender();
   }
 
@@ -1280,9 +1285,7 @@ export class TerminalUI {
   }
 
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
-    const rendered = new Transcript({
-      blocks: this.#transcript.blocks(),
-    }).renderWithMetadata({ width, theme: this.theme });
+    const rendered = this.#transcriptView.renderWithMetadata({ width, theme: this.theme });
     return {
       lines: compileStyledLines(rendered.lines, Math.max(12, width), this.theme),
       activeStart: rendered.activeStart,
@@ -1302,7 +1305,7 @@ export class TerminalUI {
       theme: this.theme,
     });
     const rendered = new MainScreen({
-      transcript: new Transcript({ blocks: this.#transcript.blocks() }),
+      transcript: this.#transcriptView,
       composer: new Composer({
         editor,
         prompt: options.prompt ?? "> ",
