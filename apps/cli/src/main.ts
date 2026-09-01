@@ -366,6 +366,7 @@ export async function main(
       theme: args.theme,
       driver: terminalDriver,
       capabilities: { reasoning: selectedModel?.reasoning ?? false },
+      contextWindow: selectedModel?.contextWindow,
     });
     terminalUi.state.provider = config.provider;
     terminalUi.state.model = config.model;
@@ -444,10 +445,14 @@ export async function main(
     contextGovernor: selectedModel === undefined || sessionController.history === null
       ? null
       : {
-          prepare: async ({ tools }): Promise<{ readonly messages: readonly ModelMessage[] }> => {
+          prepare: async ({ tools }): Promise<{
+            readonly messages: readonly ModelMessage[];
+            readonly contextTokens: number;
+            readonly contextWindow: number;
+          }> => {
             const history = sessionController.history;
             if (history === null || selectedModel === undefined) {
-              return { messages: [] };
+              return { messages: [], contextTokens: 0, contextWindow: 0 };
             }
             const governor = createContextGovernor(history);
             const prepared = await governor.prepare({
@@ -461,7 +466,11 @@ export async function main(
               },
               policy: defaultContextPolicy(),
             });
-            return { messages: prepared.messages };
+            return {
+              messages: prepared.messages,
+              contextTokens: prepared.tokens,
+              contextWindow: selectedModel.contextWindow,
+            };
           },
         },
   });

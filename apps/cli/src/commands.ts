@@ -1284,6 +1284,10 @@ export class SessionCommands {
       payload: {
         provider: this.#currentConfig.provider,
         model: this.#currentConfig.model,
+        context_window: this.#catalog.getModel(
+          this.#currentConfig.provider,
+          this.#currentConfig.model,
+        )?.contextWindow ?? 0,
         previous_provider: previousProvider,
         previous_model: previousModel,
       },

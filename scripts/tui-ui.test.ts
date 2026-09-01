@@ -337,6 +337,8 @@ test("completion height follows actual candidates and uses structured selection 
 test("status line dims metadata while provider and model use terminal default", () => {
   const state = createUIState();
   state.pendingCount = 1;
+  state.contextTokens = 512;
+  state.contextWindow = 8192;
   state.provider = "openai";
   state.model = "gpt-test";
   const rendered = new StatusLine({
@@ -346,7 +348,8 @@ test("status line dims metadata while provider and model use terminal default", 
   }).render({ width: 100, theme: PI_DARK });
   const spans = rendered.lines[0]?.spans ?? [];
 
-  assert.equal(spans.find((item) => item.text === "/worktree")?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text.includes("context: 6% (512/8.2K)"))?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text === "/worktree"), undefined);
   assert.equal(spans.find((item) => item.text.includes("queue"))?.style?.foreground, "dim");
   assert.equal(spans.find((item) => item.text === "openai/gpt-test")?.style, undefined);
   assert.equal(spans.find((item) => item.text === "effort high")?.style?.foreground, "dim");

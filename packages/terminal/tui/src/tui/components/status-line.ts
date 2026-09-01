@@ -23,14 +23,12 @@ export interface StatusLineOptions {
 /** Responsive footer metadata without a surrounding frame. */
 export class StatusLine implements TuiComponent {
   readonly #state: UIState;
-  readonly #cwd: string | null;
   readonly #provider: string | null;
   readonly #model: string | null;
   readonly #effort: string | null;
 
   constructor(options: StatusLineOptions) {
     this.#state = options.state;
-    this.#cwd = options.cwd ?? null;
     this.#provider = options.provider ?? null;
     this.#model = options.model ?? null;
     this.#effort = options.effort ?? null;
@@ -41,18 +39,12 @@ export class StatusLine implements TuiComponent {
     const queue = this.#state.pendingCount || this.#state.heldCount
       ? `queue ${this.#state.pendingCount} pending / ${this.#state.heldCount} held`
       : null;
-    const tokens = this.#state.totalTokens
-      ? `↑${this.#state.inputTokens} ↓${this.#state.outputTokens}`
-      : null;
-    const cwd = this.#cwd === null ? null : clippedCwd(this.#cwd);
+    const contextUsage = contextUsageLabel(this.#state.contextTokens, this.#state.contextWindow);
     const right = this.#rightLine();
-    let leftItems = [cwd, queue, tokens].filter((value): value is string => value !== null);
+    let leftItems = [contextUsage, queue].filter((value): value is string => value !== null);
 
-    if (!fits(leftItems, right, width) && cwd !== null) {
-      leftItems = leftItems.filter((value) => value !== cwd);
-    }
-    if (!fits(leftItems, right, width) && tokens !== null) {
-      leftItems = leftItems.filter((value) => value !== tokens);
+    if (!fits(leftItems, right, width) && queue !== null) {
+      leftItems = leftItems.filter((value) => value !== queue);
     }
 
     const left = metadataLine(leftItems);
@@ -93,8 +85,32 @@ export class StatusLine implements TuiComponent {
   }
 }
 
-function clippedCwd(path: string): string {
-  return path.length <= 40 ? path : `…${path.slice(-39)}`;
+function contextUsageLabel(tokens: number, contextWindow: number): string | null {
+  const window = normalizedCount(contextWindow);
+  if (window <= 0) {
+    return null;
+  }
+  const used = normalizedCount(tokens);
+  const percent = Math.max(0, Math.min(100, Math.floor((used / window) * 100)));
+  return `context: ${percent}% (${formatCompactCount(used)}/${formatCompactCount(window)})`;
+}
+
+function normalizedCount(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}
+
+function formatCompactCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${formatScaled(value / 1_000_000)}M`;
+  }
+  if (value >= 1_000) {
+    return `${formatScaled(value / 1_000)}K`;
+  }
+  return String(value);
+}
+
+function formatScaled(value: number): string {
+  return value.toFixed(1).replace(/\.0$/u, "");
 }
 
 function metadataLine(items: readonly string[]): StyledLine {

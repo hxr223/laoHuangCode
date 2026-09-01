@@ -894,6 +894,7 @@ export interface TerminalUIOptions {
   projectRoot?: string;
   provider?: string;
   model?: string;
+  contextWindow?: number;
   effort?: string;
   version?: string;
   sessionId?: string;
@@ -928,6 +929,12 @@ const FALLBACK_MARKDOWN_WIDTH = 80;
 function resolveFallbackMarkdownWidth(): number {
   const columns = process.stdout?.columns;
   return typeof columns === "number" && columns > 0 ? columns : FALLBACK_MARKDOWN_WIDTH;
+}
+
+function normalizePositiveInteger(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : 0;
 }
 
 /**
@@ -990,6 +997,7 @@ export class TerminalUI {
     this.state = createUIState();
     this.state.provider = options.provider ?? "";
     this.state.model = options.model ?? "";
+    this.state.contextWindow = normalizePositiveInteger(options.contextWindow);
     this.reducer = new UIEventReducer(this.state);
     this.#transcript = new TranscriptStore({
       errorStyle: `bold ${this.theme.color("error")}`,
