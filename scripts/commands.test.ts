@@ -128,7 +128,11 @@ test("session lifecycle commands delegate to the session controller", async () =
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
-      list: () => [{ sessionId: "session-1", updatedAt: "2026-08-31T00:00:00.000Z" }],
+      list: () => [{
+        sessionId: "session-1",
+        updatedAt: "2026-08-31T23:57:00.000Z",
+        cwd: "/Users/huangxurui/data/code/laoHuangCode",
+      }],
       createNew: async () => { calls.push("new"); },
       resume: async (sessionId: string) => { calls.push(`resume:${sessionId}`); },
       fork: async (entryId: string, mode: "before" | "at") => {
@@ -159,9 +163,9 @@ test("session lifecycle commands delegate to the session controller", async () =
   assert.deepEqual(composerTexts, ["edit me"]);
   assert.deepEqual(noticeTexts(presenter), [
     "Current session: session-1\nPath: /tmp/session.jsonl",
-    "session-1  2026-08-31T00:00:00.000Z",
-    "Created session session-1.",
-    "Resumed session session-2.",
+    "Untitled session\n3 minutes ago  ~/data/code/laoHuangCode",
+    "Started a new session.",
+    "Resumed session.",
     "Forked session child.",
     "Cloned session clone.",
     "Compacted current session.",
@@ -182,12 +186,15 @@ test("resume without an id selects a recent session and restores it", async () =
       list: () => [
         {
           sessionId: "session-1",
-          updatedAt: "2026-08-31T15:30:00.000Z",
+          updatedAt: "2026-08-31T23:57:00.000Z",
+          cwd: "/Users/huangxurui/data/code/laoHuangCode",
+          title: "Current work",
           lastUserText: "current conversation",
         },
         {
           sessionId: "session-2",
-          updatedAt: "2026-08-30T08:15:00.000Z",
+          updatedAt: "2026-08-31T22:00:00.000Z",
+          cwd: "/Users/huangxurui/data/code/laoHuangCode",
           lastUserText: "fix the build",
         },
       ],
@@ -209,13 +216,13 @@ test("resume without an id selects a recent session and restores it", async () =
     items: [
       {
         value: "session-1",
-        label: "session-1",
-        description: "2026-08-31T15:30:00.000Z  current conversation",
+        label: "Current work",
+        description: "3 minutes ago  ~/data/code/laoHuangCode",
       },
       {
         value: "session-2",
-        label: "session-2",
-        description: "2026-08-30T08:15:00.000Z  fix the build",
+        label: "fix the build",
+        description: "2 hours ago  ~/data/code/laoHuangCode",
       },
     ],
     currentValue: "session-1",
@@ -225,7 +232,7 @@ test("resume without an id selects a recent session and restores it", async () =
   }]);
   assert.deepEqual(calls, ["session-2"]);
   assert.equal(sessionChanges, 1);
-  assert.deepEqual(noticeTexts(presenter), ["Resumed session session-2."]);
+  assert.deepEqual(noticeTexts(presenter), ["Resumed session."]);
 });
 
 test("resume completes session ids with recent conversation details", () => {

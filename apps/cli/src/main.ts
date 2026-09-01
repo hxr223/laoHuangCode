@@ -615,6 +615,7 @@ export async function main(
     sessionController,
     onComposerText: (text) => terminalUi?.setComposerText(text),
     onSessionChanged: refreshSessionView,
+    homeDirectory: environ["HOME"],
     onModelSelected: (selection) => {
       semanticClassifier.configure({
         provider: selection.config.provider,

@@ -400,7 +400,10 @@ export interface SessionControllerLike {
   list(): ReadonlyArray<{
     readonly sessionId: string;
     readonly updatedAt: string;
+    readonly title?: string;
     readonly lastUserText?: string;
+    readonly cwd?: string;
+    readonly projectRoot?: string;
   }>;
   createNew(): Promise<void>;
   resume(sessionId: string): Promise<void>;
@@ -429,6 +432,8 @@ export interface SessionCommandsOptions {
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
   readonly onComposerText?: ((text: string) => void) | undefined;
   readonly onSessionChanged?: (() => void | Promise<void>) | undefined;
+  readonly homeDirectory?: string | undefined;
+  readonly now?: (() => Date) | undefined;
 }
 
 const ALL_STATES: ReadonlySet<string> = new Set([
@@ -453,6 +458,80 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+interface SessionDisplaySummary {
+  readonly updatedAt: string;
+  readonly title?: string;
+  readonly lastUserText?: string;
+  readonly cwd?: string;
+  readonly projectRoot?: string;
+}
+
+function sessionDisplayTitle(session: SessionDisplaySummary): string {
+  const title = cleanSingleLine(session.title);
+  if (title !== "") {
+    return title;
+  }
+  const lastUserText = cleanSingleLine(session.lastUserText);
+  return lastUserText === "" ? "Untitled session" : lastUserText;
+}
+
+function sessionDisplayDescription(
+  session: SessionDisplaySummary,
+  options: { readonly homeDirectory: string | null; readonly now: Date },
+): string {
+  const displayPath = displayPathFor(session.cwd ?? session.projectRoot ?? "", options.homeDirectory);
+  const updated = relativeTimeLabel(session.updatedAt, options.now);
+  return displayPath === "" ? updated : `${updated}  ${displayPath}`;
+}
+
+function cleanSingleLine(value: string | undefined): string {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
+
+function displayPathFor(path: string, homeDirectory: string | null): string {
+  if (path === "" || homeDirectory === null || homeDirectory === "") {
+    return path;
+  }
+  const home = homeDirectory.endsWith("/") ? homeDirectory.slice(0, -1) : homeDirectory;
+  if (path === home) {
+    return "~";
+  }
+  return path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+}
+
+function relativeTimeLabel(updatedAt: string, now: Date): string {
+  const updated = new Date(updatedAt);
+  const timestamp = updated.getTime();
+  if (!Number.isFinite(timestamp)) {
+    return updatedAt;
+  }
+  const elapsedMs = Math.max(0, now.getTime() - timestamp);
+  const elapsedSeconds = Math.floor(elapsedMs / 1000);
+  if (elapsedSeconds < 60) {
+    return "just now";
+  }
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) {
+    return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
+  }
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) {
+    return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+  }
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  if (elapsedDays === 1) {
+    return `yesterday ${twoDigits(updated.getHours())}:${twoDigits(updated.getMinutes())}`;
+  }
+  if (elapsedDays < 365) {
+    return `${twoDigits(updated.getMonth() + 1)}-${twoDigits(updated.getDate())} ${twoDigits(updated.getHours())}:${twoDigits(updated.getMinutes())}`;
+  }
+  return `${updated.getFullYear()}-${twoDigits(updated.getMonth() + 1)}-${twoDigits(updated.getDate())} ${twoDigits(updated.getHours())}:${twoDigits(updated.getMinutes())}`;
+}
+
+function twoDigits(value: number): string {
+  return value.toString().padStart(2, "0");
+}
+
 /** Handle session-local model and credential commands. */
 export class SessionCommands {
   readonly registry: CommandRegistry;
@@ -470,6 +549,8 @@ export class SessionCommands {
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
   readonly #onComposerText: ((text: string) => void) | null;
   readonly #onSessionChanged: (() => void | Promise<void>) | null;
+  readonly #homeDirectory: string | null;
+  readonly #now: () => Date;
   #currentConfig: SelectionConfig;
 
   constructor(options: SessionCommandsOptions) {
@@ -484,6 +565,8 @@ export class SessionCommands {
     this.#onModelSelected = options.onModelSelected ?? null;
     this.#onComposerText = options.onComposerText ?? null;
     this.#onSessionChanged = options.onSessionChanged ?? null;
+    this.#homeDirectory = options.homeDirectory ?? null;
+    this.#now = options.now ?? (() => new Date());
     this.registry = new CommandRegistry([
       {
         name: "/model",
@@ -785,7 +868,7 @@ export class SessionCommands {
     }
     await controller.createNew();
     await this.#onSessionChanged?.();
-    this.notice(`Created session ${controller.currentSessionId ?? ""}.`, tones.switched);
+    this.notice("Started a new session.", tones.switched);
     return true;
   }
 
@@ -799,11 +882,15 @@ export class SessionCommands {
       this.notice("No sessions for this project.", "info");
       return true;
     }
+    const now = this.#now();
     for (const session of sessions) {
-      const tail = session.lastUserText === undefined || session.lastUserText === ""
-        ? ""
-        : `  ${session.lastUserText}`;
-      this.notice(`${session.sessionId}  ${session.updatedAt}${tail}`, "info");
+      this.notice(
+        `${sessionDisplayTitle(session)}\n${sessionDisplayDescription(session, {
+          homeDirectory: this.#homeDirectory,
+          now,
+        })}`,
+        "info",
+      );
     }
     return true;
   }
@@ -825,15 +912,17 @@ export class SessionCommands {
         this.notice("No sessions for this project.", "info");
         return true;
       }
+      const now = this.#now();
       sessionId = await this.#presenter.select({
         id: "session-resume",
         title: "Resume session",
         items: sessions.map((session) => ({
           value: session.sessionId,
-          label: session.sessionId,
-          description: session.lastUserText === undefined || session.lastUserText === ""
-            ? session.updatedAt
-            : `${session.updatedAt}  ${session.lastUserText}`,
+          label: sessionDisplayTitle(session),
+          description: sessionDisplayDescription(session, {
+            homeDirectory: this.#homeDirectory,
+            now,
+          }),
         })),
         currentValue: controller.currentSessionId ?? undefined,
         searchable: true,
@@ -846,7 +935,7 @@ export class SessionCommands {
     }
     await controller.resume(sessionId);
     await this.#onSessionChanged?.();
-    this.notice(`Resumed session ${sessionId}.`, tones.switched);
+    this.notice("Resumed session.", tones.switched);
     return true;
   }
 

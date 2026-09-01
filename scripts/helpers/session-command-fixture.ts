@@ -242,6 +242,8 @@ export function createSessionCommandFixture(
     sessionController: options.sessionController,
     onComposerText: options.onComposerText,
     onSessionChanged: options.onSessionChanged,
+    homeDirectory: "/Users/huangxurui",
+    now: () => new Date("2026-09-01T00:00:00.000Z"),
   });
   return { commands, agent, auth, catalog };
 }
