@@ -122,6 +122,9 @@ export class ContextGovernor {
       retainTokens: calculated.retainTokens,
       estimator: this.#estimator,
     });
+    if (input.trigger === "manual" && plan.summarizedEntries.length === 0) {
+      throw new Error("No messages to compact in current history.");
+    }
     const summarizedFromSeq = plan.summarizedEntries[0]?.seq ?? 1;
     const summarizedThroughSeq = plan.summarizedEntries.at(-1)?.seq ?? Math.max(0, summarizedFromSeq - 1);
     const activeCompaction = [...input.entries].reverse().find(

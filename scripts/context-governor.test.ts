@@ -121,33 +121,35 @@ test("model budget formulas work for large context windows", () => {
   }).retainTokens, 160_000);
 });
 
-test("manual compaction with no summarizable entries writes a local checkpoint", async () => {
+test("manual compaction with no summarizable entries fails without writing a checkpoint", async () => {
   let summarizeCalls = 0;
-  let payloadSummary = "";
+  let appendCalls = 0;
   const governor = new ContextGovernor({
     summarize: async () => {
       summarizeCalls += 1;
       return { summary: "should not run", inputTokens: 1, outputTokens: 1 };
     },
     appendCompaction: (payload) => {
-      payloadSummary = payload.summary;
+      appendCalls += 1;
       return { ...base(2), entryType: "compaction", payload } as SessionEntry;
     },
   });
 
-  const result = await governor.compact({
-    entries: [system(1, "system")],
-    currentProvider: "pi-ai",
-    currentModel: "gpt-test",
-    tools: [],
-    budget: { contextWindow: 100, maxOutputTokens: 20 },
-    policy: defaultPolicy(),
-    trigger: "manual",
-  });
+  await assert.rejects(
+    governor.compact({
+      entries: [system(1, "system")],
+      currentProvider: "pi-ai",
+      currentModel: "gpt-test",
+      tools: [],
+      budget: { contextWindow: 100, maxOutputTokens: 20 },
+      policy: defaultPolicy(),
+      trigger: "manual",
+    }),
+    /No messages to compact in current history\./,
+  );
 
   assert.equal(summarizeCalls, 0);
-  assert.equal(payloadSummary, "No prior conversation needed compaction.");
-  assert.equal(result.entry.payload.summaryOutputTokens, 0);
+  assert.equal(appendCalls, 0);
 });
 
 test("context governor compacts before over-threshold requests and records checkpoints", async () => {

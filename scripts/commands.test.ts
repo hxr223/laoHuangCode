@@ -172,6 +172,34 @@ test("session lifecycle commands delegate to the session controller", async () =
   assert.equal(sessionChanges, 5);
 });
 
+test("compact reports an error when there is no summarizable context", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands } = createSessionCommandFixture({
+    presenter,
+    sessionController: {
+      currentSessionId: "session-1",
+      currentPath: "/tmp/session.jsonl",
+      list: () => [],
+      createNew: async () => {},
+      resume: async () => {},
+      fork: async () => ({ sessionId: "child", path: "/tmp/child.jsonl", editorText: "" }),
+      clone: async () => ({ sessionId: "clone", path: "/tmp/clone.jsonl" }),
+      compact: async () => {
+        throw new Error("No messages to compact in current history.");
+      },
+    },
+  });
+
+  const result = await commands.execute("/compact");
+
+  assert.equal(result.status, "error");
+  assert.match(
+    result.status === "error" ? result.error.message : "",
+    /No messages to compact in current history\./,
+  );
+  assert.deepEqual(presenter.notices, []);
+});
+
 test("resume without an id selects a recent session and restores it", async () => {
   const presenter = new RecordingPresenter({ selections: ["session-2"] });
   const calls: string[] = [];
