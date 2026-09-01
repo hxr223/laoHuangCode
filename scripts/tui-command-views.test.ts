@@ -158,9 +158,12 @@ test("transcript dispatches each static command result variant", () => {
 
   assert.deepEqual(transcript.render({ width: 80, theme: PI_DARK }).lines.map(lineText), [
     "/help  显示帮助",
+    "",
     "Anthropic  available  configured  verified",
+    "",
     "Anthropic  available  configured  verified",
     "static models  1 model",
+    "",
     "pending  0  pending tokens  0  held  0  held tokens  0  dead letters  0",
   ]);
 });
