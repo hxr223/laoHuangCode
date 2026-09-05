@@ -90,7 +90,7 @@ export class MemoryTerminalDriver implements TerminalDriver {
 }
 
 /** Regular-terminal differential renderer. */
-export class PiMainScreenRenderer {
+export class MainScreenRenderer {
   #terminal: TerminalDriver;
   #previousLines: readonly string[] = [];
   #previousWidth = 0;
@@ -107,7 +107,7 @@ export class PiMainScreenRenderer {
     env: Record<string, string | undefined> = process.env,
   ) {
     this.#terminal = terminal;
-    this.#clearOnShrink = env.PI_CLEAR_ON_SHRINK === "1";
+    this.#clearOnShrink = env.LAOHUANG_CLEAR_ON_SHRINK === "1";
   }
 
   render(frame: ScreenFrame): void {
@@ -119,7 +119,7 @@ export class PiMainScreenRenderer {
     const width = Math.max(1, size.columns);
     const height = Math.max(1, size.rows);
     const newLines = frame.lines;
-    PiMainScreenRenderer.#validateLines(newLines, width);
+    MainScreenRenderer.#validateLines(newLines, width);
 
     const widthChanged = this.#previousWidth !== 0 && this.#previousWidth !== width;
     const heightChanged =
@@ -184,7 +184,7 @@ export class PiMainScreenRenderer {
       return;
     }
 
-    const span = PiMainScreenRenderer.#changedSpan(this.#previousLines, newLines);
+    const span = MainScreenRenderer.#changedSpan(this.#previousLines, newLines);
     if (span === null) {
       const buffer = this.#positionHardwareCursor(frame, width, newLines.length);
       this.#previousViewportTop = prevViewportTop;

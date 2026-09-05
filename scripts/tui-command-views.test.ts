@@ -23,7 +23,7 @@ import {
   createQueueStatusBlock,
   TranscriptStore,
 } from "../packages/terminal/tui/src/tui/transcript-store.ts";
-import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
+import { DEFAULT_DARK_THEME } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeKeyInput, type KeyId, type TuiInputEvent } from "../packages/terminal/tui/src/keybindings/key-id.ts";
 
 function keyEvent(id: KeyId): TuiInputEvent {
@@ -34,7 +34,7 @@ test("help keeps command names default and descriptions muted", () => {
   const view = new HelpView({
     commands: [{ name: "/model", usage: "/model [provider] [model]", description: "选择模型" }],
   });
-  const spans = view.render({ width: 80, theme: PI_DARK }).lines.flatMap((item) => item.spans);
+  const spans = view.render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.flatMap((item) => item.spans);
   const usage = spans.find((item) => item.text.includes("/model"));
   const description = spans.find((item) => item.text.includes("选择模型"));
 
@@ -45,7 +45,7 @@ test("help keeps command names default and descriptions muted", () => {
 test("help stacks usage and description below fifty columns", () => {
   const lines = new HelpView({
     commands: [{ name: "/model", usage: "/model [provider] [model]", description: "选择模型" }],
-  }).render({ width: 40, theme: PI_DARK }).lines.map(lineText);
+  }).render({ width: 40, theme: DEFAULT_DARK_THEME }).lines.map(lineText);
 
   assert.deepEqual(lines, ["/model [provider] [model]", "选择模型"]);
 });
@@ -63,7 +63,7 @@ test("provider states remain independent", () => {
   });
 
   assert.deepEqual(
-    view.render({ width: 80, theme: PI_DARK }).lines.map(lineText),
+    view.render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.map(lineText),
     ["Anthropic  available  configured  unverified", "stored credential"],
   );
 });
@@ -78,7 +78,7 @@ test("provider status stacks state fields without clipping its label", () => {
       verified: false,
       source: null,
     }],
-  }).render({ width: 12, theme: PI_DARK }).lines.map(lineText);
+  }).render({ width: 12, theme: DEFAULT_DARK_THEME }).lines.map(lineText);
 
   assert.deepEqual(lines, ["Anthropic", "available", "unconfigured", "unverified"]);
 });
@@ -93,7 +93,7 @@ test("provider detail exposes model metadata", () => {
     source: "stored credential",
     dynamicModels: true,
     modelCount: 7,
-  }).render({ width: 80, theme: PI_DARK }).lines.map(lineText);
+  }).render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.map(lineText);
 
   assert.deepEqual(lines, [
     "Anthropic  available  configured  verified",
@@ -110,7 +110,7 @@ test("queue counters keep numeric values default and stack at narrow widths", ()
     heldTokens: 300,
     deadLetters: 1,
   });
-  const rendered = view.render({ width: 24, theme: PI_DARK });
+  const rendered = view.render({ width: 24, theme: DEFAULT_DARK_THEME });
   const spans = rendered.lines.flatMap((line) => line.spans);
 
   assert.deepEqual(rendered.lines.map(lineText), [
@@ -156,7 +156,7 @@ test("transcript dispatches each static command result variant", () => {
     ],
   });
 
-  assert.deepEqual(transcript.render({ width: 80, theme: PI_DARK }).lines.map(lineText), [
+  assert.deepEqual(transcript.render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.map(lineText), [
     "/help  显示帮助",
     "",
     "Anthropic  available  configured  verified",
@@ -242,7 +242,7 @@ test("searchable selectors render their requested search placeholder", () => {
     onCancel: () => {},
   });
 
-  const text = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+  const text = view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n");
 
   assert.ok(text.includes("Search sessions"));
   assert.equal(text.includes("Search models"), false);
@@ -259,7 +259,7 @@ test("model selector renders its empty filter state", () => {
 
   view.handleInput({ type: "text", text: "missing" });
 
-  assert.ok(view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n").includes("No matching commands"));
+  assert.ok(view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n").includes("No matching commands"));
 });
 
 test("effort selector highlights the current effort before selection", () => {
@@ -276,7 +276,7 @@ test("effort selector highlights the current effort before selection", () => {
   });
   view.focused = true;
 
-  assert.ok(view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).includes("→ High"));
+  assert.ok(view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).includes("→ High"));
   view.handleInput(keyEvent("enter"));
 
   assert.deepEqual(selections, ["high"]);
@@ -335,7 +335,7 @@ test("auth dialog masks secret input and never renders the value", () => {
   view.focused = true;
 
   view.handleInput({ type: "text", text: "secret-value" });
-  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+  const output = view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n");
 
   assert.equal(output.includes("secret-value"), false);
   assert.equal(output.includes("••••••••••••"), true);
@@ -352,7 +352,7 @@ test("auth dialog clears secret input after submission", () => {
 
   view.handleInput({ type: "text", text: "secret-value" });
   view.handleInput(keyEvent("enter"));
-  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+  const output = view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n");
 
   assert.deepEqual(submittedLengths, [12]);
   assert.equal(output.includes("•"), false);
@@ -369,7 +369,7 @@ test("auth dialog clears secret input before cancellation", () => {
 
   view.handleInput({ type: "text", text: "secret-value" });
   view.handleInput(keyEvent("escape"));
-  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+  const output = view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n");
 
   assert.equal(cancellations, 1);
   assert.equal(output.includes("•"), false);
@@ -385,7 +385,7 @@ test("auth dialog disposal clears secret input", () => {
 
   view.handleInput({ type: "text", text: "secret-value" });
   view.dispose();
-  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+  const output = view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n");
 
   assert.equal(output.includes("•"), false);
 });

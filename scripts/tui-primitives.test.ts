@@ -9,7 +9,7 @@ import { Text } from "../packages/terminal/tui/src/tui/components/primitives/tex
 import { VStack } from "../packages/terminal/tui/src/tui/components/primitives/v-stack.ts";
 import { makeKeyInput, type KeyId, type TuiInputEvent } from "../packages/terminal/tui/src/keybindings/key-id.ts";
 import { line, lineText, span } from "../packages/terminal/tui/src/tui/render-model.ts";
-import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
+import { DEFAULT_DARK_THEME } from "../packages/terminal/tui/src/tui/theme.ts";
 
 function keyEvent(id: KeyId): TuiInputEvent {
   return { type: "key", key: makeKeyInput(id) };
@@ -18,7 +18,7 @@ function keyEvent(id: KeyId): TuiInputEvent {
 test("text wraps CJK by terminal cells", () => {
   const component = new Text({ text: "中文ab", paddingX: 0, paddingY: 0 });
 
-  const rendered = component.render({ width: 4, theme: PI_DARK });
+  const rendered = component.render({ width: 4, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), ["中文", "ab  "]);
 });
@@ -26,7 +26,7 @@ test("text wraps CJK by terminal cells", () => {
 test("text fills unstyled content and vertical padding to its width", () => {
   const component = new Text({ text: "x", paddingY: 1 });
 
-  const rendered = component.render({ width: 5, theme: PI_DARK });
+  const rendered = component.render({ width: 5, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), ["     ", "x    ", "     "]);
   assert.equal(
@@ -45,7 +45,7 @@ test("text applies padding and background through structured spans", () => {
     background: "card",
   });
 
-  const rendered = component.render({ width: 5, theme: PI_DARK });
+  const rendered = component.render({ width: 5, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), ["     ", " x   ", "     "]);
   assert.equal(rendered.lines[1]?.spans.some((item) => item.style?.foreground !== undefined), false);
@@ -62,7 +62,7 @@ test("stack gaps and boxes preserve child content with background padding", () =
   });
   const box = new Box({ child: stack, paddingX: 1, background: "card" });
 
-  const rendered = box.render({ width: 7, theme: PI_DARK });
+  const rendered = box.render({ width: 7, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), [" one   ", "       ", "       ", " two   "]);
   assert.deepEqual(rendered.lines[0]?.spans[0], span(" ", { background: "card" }));
@@ -81,7 +81,7 @@ test("stack offsets child cursor by preceding rows and gaps", () => {
   const rendered = new VStack({
     children: [new Text({ text: "header" }), focusedChild],
     gap: 2,
-  }).render({ width: 10, theme: PI_DARK });
+  }).render({ width: 10, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.cursor, { row: 4, column: 3 });
 });
@@ -93,7 +93,7 @@ test("box renders background padding for an empty child", () => {
     background: "card",
   });
 
-  const rendered = box.render({ width: 5, theme: PI_DARK });
+  const rendered = box.render({ width: 5, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), ["     ", "     "]);
   assert.equal(
@@ -114,7 +114,7 @@ test("box offsets child cursor by padding", () => {
   };
 
   const rendered = new Box({ child, paddingX: 2, paddingY: 1 })
-    .render({ width: 10, theme: PI_DARK });
+    .render({ width: 10, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.cursor, { row: 2, column: 4 });
 });
@@ -147,7 +147,7 @@ test("select list hides descriptions before labels at narrow widths", () => {
     items: [{ value: "a", label: "Alpha", description: "first detail" }],
   });
 
-  const rendered = list.render({ width: 10, theme: PI_DARK });
+  const rendered = list.render({ width: 10, theme: DEFAULT_DARK_THEME });
 
   assert.equal(lineText(rendered.lines[0]!), "→ Alpha");
   assert.equal(lineText(rendered.lines[0]!).includes("first detail"), false);
@@ -163,7 +163,7 @@ test("select list centers a seven item selection and shows its position", () => 
   });
   list.setSelectedValue("4");
 
-  const rendered = list.render({ width: 20, theme: PI_DARK });
+  const rendered = list.render({ width: 20, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), ["  Item 3", "→ Item 4", "  Item 5", "  (4/7)"]);
 });
@@ -178,7 +178,7 @@ test("search input reports text updates and cursor metadata", () => {
   input.handleInput({ type: "text", text: "中a" });
   input.handleInput(keyEvent("left"));
 
-  const rendered = input.render({ width: 10, theme: PI_DARK });
+  const rendered = input.render({ width: 10, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(values, ["中a"]);
   assert.equal(lineText(rendered.lines[0]!), "❯ 中a");
@@ -200,5 +200,5 @@ test("search input masks secret values and handles submit and cancellation", () 
 
   assert.deepEqual(submittedLengths, [5]);
   assert.equal(cancelled, true);
-  assert.equal(lineText(input.render({ width: 20, theme: PI_DARK }).lines[0]!), "❯ ");
+  assert.equal(lineText(input.render({ width: 20, theme: DEFAULT_DARK_THEME }).lines[0]!), "❯ ");
 });
