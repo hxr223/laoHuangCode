@@ -40,7 +40,7 @@ In an interactive TTY session:
   use `muted`; prompts and selected rows use `accent`.
 - The terminal uses native scrollback for frozen transcript content and redraws
   only the active region. Components may not bypass `InteractiveTerminalLoop` or
-  `PiMainScreenRenderer` to write interactive stdout.
+  `MainScreenRenderer` to write interactive stdout.
 - The root layout uses Kimi-style framed welcome and composer surfaces while
   leaving transcript content unboxed. Interior command views, tool cards, and
   authentication dialogs still use dedicated components.
@@ -57,7 +57,7 @@ In a non-interactive session:
 ## Non-Goals
 
 - Do not migrate to Ink, React, Ratatui, prompt_toolkit, or another TUI runtime.
-- Do not replace `PiMainScreenRenderer`, `StdinBuffer`, `TerminalInputFilter`,
+- Do not replace `MainScreenRenderer`, `StdinBuffer`, `TerminalInputFilter`,
   `RawInputDecoder`, `EditorState`, AgentSession, the event bus, model adapters,
   provider catalog, credential storage, or tool runtime.
 - Do not add alternate-screen mode, mouse support, terminal images, extension
@@ -122,10 +122,10 @@ message components                   interactive/plain presenter
                       ScreenFrame
                            |
                            v
-                 PiMainScreenRenderer
+                 MainScreenRenderer
 ```
 
-`PiMainScreenRenderer` continues to receive ANSI strings because terminal
+`MainScreenRenderer` continues to receive ANSI strings because terminal
 diffing and cursor placement are terminal-engine responsibilities. ANSI is
 introduced exactly once, immediately before `ScreenFrame` construction.
 
@@ -453,7 +453,7 @@ erasable TypeScript syntax.
    rendered by a dedicated component or an explicitly shared notice component.
 2. No interactive command handler prints numbered options or preformatted ANSI.
 3. No business component emits ANSI directly.
-4. `PiMainScreenRenderer` and raw terminal input behavior remain intact.
+4. `MainScreenRenderer` and raw terminal input behavior remain intact.
 5. The Kimi-style welcome/input frames are preserved without regressing native
    scrollback, cursor placement, completion shrink, resize, or frozen-history
    behavior.
@@ -513,7 +513,7 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
   cancelled without changing credentials.
 - `scripts/tui-offline-terminal-transcript-smoke.ts` is a committed offline
   fake-session harness and verifier. It runs the real `StdTerminalDriver`, raw
-  loop, `PiMainScreenRenderer`, transcript reducer, and Ctrl+O display action
+  loop, `MainScreenRenderer`, transcript reducer, and Ctrl+O display action
   inside tmux, with no provider call, API key, or paid service.
 - The committed verifier submits a first prompt, checks frozen reasoning, an
   ordinary answer with no explicit foreground SGR, and a completed local tool

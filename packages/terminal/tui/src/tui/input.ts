@@ -47,9 +47,9 @@ export class PromptEofError extends Error {
 export type PromptInput = Readable & { setRawMode?: (mode: boolean) => void };
 export type PromptOutput = Writable & { readonly columns?: number };
 
-export interface PiInputSessionOptions {
+export interface TerminalInputSessionOptions {
   /**
-   * Accepted for PromptSession API compatibility. The Python PiInputSession
+   * Accepted for PromptSession API compatibility. The Python implementation
    * stores the message but its layout never renders it; kept for parity.
    */
   message?: string;
@@ -96,7 +96,7 @@ function resolveSetupPromptAction(action: InputAction): InputAction {
 }
 
 /** Compact PromptSession-compatible editor for setup questions only. */
-export class PiInputSession {
+export class TerminalInputSession {
   private readonly multiline: boolean;
   private readonly sharedHistory: string[] | null;
   private readonly completer: ((text: string) => CompletionItem[]) | null;
@@ -109,7 +109,7 @@ export class PiInputSession {
 
   private history: string[] = [];
 
-  constructor(options: PiInputSessionOptions = {}) {
+  constructor(options: TerminalInputSessionOptions = {}) {
     this.multiline = options.multiline ?? true;
     this.sharedHistory = options.history ?? null;
     this.completer = options.completer ?? null;

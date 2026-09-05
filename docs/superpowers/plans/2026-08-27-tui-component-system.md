@@ -4,7 +4,7 @@
 
 **Goal:** Componentize every currently exposed LaoHuang interactive TUI feature with typed view models, reusable Pi-style components, centralized semantic styling, and no command-generated grey text lists.
 
-**Architecture:** Keep `InteractiveTerminalLoop`, raw terminal input, native scrollback, and `PiMainScreenRenderer`. Add a Codex-style `StyledLine`/`StyledSpan` render model, Pi-style layout and selection primitives, typed transcript/message components, a focused view host, and interactive/plain command presenters; compile structured lines to ANSI only at the `ScreenFrame` boundary.
+**Architecture:** Keep `InteractiveTerminalLoop`, raw terminal input, native scrollback, and `MainScreenRenderer`. Add a Codex-style `StyledLine`/`StyledSpan` render model, Pi-style layout and selection primitives, typed transcript/message components, a focused view host, and interactive/plain command presenters; compile structured lines to ANSI only at the `ScreenFrame` boundary.
 
 **Tech Stack:** TypeScript 5.5 with erasable syntax, Node.js 22.19+, npm workspaces, built-in `node:test`, existing `@laohuang/tui`, `@laohuang/runtime-protocol`, and `@laohuang/llm`; no new runtime dependency.
 
@@ -14,9 +14,9 @@
 
 - Execute in an isolated worktree created with `superpowers:using-git-worktrees`; use a `codex/` branch based on the then-current `develop` branch.
 - Preserve unrelated changes and untracked files; stage only paths named by the active task.
-- Do not modify `PiMainScreenRenderer`, `StdinBuffer`, `TerminalInputFilter`, `RawInputDecoder`, AgentSession, event schemas, model adapters, provider catalog semantics, credential storage, or tool runtime except for type-compatible call-site adaptation explicitly listed below.
+- Do not modify `MainScreenRenderer`, `StdinBuffer`, `TerminalInputFilter`, `RawInputDecoder`, AgentSession, event schemas, model adapters, provider catalog semantics, credential storage, or tool runtime except for type-compatible call-site adaptation explicitly listed below.
 - `InteractiveTerminalLoop` remains the only interactive stdout writer.
-- `PiMainScreenRenderer` continues to consume ANSI string lines and remains responsible for terminal diffing, native scrollback, synchronized output, resize, and hardware cursor placement.
+- `MainScreenRenderer` continues to consume ANSI string lines and remains responsible for terminal diffing, native scrollback, synchronized output, resize, and hardware cursor placement.
 - Components emit `StyledLine`/`StyledSpan`; they do not embed ANSI or literal hex colors.
 - An omitted foreground means terminal default foreground. Ordinary input, assistant body text, and unselected names must omit foreground styling.
 - `--help`, `--version`, piped sessions, setup prompts, and `PlainEventSink` remain append-only plain text.
@@ -116,10 +116,10 @@ import {
   lineText,
   span,
 } from "../packages/terminal/tui/src/tui/render-model.ts";
-import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
+import { DEFAULT_DARK_THEME } from "../packages/terminal/tui/src/tui/theme.ts";
 
 test("default foreground stays unstyled", () => {
-  const rendered = compileStyledLine(line(span("plain")), 20, PI_DARK);
+  const rendered = compileStyledLine(line(span("plain")), 20, DEFAULT_DARK_THEME);
   assert.equal(rendered, "plain");
 });
 
@@ -128,7 +128,7 @@ test("semantic spans compile at the ANSI boundary", () => {
     span("selected", { foreground: "accent", bold: true }),
     span(" description", { foreground: "muted" }),
   );
-  const rendered = compileStyledLine(source, 40, PI_DARK);
+  const rendered = compileStyledLine(source, 40, DEFAULT_DARK_THEME);
   assert.equal(lineText(source), "selected description");
   assert.match(rendered, /\x1b\[/u);
   assert.equal(rendered.replace(/\x1b\[[0-9;]*m/gu, ""), "selected description");
@@ -136,7 +136,7 @@ test("semantic spans compile at the ANSI boundary", () => {
 
 test("compiler rejects a line wider than terminal cells", () => {
   assert.throws(
-    () => compileStyledLines([line(span("中文ab"))], 5, PI_DARK),
+    () => compileStyledLines([line(span("中文ab"))], 5, DEFAULT_DARK_THEME),
     /rendered line exceeds terminal width/u,
   );
 });
@@ -329,7 +329,7 @@ test("select list wraps, selects, and cancels", () => {
 
 test("text wraps CJK by terminal cells", () => {
   const component = new Text({ text: "中文ab", paddingX: 0, paddingY: 0 });
-  const rendered = component.render({ width: 4, theme: PI_DARK });
+  const rendered = component.render({ width: 4, theme: DEFAULT_DARK_THEME });
   assert.deepEqual(rendered.lines.map(lineText), ["中文", "ab"]);
 });
 ```
@@ -507,7 +507,7 @@ Add assertions for semantic spans and every message kind:
 ```ts
 test("assistant and input text keep terminal default foreground", () => {
   const assistant = new AssistantMessage({ text: "answer" });
-  const rendered = assistant.render({ width: 40, theme: PI_DARK });
+  const rendered = assistant.render({ width: 40, theme: DEFAULT_DARK_THEME });
   const body = rendered.lines.flatMap((value) => value.spans);
   assert.ok(body.some((item) => item.text.includes("answer")));
   assert.ok(body.every((item) => item.style?.foreground !== "muted"));
@@ -515,7 +515,7 @@ test("assistant and input text keep terminal default foreground", () => {
 
 test("thinking is muted italic without styling later answers", () => {
   const thinking = new ThinkingMessage({ text: "inspect" });
-  const rendered = thinking.render({ width: 40, theme: PI_DARK });
+  const rendered = thinking.render({ width: 40, theme: DEFAULT_DARK_THEME });
   assert.ok(rendered.lines.flatMap((value) => value.spans).some((item) =>
     item.style?.foreground === "thinking" && item.style.italic === true
   ));
@@ -523,7 +523,7 @@ test("thinking is muted italic without styling later answers", () => {
 
 test("notice tone selects semantic style", () => {
   const warning = new NoticeMessage({ text: "blocked", tone: "warning" });
-  const spans = warning.render({ width: 40, theme: PI_DARK }).lines[0]!.spans;
+  const spans = warning.render({ width: 40, theme: DEFAULT_DARK_THEME }).lines[0]!.spans;
   assert.equal(spans[0]!.style?.foreground, "warning");
 });
 ```
@@ -727,7 +727,7 @@ test("help keeps command names default and descriptions muted", () => {
   const view = new HelpView({
     commands: [{ name: "/model", usage: "/model [provider] [model]", description: "选择模型" }],
   });
-  const spans = view.render({ width: 80, theme: PI_DARK }).lines.flatMap((item) => item.spans);
+  const spans = view.render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.flatMap((item) => item.spans);
   const usage = spans.find((item) => item.text.includes("/model"));
   const description = spans.find((item) => item.text.includes("选择模型"));
   assert.equal(usage?.style?.foreground, undefined);
@@ -746,7 +746,7 @@ test("provider states remain independent", () => {
     }],
   });
   assert.deepEqual(
-    view.render({ width: 80, theme: PI_DARK }).lines.map(lineText),
+    view.render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.map(lineText),
     ["Anthropic  available  configured  unverified"],
   );
 });
@@ -899,7 +899,7 @@ test("auth dialog masks secret input and never renders the value", () => {
   });
   view.focused = true;
   view.handleInput({ type: "text", text: "secret-value" });
-  const output = view.render({ width: 60, theme: PI_DARK }).lines.map(lineText).join("\n");
+  const output = view.render({ width: 60, theme: DEFAULT_DARK_THEME }).lines.map(lineText).join("\n");
   assert.equal(output.includes("secret-value"), false);
   assert.equal(output.includes("••••••••••••"), true);
 });
@@ -1135,7 +1135,7 @@ git commit -m "feat(tui): host focused interactive views"
 - Modify: `scripts/tui-screen.test.ts`
 
 **Interfaces:**
-- Consumes: Tasks 1-6 components/compiler/view host; existing editor render metadata and `PiMainScreenRenderer` `ScreenFrame` contract.
+- Consumes: Tasks 1-6 components/compiler/view host; existing editor render metadata and `MainScreenRenderer` `ScreenFrame` contract.
 - Produces: `MainScreen`, unframed transcript composition, Kimi-style `Composer`, structured `CompletionPopup`, and structured `StatusLine`.
 
 - [ ] **Step 1: Write failing Kimi-style shell tests**
@@ -1166,7 +1166,7 @@ test("completion height follows actual candidates", () => {
     ],
     selectedIndex: 0,
   });
-  assert.equal(popup.render({ width: 40, theme: PI_DARK }).lines.length, 2);
+  assert.equal(popup.render({ width: 40, theme: DEFAULT_DARK_THEME }).lines.length, 2);
 });
 ```
 
@@ -1944,7 +1944,7 @@ the base commit and verify these specific invariants:
    typed notice.
 2. No business component emits ANSI or literal theme colors.
 3. No interactive path writes stdout outside `InteractiveTerminalLoop`.
-4. `PiMainScreenRenderer` behavior and terminal emulator regressions remain
+4. `MainScreenRenderer` behavior and terminal emulator regressions remain
    intact.
 5. Secret values cannot enter transcript or terminal output.
 6. Plain mode remains append-only and factually equivalent.
@@ -2006,7 +2006,7 @@ Controlled tmux observations at 80x24, with a resize to 52x16:
   cancelled without changing credentials.
 - `scripts/tui-offline-terminal-transcript-smoke.ts` is a committed offline
   fake-session harness and verifier. It runs the real `StdTerminalDriver`, raw
-  loop, `PiMainScreenRenderer`, transcript reducer, and Ctrl+O display action
+  loop, `MainScreenRenderer`, transcript reducer, and Ctrl+O display action
   inside tmux, with no provider call, API key, or paid service.
 - The committed verifier submits a first prompt, checks frozen reasoning, an
   ordinary answer with no explicit foreground SGR, and a completed local tool

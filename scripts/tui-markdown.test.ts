@@ -6,10 +6,10 @@ import {
   renderMarkdownStyledLines,
   visibleWidth,
 } from "../packages/terminal/tui/src/tui/markdown.ts";
-import { PI_DARK, TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
+import { DEFAULT_DARK_THEME, TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
 
 test("plain assistant text uses terminal default foreground", () => {
-  const rendered = renderMarkdownLines("plain response", 80, PI_DARK).join("\n");
+  const rendered = renderMarkdownLines("plain response", 80, DEFAULT_DARK_THEME).join("\n");
 
   assert.ok(rendered.includes("plain response"));
   assert.ok(!rendered.includes("\x1b[38;2;212;212;212mplain response"));
@@ -19,7 +19,7 @@ test("markdown lines fit requested visible width", () => {
   const lines = renderMarkdownLines(
     "**你好** abcdefghijklmnopqrstuvwxyz `代码`",
     12,
-    PI_DARK,
+    DEFAULT_DARK_THEME,
   );
 
   assert.ok(lines.length > 0);
@@ -31,7 +31,7 @@ test("markdown code spans use foreground color without terminal background", () 
     "`read` and\n\n```bash\nnpm test\n```",
     40,
   ).flatMap((line) => line.spans);
-  const rendered = renderMarkdownLines("`read`", 40, PI_DARK).join("\n");
+  const rendered = renderMarkdownLines("`read`", 40, DEFAULT_DARK_THEME).join("\n");
 
   assert.ok(styled.some((item) => item.text.includes("read") && item.style?.foreground === "code"));
   assert.ok(styled.some((item) => item.text.includes("npm test") && item.style?.foreground === "code"));
@@ -40,14 +40,14 @@ test("markdown code spans use foreground color without terminal background", () 
 });
 
 test("markdown truncation preserves the semantic span through the compiler", () => {
-  const lines = renderMarkdownLines("**你好abcdef**", 5, PI_DARK);
+  const lines = renderMarkdownLines("**你好abcdef**", 5, DEFAULT_DARK_THEME);
 
   assert.deepEqual(lines, ["\x1b[1m你好a\x1b[0m"]);
 });
 
 test("markdown osc8 controls do not count as visible width", () => {
   const linked = "\x1b]8;;https://example.test\x1b\\abc\x1b]8;;\x1b\\";
-  const lines = renderMarkdownLines(linked, 3, PI_DARK);
+  const lines = renderMarkdownLines(linked, 3, DEFAULT_DARK_THEME);
 
   assert.deepEqual(
     lines.map((line) => visibleWidth(line)),
@@ -59,7 +59,7 @@ test("markdown links render the url in parentheses", () => {
   const lines = renderMarkdownLines(
     "see [the docs](https://example.test/x) now",
     80,
-    PI_DARK,
+    DEFAULT_DARK_THEME,
   );
 
   assert.deepEqual(lines, [
@@ -80,7 +80,7 @@ test("markdown tables render as a semantic grid", () => {
 
 test("markdown table semantics compile through the active theme", () => {
   const theme = new TerminalTheme("dark", {
-    ...PI_DARK.colors,
+    ...DEFAULT_DARK_THEME.colors,
     heading: "#ff0000",
     border_muted: "#00ff00",
   });
@@ -96,7 +96,7 @@ test("markdown bullet list continuation lines keep hanging indent", () => {
   const lines = renderMarkdownLines(
     "- first item that is long enough to wrap around the layout width\n- second",
     40,
-    PI_DARK,
+    DEFAULT_DARK_THEME,
   );
 
   assert.deepEqual(lines, [
@@ -111,7 +111,7 @@ test("markdown ordered list continuation lines align under item text", () => {
   const lines = renderMarkdownLines(
     "1. first item that is quite long enough to wrap around here\n2. second",
     40,
-    PI_DARK,
+    DEFAULT_DARK_THEME,
   );
 
   assert.deepEqual(lines, [
@@ -126,7 +126,7 @@ test("markdown blocks are separated by blank lines", () => {
   const lines = renderMarkdownLines(
     "para one\n\n- item\n\n# Heading\n\npara two",
     40,
-    PI_DARK,
+    DEFAULT_DARK_THEME,
   );
 
   assert.deepEqual(lines, [
@@ -141,7 +141,7 @@ test("markdown blocks are separated by blank lines", () => {
 });
 
 test("markdown horizontal rule keeps surrounding blank lines", () => {
-  const lines = renderMarkdownLines("before\n\n---\n\nafter", 40, PI_DARK);
+  const lines = renderMarkdownLines("before\n\n---\n\nafter", 40, DEFAULT_DARK_THEME);
 
   assert.deepEqual(lines, [
     "before",

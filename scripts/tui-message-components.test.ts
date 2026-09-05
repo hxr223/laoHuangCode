@@ -17,7 +17,7 @@ import {
   createUserBlock,
   createWelcomeBlock,
 } from "../packages/terminal/tui/src/tui/transcript-store.ts";
-import { PI_DARK, PI_LIGHT, type TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
+import { DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, type TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
 
 type Snapshot = Array<Array<{ text: string; style?: object }>>;
 
@@ -32,8 +32,8 @@ function snapshot(component: { render(context: { width: number; theme: TerminalT
 test("assistant and input text keep terminal default foreground", () => {
   const assistant = new AssistantMessage({ text: "answer" });
   const user = new UserMessage({ text: "question" });
-  const body = assistant.render({ width: 40, theme: PI_DARK }).lines.flatMap((value) => value.spans);
-  const input = user.render({ width: 40, theme: PI_DARK }).lines.flatMap((value) => value.spans);
+  const body = assistant.render({ width: 40, theme: DEFAULT_DARK_THEME }).lines.flatMap((value) => value.spans);
+  const input = user.render({ width: 40, theme: DEFAULT_DARK_THEME }).lines.flatMap((value) => value.spans);
 
   assert.ok(body.some((item) => item.text.includes("answer")));
   assert.ok(body.every((item) => item.style?.foreground !== "muted"));
@@ -44,7 +44,7 @@ test("assistant and input text keep terminal default foreground", () => {
 
 test("thinking is muted italic without styling later answers", () => {
   const thinking = new ThinkingMessage({ text: "inspect" });
-  const rendered = thinking.render({ width: 40, theme: PI_DARK });
+  const rendered = thinking.render({ width: 40, theme: DEFAULT_DARK_THEME });
 
   assert.ok(rendered.lines.flatMap((value) => value.spans).some((item) =>
     item.style?.foreground === "thinking" && item.style.italic === true
@@ -53,7 +53,7 @@ test("thinking is muted italic without styling later answers", () => {
 
 test("notice tone selects semantic style", () => {
   const warning = new NoticeMessage({ text: "blocked", tone: "warning" });
-  const spans = warning.render({ width: 40, theme: PI_DARK }).lines[0]!.spans;
+  const spans = warning.render({ width: 40, theme: DEFAULT_DARK_THEME }).lines[0]!.spans;
 
   assert.equal(spans[0]!.style?.foreground, "warning");
 });
@@ -87,7 +87,7 @@ test("message components emit semantic styled-line snapshots at 40 and 80 column
   ];
 
   for (const width of [40, 80]) {
-    for (const theme of [PI_DARK, PI_LIGHT]) {
+    for (const theme of [DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME]) {
       const rendered = components.map((component) => snapshot(component, width, theme));
       assert.deepEqual(rendered, expectedSnapshots(width));
     }
@@ -205,9 +205,9 @@ test("transcript reuses frozen block render lines between same-width renders", (
   const transcript = new Transcript({
     blocks: [createAssistantBlock("a1", "# Heading\n\nbody", false)],
   });
-  const first = transcript.renderWithMetadata({ width: 40, theme: PI_DARK });
-  const second = transcript.renderWithMetadata({ width: 40, theme: PI_DARK });
-  const resized = transcript.renderWithMetadata({ width: 20, theme: PI_DARK });
+  const first = transcript.renderWithMetadata({ width: 40, theme: DEFAULT_DARK_THEME });
+  const second = transcript.renderWithMetadata({ width: 40, theme: DEFAULT_DARK_THEME });
+  const resized = transcript.renderWithMetadata({ width: 20, theme: DEFAULT_DARK_THEME });
 
   assert.ok(first.lines.length > 0);
   assert.equal(second.lines[0], first.lines[0]);
@@ -253,7 +253,7 @@ test("expanded tool messages redact command and output secrets", () => {
     stdout: `token=${privateValue}`,
     stderr: `Authorization: Bearer ${privateValue}`,
     expanded: true,
-  }).render({ width: 80, theme: PI_DARK }).lines.flatMap((line) => line.spans)
+  }).render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.flatMap((line) => line.spans)
     .map((span) => span.text).join("\n");
 
   assert.ok(rendered.includes("[REDACTED]"));
@@ -273,7 +273,7 @@ test("expanded tool messages redact credential aliases", () => {
     stdout: `private_key=${privateKey}`,
     stderr: `authorization=${authorization}`,
     expanded: true,
-  }).render({ width: 80, theme: PI_DARK }).lines.flatMap((line) => line.spans)
+  }).render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.flatMap((line) => line.spans)
     .map((span) => span.text).join("\n");
 
   assert.ok(rendered.includes("[REDACTED]"));

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 
 import {
-  PiInputSession,
+  TerminalInputSession,
   PromptCancelledError,
   PromptEofError,
-  type PiInputSessionOptions,
+  type TerminalInputSessionOptions,
 } from "../packages/terminal/tui/src/tui/input.ts";
 
 interface FakeIO {
@@ -15,8 +15,8 @@ interface FakeIO {
   written: () => string;
 }
 
-function createSession(options: Partial<PiInputSessionOptions> = {}): {
-  session: PiInputSession;
+function createSession(options: Partial<TerminalInputSessionOptions> = {}): {
+  session: TerminalInputSession;
   io: FakeIO;
 } {
   const input = new PassThrough();
@@ -30,7 +30,7 @@ function createSession(options: Partial<PiInputSessionOptions> = {}): {
     }),
     { columns: 40 as number | undefined },
   );
-  const session = new PiInputSession({ input, output, ...options });
+  const session = new TerminalInputSession({ input, output, ...options });
   return {
     session,
     io: { input, output, written: () => Buffer.concat(chunks).toString("utf8") },

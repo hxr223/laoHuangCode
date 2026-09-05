@@ -96,7 +96,7 @@ import { MainScreen } from "./main-screen.ts";
 import { truncateStyledLine } from "./render-model.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
-  PiMainScreenRenderer,
+  MainScreenRenderer,
   charCellWidth,
   truncateToWidth,
   visibleWidth,
@@ -296,7 +296,7 @@ export class InteractiveTerminalLoop {
   #work: LoopWorkItem[] = [];
   #editor: EditorLike;
   #decoder: InputDecoderLike;
-  #renderer: PiMainScreenRenderer;
+  #renderer: MainScreenRenderer;
   #overlays = new OverlayManager();
   #focus = new FocusManager(this.#overlays, COMPOSER_COMPONENT);
   #viewHost = new ViewHost(this.#overlays);
@@ -332,7 +332,7 @@ export class InteractiveTerminalLoop {
         this.#disableModifyOtherKeys();
       },
     });
-    this.#renderer = new PiMainScreenRenderer(driver);
+    this.#renderer = new MainScreenRenderer(driver);
   }
 
   get editor(): EditorLike {

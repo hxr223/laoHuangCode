@@ -11,10 +11,10 @@ import {
   span,
   wrapStyledSpans,
 } from "../packages/terminal/tui/src/tui/render-model.ts";
-import { PI_DARK } from "../packages/terminal/tui/src/tui/theme.ts";
+import { DEFAULT_DARK_THEME } from "../packages/terminal/tui/src/tui/theme.ts";
 
 test("default foreground stays unstyled", () => {
-  const rendered = compileStyledLine(line(span("plain")), 20, PI_DARK);
+  const rendered = compileStyledLine(line(span("plain")), 20, DEFAULT_DARK_THEME);
   assert.equal(rendered, "plain");
 });
 
@@ -23,7 +23,7 @@ test("semantic spans compile at the ANSI boundary", () => {
     span("selected", { foreground: "accent", bold: true }),
     span(" description", { foreground: "muted" }),
   );
-  const rendered = compileStyledLine(source, 40, PI_DARK);
+  const rendered = compileStyledLine(source, 40, DEFAULT_DARK_THEME);
   assert.equal(lineText(source), "selected description");
   assert.match(rendered, /\x1b\[/u);
   assert.equal(rendered.replace(/\x1b\[[0-9;]*m/gu, ""), "selected description");
@@ -31,7 +31,7 @@ test("semantic spans compile at the ANSI boundary", () => {
 
 test("compiler rejects a line wider than terminal cells", () => {
   assert.throws(
-    () => compileStyledLines([line(span("中文ab"))], 5, PI_DARK),
+    () => compileStyledLines([line(span("中文ab"))], 5, DEFAULT_DARK_THEME),
     /rendered line exceeds terminal width/u,
   );
 });
