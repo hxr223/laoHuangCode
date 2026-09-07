@@ -6,7 +6,6 @@ import {
   cancelledResult,
   optionalPositiveInteger,
   stringArgument,
-  truncateText,
   withTouchedPath,
   type ToolAdapterDefinition,
   type ToolExecutionContextLike,
@@ -20,8 +19,11 @@ export interface ToolFileIo {
 export interface FileToolDefinitionOptions {
   projectRoot: string;
   fileIo?: ToolFileIo;
-  maxOutputChars?: number;
 }
+
+const READ_MAX_BYTES = 50 * 1024;
+const READ_MAX_LINES = 2000;
+const READ_MAX_LINE_CHARACTERS = 2000;
 
 const DEFAULT_IO: ToolFileIo = {
   readFile: (target) => fs.readFile(target, "utf8"),
@@ -36,7 +38,6 @@ export function createFileToolDefinitions(
 ): ToolAdapterDefinition[] {
   const root = resolveNonStrictSync(path.resolve(options.projectRoot));
   const io = options.fileIo ?? DEFAULT_IO;
-  const maxOutputChars = options.maxOutputChars ?? 20_000;
 
   const resolvePath = (rawPath: string): Promise<string> =>
     resolveNonStrict(path.resolve(root, rawPath));
@@ -45,7 +46,10 @@ export function createFileToolDefinitions(
     {
       spec: {
         name: "read",
-        description: "Read a UTF-8 text file.",
+        description:
+          "Read a UTF-8 text file, up to 50 KiB of content, 2000 lines, and 2000 Unicode characters per line. " +
+          "has_more reports omitted content; next_offset resumes at the next unread line, or is null at EOF. " +
+          "truncated_line_numbers identifies shortened lines; use Bash to inspect their omitted content.",
         parameters: {
           type: "object",
           properties: {
@@ -60,8 +64,9 @@ export function createFileToolDefinitions(
             },
             limit: {
               type: "integer",
-              description: "Maximum number of lines to return.",
+              description: "Maximum number of lines to return (default and maximum: 2000).",
               minimum: 1,
+              maximum: READ_MAX_LINES,
             },
           },
           required: ["path"],
@@ -76,7 +81,10 @@ export function createFileToolDefinitions(
       execute: async (args, execution) => {
         const target = await resolvePath(stringArgument(args, "path"));
         const offset = optionalPositiveInteger(args, "offset") ?? 1;
-        const limit = optionalPositiveInteger(args, "limit");
+        const limit = optionalPositiveInteger(args, "limit") ?? READ_MAX_LINES;
+        if (limit > READ_MAX_LINES) {
+          throw new Error(`limit must be less than or equal to ${READ_MAX_LINES}`);
+        }
         const content = await io.readFile(target);
         if (execution.isCancelled()) {
           return cancelledResult(execution);
@@ -89,18 +97,41 @@ export function createFileToolDefinitions(
             `offset ${offset} is out of range; the file has ${totalLines} lines`,
           );
         }
-        const window = lines.slice(
-          offset - 1,
-          limit === undefined ? undefined : offset - 1 + limit,
-        );
+        const window: string[] = [];
+        const truncatedLineNumbers: number[] = [];
+        let bytes = 0;
+        for (const line of lines.slice(offset - 1, offset - 1 + limit)) {
+          const ending = line.endsWith("\r\n") ? "\r\n" : line.endsWith("\n") ? "\n" : "";
+          const body = line.slice(0, line.length - ending.length);
+          let end = 0;
+          let characters = 0;
+          // Iterate code points so truncation cannot split a surrogate pair.
+          for (const character of body) {
+            if (characters === READ_MAX_LINE_CHARACTERS) break;
+            end += character.length;
+            characters += 1;
+          }
+          const rendered = body.slice(0, end) + ending;
+          const lineBytes = Buffer.byteLength(rendered, "utf8");
+          if (bytes + lineBytes > READ_MAX_BYTES) break;
+          if (end < body.length) truncatedLineNumbers.push(offset + window.length);
+          window.push(rendered);
+          bytes += lineBytes;
+        }
+        const nextOffset = offset - 1 + window.length < totalLines ? offset + window.length : null;
         return withTouchedPath(
           {
             ok: true,
-            content: truncateText(window.join(""), maxOutputChars),
+            content: window.join(""),
             offset,
-            limit: limit ?? null,
+            limit,
             total_lines: totalLines,
-            has_more: offset - 1 + window.length < totalLines,
+            has_more: nextOffset !== null || truncatedLineNumbers.length > 0,
+            next_offset: nextOffset,
+            truncated_line_numbers: truncatedLineNumbers,
+            ...(truncatedLineNumbers.length > 0 ? {
+              note: "Listed lines were truncated to 2000 Unicode characters. Use Bash to inspect their omitted content; next_offset only continues to later lines.",
+            } : {}),
           },
           target,
         );
