@@ -153,6 +153,11 @@ test("passes cancellation through to running bash tools", async (t) => {
       stderr: "",
       duration_ms: batch.results[0]?.duration_ms,
       truncated: false,
+      output_complete: true,
+      output_files: null,
+      output_file_complete: false,
+      stdout_start_mid_line: false,
+      stderr_start_mid_line: false,
       error: "stop bash",
     });
   } finally {

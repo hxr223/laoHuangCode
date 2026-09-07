@@ -17,6 +17,7 @@ export type KeyId =
   | "ctrl_c"
   | "ctrl_d"
   | "ctrl_l"
+  | "ctrl_u"
   | "character";
 
 export interface KeyInput {

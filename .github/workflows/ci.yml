@@ -45,6 +45,21 @@ jobs:
       - run: npm test
       - run: npm run smoke:package
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+      - run: npm ci --ignore-scripts
+      - run: npm run build
+      - run: node apps/cli/dist/bin.js --version
+      - name: Windows paths, console adapter, and process lifecycle
+        run: node --test scripts/local-paths.test.ts scripts/windows-terminal.test.ts scripts/bash-process-windows.test.ts scripts/tui-input.test.ts
+
   version:
     # Every merged pull request is an npm publish: the version must be a stable
     # X.Y.Z SemVer, not yet published, and above npm's current latest.

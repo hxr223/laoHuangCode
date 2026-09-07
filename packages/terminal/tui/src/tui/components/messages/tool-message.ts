@@ -13,6 +13,7 @@ export interface ToolMessageOptions {
   readonly stdout: string;
   readonly stderr: string;
   readonly expanded: boolean;
+  readonly outputNote?: string;
   readonly key?: string;
 }
 
@@ -44,12 +45,12 @@ export class ToolMessage implements TuiComponent {
       options.durationMs === null ? "" : `${options.durationMs}ms`,
     ].filter(Boolean).join(" · ");
     const output = options.expanded
-      ? [stderr && clip(stderr, 1_200), stdout && clip(stdout, 1_200)]
-        .filter(Boolean)
+      ? [stderr, stdout].filter(Boolean)
+        .map((text) => text.length > 1200 ? `…${text.slice(-1200)}` : text)
       : [];
     this.#content = new Box({
       child: new Text({
-        spans: [...title, { text: `\n${[metadata, ...output].join("\n")}` }],
+        spans: [...title, { text: `\n${[metadata, ...output, options.outputNote && redactToolText(options.outputNote)].filter(Boolean).join("\n")}` }],
       }),
     });
   }

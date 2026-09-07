@@ -50,7 +50,7 @@ export function withTouchedPath(result: ToolResult, target: string): ToolResult 
 export interface ToolExecutionContextLike {
   isCancelled(): boolean;
   readonly cancellationReason: string;
-  publish?(kind: string, payload: Record<string, unknown>): void;
+  publish?(kind: string, payload: Record<string, unknown>): unknown;
 }
 
 export interface ToolEventPublisher {
@@ -63,12 +63,12 @@ export interface ToolEventPublisher {
       correlation_id: string | null;
       payload: Record<string, unknown>;
     },
-  ): void;
+  ): unknown;
 }
 
 export type ToolEventSink =
   | ToolEventPublisher
-  | ((kind: string, payload: Record<string, unknown>) => void);
+  | ((kind: string, payload: Record<string, unknown>) => unknown);
 
 export interface ToolExecutionContextInit {
   sessionId?: string | null;
@@ -103,16 +103,15 @@ export class ToolExecutionContext implements ToolExecutionContextLike {
   }
 
   /** Publish through an EventBus, with a tiny callback fallback for tests. */
-  publish(kind: string, payload: Record<string, unknown>): void {
+  publish(kind: string, payload: Record<string, unknown>): unknown {
     const sink = this.eventSink;
     if (sink == null) return;
 
     if (typeof sink === "function") {
-      sink(kind, payload);
-      return;
+      return sink(kind, payload);
     }
 
-    sink.publish(kind, {
+    return sink.publish(kind, {
       source: "tool",
       session_id: this.sessionId ?? "local",
       task_id: this.taskId,

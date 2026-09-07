@@ -8,6 +8,7 @@
  */
 
 import { charCellWidth } from "./screen.ts";
+import { isLocalWindowsConsole, isNativeShiftPressed } from "./native-console.ts";
 import { line, span, type StyledLine } from "./render-model.ts";
 import {
   makeKeyInput,
@@ -30,6 +31,7 @@ export const InputActionKind = {
   CursorLeft: "cursor_left",
   CursorRight: "cursor_right",
   Backspace: "backspace",
+  DeleteToLineStart: "delete_to_line_start",
   Key: "key",
   Dismiss: "dismiss",
   Cancel: "cancel",
@@ -114,6 +116,8 @@ export function toTuiInputEvent(
       return { type: "key", key: makeKeyInput("right") };
     case InputActionKind.Backspace:
       return { type: "key", key: makeKeyInput("backspace") };
+    case InputActionKind.DeleteToLineStart:
+      return { type: "key", key: makeKeyInput("ctrl_u", { ctrl: true }) };
     case InputActionKind.Dismiss:
       return { type: "key", key: makeKeyInput("escape") };
     case InputActionKind.Cancel:
@@ -290,6 +294,7 @@ export class StdinBuffer {
 
 export interface TerminalInputFilterOptions {
   isAppleTerminal?: () => boolean;
+  isWindowsConsole?: () => boolean;
   shiftPressed?: () => boolean;
   enableModifyOtherKeys?: () => void;
   disableModifyOtherKeys?: () => void;
@@ -310,6 +315,7 @@ const ABANDONED_NEGOTIATION_TAIL_RE = /^\x1b\[\?[\d;]*([A-Za-z])$/;
 export class TerminalInputFilter {
   private pendingNegotiationPrefix = "";
   private readonly isAppleTerminal: () => boolean;
+  private readonly isWindowsConsole: () => boolean;
   private readonly shiftPressed: () => boolean;
   private readonly enableModifyOtherKeys: () => void;
   private readonly disableModifyOtherKeys: () => void;
@@ -317,7 +323,8 @@ export class TerminalInputFilter {
 
   constructor(options: TerminalInputFilterOptions = {}) {
     this.isAppleTerminal = options.isAppleTerminal ?? isAppleTerminalSession;
-    this.shiftPressed = options.shiftPressed ?? (() => false);
+    this.isWindowsConsole = options.isWindowsConsole ?? isLocalWindowsConsole;
+    this.shiftPressed = options.shiftPressed ?? isNativeShiftPressed;
     this.enableModifyOtherKeys = options.enableModifyOtherKeys ?? (() => {});
     this.disableModifyOtherKeys = options.disableModifyOtherKeys ?? (() => {});
   }
@@ -405,7 +412,7 @@ export class TerminalInputFilter {
   private normalizePlatformInput(sequence: string): string {
     if (
       sequence === "\r" &&
-      this.isAppleTerminal() &&
+      (this.isAppleTerminal() || this.isWindowsConsole()) &&
       this.shiftPressed()
     ) {
       return APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE;
@@ -436,6 +443,7 @@ const CONTROL_ACTIONS: ReadonlyMap<number, InputActionKind> = new Map([
   [4, InputActionKind.Eof],
   [9, InputActionKind.Complete],
   [8, InputActionKind.Backspace],
+  [21, InputActionKind.DeleteToLineStart],
   [127, InputActionKind.Backspace],
 ]);
 
@@ -954,10 +962,16 @@ function decodeSpecialEscapeAction(sequence: string): InputAction | null {
 }
 
 function decodeModifiedControlKey(sequence: string): InputAction | null {
-  const kitty = /^\x1b\[(13|57414|9);(\d+)(?::(\d+))?u$/.exec(sequence);
+  const kitty = /^\x1b\[(13|57414|9|117)(?::\d*)?(?::\d+)?;(\d+)(?::(\d+))?u$/.exec(sequence);
   if (kitty !== null) {
     const code = kitty[1]!;
     const modifier = Number.parseInt(kitty[2]!, 10) - 1;
+    if (
+      code === "117" && matchesKittyModifiers(modifier, 4) &&
+      (isKittyPressEvent(kitty[3]) || kitty[3] === "2")
+    ) {
+      return inputAction(InputActionKind.DeleteToLineStart);
+    }
     if (!isKittyPressEvent(kitty[3])) {
       return null;
     }
@@ -986,6 +1000,9 @@ function decodeModifiedControlKey(sequence: string): InputAction | null {
   }
   const modifier = Number.parseInt(modifyOtherKeys[1]!, 10) - 1;
   const codepoint = Number.parseInt(modifyOtherKeys[2]!, 10);
+  if (codepoint === 117 && modifier === 4) {
+    return inputAction(InputActionKind.DeleteToLineStart);
+  }
   if (codepoint === 13 && modifier === 2) {
     return inputAction(
       InputActionKind.Key,
@@ -1294,6 +1311,8 @@ export class EditorState {
       this.clearCompletions();
       this.text = this.text.slice(0, this.cursor - 1) + this.text.slice(this.cursor);
       this.cursor -= 1;
+    } else if (action.kind === InputActionKind.DeleteToLineStart) {
+      this.deleteToLineStart();
     } else if (action.kind === InputActionKind.CursorLeft) {
       this.clearCompletions();
       this.cursor = Math.max(0, this.cursor - 1);
@@ -1315,6 +1334,23 @@ export class EditorState {
     this.clearCompletions();
     this.text = this.text.slice(0, this.cursor) + text + this.text.slice(this.cursor);
     this.cursor += text.length;
+    this.historyIndex = null;
+  }
+
+  private deleteToLineStart(): void {
+    if (this.cursor === 0) {
+      return;
+    }
+    const previousNewline = this.text.lastIndexOf("\n", this.cursor - 1);
+    const lineStart = previousNewline + 1;
+    this.clearCompletions();
+    if (lineStart === this.cursor) {
+      this.text = this.text.slice(0, previousNewline) + this.text.slice(this.cursor);
+      this.cursor = previousNewline;
+    } else {
+      this.text = this.text.slice(0, lineStart) + this.text.slice(this.cursor);
+      this.cursor = lineStart;
+    }
     this.historyIndex = null;
   }
 

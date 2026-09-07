@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { PassThrough, Writable } from "node:stream";
 
 import {
-  PiInputSession,
+  TerminalInputSession,
   PromptCancelledError,
   PromptEofError,
-  type PiInputSessionOptions,
+  type TerminalInputSessionOptions,
 } from "../packages/terminal/tui/src/tui/input.ts";
 
 interface FakeIO {
@@ -15,8 +15,8 @@ interface FakeIO {
   written: () => string;
 }
 
-function createSession(options: Partial<PiInputSessionOptions> = {}): {
-  session: PiInputSession;
+function createSession(options: Partial<TerminalInputSessionOptions> = {}): {
+  session: TerminalInputSession;
   io: FakeIO;
 } {
   const input = new PassThrough();
@@ -30,7 +30,7 @@ function createSession(options: Partial<PiInputSessionOptions> = {}): {
     }),
     { columns: 40 as number | undefined },
   );
-  const session = new PiInputSession({ input, output, ...options });
+  const session = new TerminalInputSession({ input, output, ...options });
   return {
     session,
     io: { input, output, written: () => Buffer.concat(chunks).toString("utf8") },
@@ -192,4 +192,27 @@ test("footer lines render below the frame", async () => {
 
   assert.equal(await result, "");
   assert.ok(io.written().includes("project: demo"));
+});
+
+test("prompt restores the previous raw mode and brackets pasted input", async () => {
+  const changes: boolean[] = [];
+  const input = Object.assign(new PassThrough(), { isRaw: true, setRawMode: (value: boolean) => changes.push(value) });
+  const { session, io } = createSession({ input });
+  const result = session.prompt();
+  input.write("done\r");
+  assert.equal(await result, "done");
+  assert.deepEqual(changes, [true, true]);
+  assert.ok(io.written().includes("\x1b[?2004h"));
+  assert.ok(io.written().includes("\x1b[?2004l"));
+});
+
+test("prompt restores raw mode and rejects on input EOF", async () => {
+  const changes: boolean[] = [];
+  const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: (value: boolean) => changes.push(value) });
+  const { session } = createSession({ input });
+  const result = session.prompt();
+  input.end();
+  await assert.rejects(result, PromptEofError);
+  assert.deepEqual(changes, [true, false]);
+  assert.equal(input.listenerCount("data"), 0);
 });

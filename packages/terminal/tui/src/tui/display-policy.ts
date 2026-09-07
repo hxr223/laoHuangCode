@@ -1,6 +1,6 @@
 /** Audience-specific policy for converting runtime events into display events. */
 
-import type { RuntimeEvent } from "@laohuang/runtime-protocol";
+import { omitPartialOutputLine, type RuntimeEvent } from "@laohuang/runtime-protocol";
 
 export type DisplayAudience = "terminal";
 
@@ -38,10 +38,12 @@ const HIGH_FREQUENCY_EVENTS = new Set([
   "model.reasoning_delta",
   "model.tool_call_delta",
   "tool.output_delta",
+  "tool.output_snapshot",
 ]);
 const TOOL_EVENTS = new Set([
   "tool.started",
   "tool.output_delta",
+  "tool.output_snapshot",
   "tool.finished",
 ]);
 const SENSITIVE_FIELDS = new Set([
@@ -78,6 +80,25 @@ export function redactToolText(value: string): string {
     (text, pattern) => text.replace(pattern, "$1[REDACTED]"),
     value,
   );
+}
+
+/** A cropped first line may have lost the prefix identifying a secret. */
+export function redactToolSnapshot(value: string, startMidLine = false): string {
+  const text = startMidLine ? omitPartialOutputLine(value) : value;
+  return redactToolText(text);
+}
+
+export function toolOutputNote(payload: Record<string, unknown>): string {
+  const notes: string[] = [];
+  if (payload.truncated === true) notes.push("Output preview truncated.");
+  if (isRecord(payload.output_files)) {
+    const label = payload.output_file_complete === true ? "Full output" : "Partial output";
+    notes.push(`${label}: ${Object.values(payload.output_files).filter((value) => typeof value === "string").join(", ")}`);
+  }
+  if (payload.output_file_error) notes.push(String(payload.output_file_error));
+  if (payload.output_complete === false) notes.push("Output collection incomplete.");
+  if (payload.error) notes.push(String(payload.error));
+  return redactToolText(notes.join("\n"));
 }
 
 function redactToolValue(value: unknown): unknown {
@@ -170,8 +191,15 @@ export class DisplayPolicy {
       : String(payload.text ?? payload.chunk ?? "");
     if (kind === "tool.output_delta") {
       payload = { ...payload, text };
+    } else if (kind === "tool.output_snapshot") {
+      payload = { ...payload, text: redactToolSnapshot(String(rawPayload.text ?? ""), rawPayload.start_mid_line === true) };
     } else if (kind === "tool.finished") {
       this.#toolOutputRedactor.clear(correlationId);
+      for (const name of ["stdout", "stderr"]) {
+        if (typeof rawPayload[name] === "string") {
+          payload[name] = redactToolSnapshot(rawPayload[name], rawPayload[`${name}_start_mid_line`] === true);
+        }
+      }
     }
     const projected: DisplayEvent[] = [];
     const dropped = droppedCount(payload);
@@ -190,7 +218,7 @@ export class DisplayPolicy {
     }
     if (
       this.foldToolOutput &&
-      kind === "tool.output_delta" &&
+      (kind === "tool.output_delta" || kind === "tool.output_snapshot") &&
       (stream || "stdout") === "stdout"
     ) {
       return projected;
@@ -200,7 +228,7 @@ export class DisplayPolicy {
     // Keep them in every audience projection so a display can never remain
     // stuck in a running state after delta traffic is coalesced.
     if (LIFECYCLE_EVENTS.has(kind) || kind.length > 0) {
-      projected.push({ kind, correlationId, stream, text, payload });
+      projected.push({ kind, correlationId, stream, text: String(payload.text ?? text), payload });
     }
     return projected;
   }

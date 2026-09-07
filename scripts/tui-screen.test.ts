@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   MemoryTerminalDriver,
-  PiMainScreenRenderer,
+  MainScreenRenderer,
   truncateToWidth,
   visibleWidth,
   wrapTextToWidth,
@@ -67,7 +67,7 @@ test("emulator resize updates dimensions and clamps viewport state", () => {
 
 test("new completed lines append without erasing scrollback", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   renderer.render(frame(["user one", "answer one", "❯ "], 2, 2));
   terminal.clearWrites();
@@ -81,7 +81,7 @@ test("new completed lines append without erasing scrollback", () => {
 
 test("stream delta repaints only changed active tail", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["user one", "answer one", "answer two: hel", "❯ "], 3, 2));
   terminal.clearWrites();
 
@@ -94,7 +94,7 @@ test("stream delta repaints only changed active tail", () => {
 
 test("completed active line is rewritten in place without duplication", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["user", "answer: hel", "❯ "], 1, 2));
   terminal.clearWrites();
 
@@ -108,7 +108,7 @@ test("completed active line is rewritten in place without duplication", () => {
 
 test("cursor column is positioned within the selected line", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["history", "❯ edit"], 1, 1, 0));
   terminal.clearWrites();
 
@@ -119,7 +119,7 @@ test("cursor column is positioned within the selected line", () => {
 
 test("cursor column uses terminal cells not string length", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   renderer.render(frame(["❯ 你好你"], 0, 0, 8));
 
@@ -129,7 +129,7 @@ test("cursor column uses terminal cells not string length", () => {
 
 test("render emits one atomic terminal write", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["─".repeat(80), "❯ a", "─".repeat(80)], 1, 1, 3));
   terminal.clearWrites();
 
@@ -141,7 +141,7 @@ test("render emits one atomic terminal write", () => {
 
 test("diff render uses synchronized output wrappers", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["one", "❯ a"], 1, 1, 3));
   terminal.clearWrites();
 
@@ -153,7 +153,7 @@ test("diff render uses synchronized output wrappers", () => {
 
 test("editor only change does not repaint unchanged footer rows", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["─".repeat(80), "❯ a", "─".repeat(80)], 1, 1, 3));
   terminal.clearWrites();
 
@@ -167,7 +167,7 @@ test("editor only change does not repaint unchanged footer rows", () => {
 test("framed editor updates do not duplicate prompts semantically", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 4 });
   const emulator = new TerminalEmulator({ columns: 80, rows: 4 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["❯ a"], 0, 0, 3));
   emulator.write(terminal.writes());
   terminal.clearWrites();
@@ -183,7 +183,7 @@ test("framed editor updates do not duplicate prompts semantically", () => {
 
 test("changed line above previous viewport uses full render", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 2 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["old", "middle", "tail", "❯ "], 3, 3));
   terminal.clearWrites();
 
@@ -195,7 +195,7 @@ test("changed line above previous viewport uses full render", () => {
 
 test("cursor only update flushes terminal output", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["one", "two"], 1, 1));
   const flushesBefore = terminal.flushes;
 
@@ -206,7 +206,7 @@ test("cursor only update flushes terminal output", () => {
 
 test("resize uses pi full render clear path", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.render(frame(["saved history", "active", "❯ "], 2, 2));
   terminal.resize({ columns: 40, rows: 24 });
   terminal.clearWrites();
@@ -220,7 +220,7 @@ test("resize uses pi full render clear path", () => {
 
 test("over width line raises before writing", () => {
   const terminal = new MemoryTerminalDriver({ columns: 4, rows: 2 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   assert.throws(
     () => renderer.render(frame(["12345"], 0, 0)),
@@ -232,7 +232,7 @@ test("over width line raises before writing", () => {
 
 test("embedded physical newline raises before writing", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 2 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   assert.throws(
     () => renderer.render(frame(["thinking\nleaked"], 0, 0)),
@@ -293,7 +293,7 @@ test("truncate and wrap expand tabs consistently", () => {
 
 test("osc8 visible text counts toward width", () => {
   const terminal = new MemoryTerminalDriver({ columns: 4, rows: 2 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   const linked = "\x1b]8;;https://example.test\x1b\\12345\x1b]8;;\x1b\\";
 
   assert.throws(
@@ -306,7 +306,7 @@ test("osc8 visible text counts toward width", () => {
 
 test("zwj emoji cluster uses terminal cell width", () => {
   const terminal = new MemoryTerminalDriver({ columns: 2, rows: 2 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   renderer.render(frame(["👨‍👩‍👧‍👦"], 0, 0));
 
@@ -315,7 +315,7 @@ test("zwj emoji cluster uses terminal cell width", () => {
 
 test("flag emoji cluster uses terminal cell width", () => {
   const terminal = new MemoryTerminalDriver({ columns: 2, rows: 2 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   renderer.render(frame(["🇨🇳"], 0, 0));
 
@@ -324,7 +324,7 @@ test("flag emoji cluster uses terminal cell width", () => {
 
 test("close restores driver and cursor", () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   renderer.close();
 
   assert.equal(terminal.restored, true);
@@ -342,7 +342,7 @@ test("close restores driver when cursor write fails", () => {
   }
 
   const terminal = new BrokenWriteTerminal({ columns: 80, rows: 24 });
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
 
   assert.throws(() => renderer.close(), /closed/);
 
