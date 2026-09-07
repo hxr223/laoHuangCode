@@ -22,7 +22,7 @@ laoHuangCode 不是完整沙箱。当前版本不提供工具执行确认，模�
 - 工具日志隐藏 `content`、`old_text`、`new_text` 的正文以及 `edits` 替换列表。
 - API key 在终端隐藏输入（不回显），不接受命令行参数，也不进入 Shell 历史。
 - API key 和供应商 setup 字段保存在独立的 version 2 `credentials.json`，文件权限为 `0600`；程序创建的默认父目录为 `0700`。
-- `config.json` 只保存 profile、provider、model 和 base URL，不包含 runtime credential。
+- `config.json` 保存 profile、provider、model、base URL 和可选的 Bash 路径 `shell_path`，不包含 runtime credential。
 - `@laohuang/llm-pi-ai` 通过 neutral credential bridge 读取 API-key credential；只有该包导入 pi-ai。
 - OAuth login、device code、callback server、access/refresh token storage 和 OAuth refresh 明确不实现。
 - `amazon-bedrock`、`google-vertex` 和 OAuth-only providers 不暴露为 available provider；直接 Google API provider `google` 单独存在。

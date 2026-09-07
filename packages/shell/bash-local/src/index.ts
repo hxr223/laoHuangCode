@@ -1,3 +1,4 @@
+export { resolveBashPath, type ResolveBashPathOptions } from "./bash-path.ts";
 export {
   BashResult,
   MODEL_API_KEY_ENV_NAMES,

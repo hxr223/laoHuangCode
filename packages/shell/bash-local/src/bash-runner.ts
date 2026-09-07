@@ -12,6 +12,7 @@ import { constants as osConstants } from "node:os";
 import { StringDecoder } from "node:string_decoder";
 
 import type { CancelToken } from "@laohuang/runtime-protocol";
+import { resolveBashPath } from "./bash-path.ts";
 
 export type BashStatus =
   | "completed"
@@ -377,6 +378,7 @@ function toExitCode(
 
 export interface RunBashOptions {
   cwd: string;
+  shellPath?: string | undefined;
   /** Seconds; a negative value disables the timeout. */
   timeout: number;
   maxOutputChars: number;
@@ -403,7 +405,19 @@ export async function runBash(
   }
 
   const environment = cleanEnvironment(options.env ?? process.env);
-  const child = spawn("/bin/bash", ["-lc", command], {
+  let shellPath: string;
+  try {
+    shellPath = resolveBashPath({ shellPath: options.shellPath, env: environment });
+  } catch (error) {
+    const result = new BashResult({
+      status: "spawn_failed",
+      error: String(error),
+      durationMs: Math.trunc(performance.now() - invokedAt),
+    });
+    execution.publish("tool.finished", result.asDict());
+    return result;
+  }
+  const child = spawn(shellPath, ["-lc", command], {
     cwd: options.cwd,
     env: environment,
     stdio: ["ignore", "pipe", "pipe"],

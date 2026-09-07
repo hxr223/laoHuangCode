@@ -30,7 +30,7 @@ import { AgentSession, SessionRecorder, routeHumanIntent } from "@laohuang/sessi
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
 import { ToolRegistry } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
-import { createBashToolDefinition } from "@laohuang/tool-bash";
+import { createBashToolDefinition, resolveBashPath } from "@laohuang/tool-bash";
 
 import {
   SessionCommands,
@@ -284,14 +284,22 @@ export async function main(
     outputFn(`Verified: ${provider.verified ? "yes" : "no"}`);
     outputFn(`Configuration: ${configPath}`);
     outputFn(`Node: ${process.version}`);
-    outputFn(`Bash: ${existsSync("/bin/bash") ? "available" : "missing"}`);
-    return provider !== undefined && auth.configured && refreshOk && model !== undefined
+    let bashAvailable = true;
+    try {
+      outputFn(`Bash: ${resolveBashPath({ shellPath: manager.getShellPath(), env: environ })}`);
+    } catch (error) {
+      bashAvailable = false;
+      outputFn(`Bash: ${errorMessage(error)}`);
+    }
+    return provider !== undefined && auth.configured && refreshOk && model !== undefined && bashAvailable
       ? 0
       : 1;
   }
 
   let config: Config;
+  let shellPath: string | undefined;
   try {
+    shellPath = manager.getShellPath();
     if (existsSync(configPath)) {
       config = manager.resolve({
         environ,
@@ -381,7 +389,7 @@ export async function main(
 
   const toolRegistry = new ToolRegistry([
     ...createFileToolDefinitions({ projectRoot }),
-    createBashToolDefinition({ projectRoot }),
+    createBashToolDefinition({ projectRoot, shellPath, env: environ }),
   ]);
   const activeConversationHistory = {
     appendUser: (input: Parameters<ConversationHistory["appendUser"]>[0]) => {
