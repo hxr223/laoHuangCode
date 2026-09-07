@@ -152,8 +152,28 @@ Windows 优先查找 `ProgramFiles`、`ProgramFiles(x86)` 下的 `Git\bin\bash.e
 Bash 工具在定位失败时返回 `spawn_failed`。路径检测不执行 Bash，也不验证其版本。
 配置更改在下次启动生效。
 
-Windows 自动定位仅解决 Bash 查找问题，尚未满足完整 Windows 支持契约：进程树取消、
-文件路径互通及终端交互仍需适配与验证。不需要为 Git Bash 定位安装 WSL。
+## Windows 路径与终端
+
+目标运行环境是 Windows 原生 Node.js 和 Git for Windows，不需要 WSL。
+文件工具的 `path` 和 Bash 工具的 `workdir` 接受 Windows 原生路径、UNC、相对路径、
+`~/`、`~\`，以及 `/c/...`、`/mnt/c/...`、`/cygdrive/c/...` 盘符路径。
+`/usr/...` 等 Git Bash 虚拟路径通过所选 Bash 安装中的 `cygpath.exe` 转换；找不到
+转换器时明确报错，应改用 Windows 绝对路径。不改写命令正文、工具输出或文件内容。
+配置环境变量 `LAOHUANG_CONFIG`、`XDG_CONFIG_HOME` 使用相同路径转换；在读取
+`shell_path` 前，虚拟配置路径的转换器按 Git 默认安装位置和 PATH 查找。
+Windows 主目录优先使用 `USERPROFILE`，其次 `HOME`，最后系统主目录；配置和会话
+目录采用同一规则。
+
+交互终端在 raw mode 后启用 Windows VT 输入，保留 Shift+Tab 等修饰键信息；本地
+Windows 控制台对没有显式修饰信息的 Enter 补查 Shift 状态。退出、取消或初始化失败
+时恢复原有 raw/console mode。显式 Kitty/VT 键序列和 bracketed paste 保持独立处理；
+SSH 和非控制台管道不查询本机键盘状态，Shift+Enter 取决于终端发送的键序列。
+原生调用由 Koffi 预编译包提供，npm 安装需保留 optional dependencies；正常安装无需
+本地 C/C++ 编译器。缺失原生模块或控制台模式设置失败会报错，不静默宣称修饰键可用。
+
+代码已覆盖 Bash 定位、进程树取消、路径转换和终端输入适配，并加入 Windows CI。
+当前开发机仅完成 macOS 验证，尚未完成 Windows Terminal/Git Bash 的实机交互验收，
+因此还不能宣称满足完整 Windows 支持契约。
 
 真实 provider E2E 是付费/联网测试，不属于普通测试套件：
 

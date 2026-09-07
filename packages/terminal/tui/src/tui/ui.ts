@@ -16,6 +16,7 @@
  */
 
 import { appendFileSync } from "node:fs";
+import { enterTerminalRawMode } from "./native-console.ts";
 
 export { toTuiInputEvent } from "./editor.ts";
 export type {
@@ -1616,7 +1617,7 @@ function escapeDebugCapture(data: string): string {
 
 /** Production terminal driver over process stdin/stdout. */
 export class StdTerminalDriver implements RawTerminalDriver {
-  #rawModeActive = false;
+  #restoreRawMode: (() => void) | null = null;
   /**
    * Debug capture target from LAOHUANG_DEBUG_LOG: when set, every write is
    * teed to this file with escape sequences made visible (for diagnosing
@@ -1637,8 +1638,7 @@ export class StdTerminalDriver implements RawTerminalDriver {
     if (!process.stdin.isTTY) {
       return;
     }
-    process.stdin.setRawMode(true);
-    this.#rawModeActive = true;
+    this.#restoreRawMode ??= enterTerminalRawMode(process.stdin);
   }
 
   write(data: string): void {
@@ -1671,9 +1671,8 @@ export class StdTerminalDriver implements RawTerminalDriver {
   }
 
   restore(): void {
-    if (this.#rawModeActive) {
-      process.stdin.setRawMode(false);
-      this.#rawModeActive = false;
-    }
+    const restore = this.#restoreRawMode;
+    this.#restoreRawMode = null;
+    restore?.();
   }
 }

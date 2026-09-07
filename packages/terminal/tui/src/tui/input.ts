@@ -8,6 +8,7 @@
  */
 
 import type { Readable, Writable } from "node:stream";
+import { enterTerminalRawMode, type RawModeInput } from "./native-console.ts";
 
 import {
   BufferedInputKind,
@@ -44,7 +45,7 @@ export class PromptEofError extends Error {
   }
 }
 
-export type PromptInput = Readable & { setRawMode?: (mode: boolean) => void };
+export type PromptInput = Readable & RawModeInput;
 export type PromptOutput = Writable & { readonly columns?: number };
 
 export interface TerminalInputSessionOptions {
@@ -136,6 +137,8 @@ export class TerminalInputSession {
     let lastCompletedText: string | null = null;
     let settled = false;
     let flushTimer: NodeJS.Timeout | null = null;
+    let restoreRawMode: (() => void) | null = null;
+    let pasteEnabled = false;
 
     const termWidth = (): number =>
       typeof output.columns === "number" && output.columns > 0
@@ -217,8 +220,16 @@ export class TerminalInputSession {
           flushTimer = null;
         }
         input.removeListener("data", onData);
-        if (typeof input.setRawMode === "function") {
-          input.setRawMode(false);
+        input.removeListener("end", onEnd);
+        input.removeListener("error", onError);
+        try {
+          if (pasteEnabled) output.write("\x1b[?2004l");
+        } finally {
+          try {
+            restoreRawMode?.();
+          } catch (restoreError) {
+            error = new AggregateError([error, restoreError].filter(Boolean), "Terminal mode restoration failed");
+          }
         }
         if (this.eraseWhenDone) {
           let chunk = "";
@@ -336,12 +347,20 @@ export class TerminalInputSession {
         scheduleEscapeFlush();
       };
 
-      if (typeof input.setRawMode === "function") {
-        input.setRawMode(true);
+      const onEnd = (): void => finish(new PromptEofError(), "");
+      const onError = (error: Error): void => finish(error, "");
+      try {
+        restoreRawMode = enterTerminalRawMode(input);
+        pasteEnabled = true;
+        output.write("\x1b[?2004h");
+        input.on("data", onData);
+        input.on("end", onEnd);
+        input.on("error", onError);
+        refreshCompletions();
+        redraw();
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)), "");
       }
-      input.on("data", onData);
-      refreshCompletions();
-      redraw();
     });
   }
 

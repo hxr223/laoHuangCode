@@ -2,7 +2,8 @@ import { promises as fs } from "node:fs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
-import { runBash as runBashCommand, ToolExecutionContext } from "@laohuang/bash-local";
+import { resolveBashPath, runBash as runBashCommand, ToolExecutionContext } from "@laohuang/bash-local";
+import { resolveLocalPath } from "@laohuang/local-paths";
 import {
   optionalPositiveInteger,
   stringArgument,
@@ -37,7 +38,11 @@ export interface BashToolDefinitionOptions {
 export function createBashToolDefinition(
   options: BashToolDefinitionOptions,
 ): ToolAdapterDefinition {
-  const root = resolveNonStrictSync(path.resolve(options.projectRoot));
+  const pathOptions = {
+    env: options.env ?? process.env,
+    shellPath: () => resolveBashPath({ shellPath: options.shellPath, env: options.env }),
+  };
+  const root = resolveNonStrictSync(resolveLocalPath(options.projectRoot, process.cwd(), pathOptions));
   const bashTimeoutSeconds = options.bashTimeoutSeconds ?? 120;
   const maxOutputChars = options.maxOutputChars ?? 20_000;
   const runBash = options.runBash ?? defaultRunBash;
@@ -84,7 +89,7 @@ export function createBashToolDefinition(
       const cwd =
         workdir === undefined
           ? root
-          : await resolvePath(root, stringArgument(args, "workdir"));
+          : await resolveNonStrict(resolveLocalPath(stringArgument(args, "workdir"), root, pathOptions));
       const timeoutMs = optionalPositiveInteger(args, "timeoutMs");
       return await runBash(command, {
         cwd,
@@ -117,10 +122,6 @@ async function defaultRunBash(
     env: options.env,
   });
   return result.asDict() as ToolResult;
-}
-
-async function resolvePath(root: string, rawPath: string): Promise<string> {
-  return await resolveNonStrict(path.resolve(root, rawPath));
 }
 
 /** Non-strict realpath: resolves symlinks for the deepest existing ancestor. */

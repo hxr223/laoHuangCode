@@ -193,3 +193,26 @@ test("footer lines render below the frame", async () => {
   assert.equal(await result, "");
   assert.ok(io.written().includes("project: demo"));
 });
+
+test("prompt restores the previous raw mode and brackets pasted input", async () => {
+  const changes: boolean[] = [];
+  const input = Object.assign(new PassThrough(), { isRaw: true, setRawMode: (value: boolean) => changes.push(value) });
+  const { session, io } = createSession({ input });
+  const result = session.prompt();
+  input.write("done\r");
+  assert.equal(await result, "done");
+  assert.deepEqual(changes, [true, true]);
+  assert.ok(io.written().includes("\x1b[?2004h"));
+  assert.ok(io.written().includes("\x1b[?2004l"));
+});
+
+test("prompt restores raw mode and rejects on input EOF", async () => {
+  const changes: boolean[] = [];
+  const input = Object.assign(new PassThrough(), { isRaw: false, setRawMode: (value: boolean) => changes.push(value) });
+  const { session } = createSession({ input });
+  const result = session.prompt();
+  input.end();
+  await assert.rejects(result, PromptEofError);
+  assert.deepEqual(changes, [true, false]);
+  assert.equal(input.listenerCount("data"), 0);
+});

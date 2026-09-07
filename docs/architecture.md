@@ -3,7 +3,8 @@
 `laoHuangCode` 是一个纯 TypeScript/Node.js 的 coding agent。npm 包 `laohuang`
 是唯一发布制品：私有根 workspace 负责编排 TypeScript project references，
 `apps/cli` 把 CLI bundle 写入 `apps/cli/dist/bin.js`，运行时只依赖
-`@earendil-works/pi-ai@^0.83.0` 和 Node.js >=22.19.0 标准库，不需要 Python。
+`@earendil-works/pi-ai@^0.83.0`、Windows 终端原生适配依赖 `koffi@3.2.1`
+和 Node.js >=22.19.0 标准库，不需要 Python。
 
 ## 项目目录
 
@@ -32,6 +33,7 @@ laoHuangCode/
 │   ├── core/runtime-protocol/            # 事件、取消、队列、AgentRunner 等公共协议
 │   ├── core/session-runtime/             # 后台任务、路由、队列、安全点与取消协调
 │   ├── core/tools/                       # ToolRegistry 与工具协议
+│   ├── fs/local-paths/                   # 本地路径、主目录与 Git Bash 路径转换
 │   ├── fs/tool-fs/                       # read/write/edit 工具适配器
 │   ├── llm/llm/                          # provider-neutral 模型领域合同
 │   ├── llm/llm-pi-ai/                    # pi-ai 转换、stream、replay 与错误归一化
@@ -124,8 +126,9 @@ API-key provider 暴露。`PROVIDER_VERIFICATIONS` 当前为空，因此 checked
   mailbox，由各自的 Promise 循环排空；慢消费者只在自己的 mailbox 上堆积，
   不会阻塞 Agent 或其他消费者。
 
-唯一的“后台”执行体是 Bash 子进程：`bash-runner.ts` 用 `detached` 子进程建立
-独立进程组，stdout/stderr 通过 Node stream 异步读取，事件循环始终保持响应。
+唯一的“后台”执行体是 Bash 子进程：`bash-runner.ts` 在 Unix 用 `detached` 建立
+独立进程组，Windows 使用非 detached、隐藏控制台的子进程。stdout/stderr 通过 Node
+stream 异步读取，事件循环始终保持响应。
 
 ## 一次请求的调用流程
 
@@ -223,13 +226,26 @@ Agent 默认采用批次语义：参数解析按模型给出的顺序完成，�
 多个 `bash` 仍可并发；`bash` 可能修改任意未知文件，因此多个 Bash 之间的副作用由
 用户环境承担。
 
-`bash` 使用独立进程组（`detached` 子进程），stdout/stderr 通过 Node stream
+`bash` 在 Unix 使用独立进程组（`detached` 子进程），stdout/stderr 通过 Node stream
 异步读取。输出经过 UTF-8 增量解码（`StringDecoder`）与终端
 控制字符清理，达到 4KB 或约 40ms 时发布 `tool.output_delta`；交给模型的最终结果
 每个 stream 最多保留配置上限，并采用前 40% + 后 60% 截断。取消时先向进程组发送
-SIGTERM，2 秒后仍未退出再发送 SIGKILL。
+SIGTERM，2 秒后仍未退出再发送 SIGKILL。Windows 使用 `detached: false` 和
+`windowsHide: true`，取消或超时时调用系统目录下的 `taskkill.exe /F /T /PID`，
+并等待其结果；taskkill 设置 5 秒超时。清理失败时尝试终止直接子进程，同时在结果的
+`error` 中报告 `Process cleanup failed`，不把直接子进程退出当作整棵树清理成功。
+
+Bash 退出后继续读取输出，每次收到数据都会重置计时；连续 100ms 没有输出时关闭仍
+未结束的管道，并设置 `truncated: true`，表示可能遗漏后代进程的后续输出。Bash 尚未
+退出时不使用这个空闲收尾规则。终止操作完成后最多再等待 1 秒退出与排空管道；若
+Bash 仍未退出，报告清理失败并解除其对 Node 退出的阻塞。正常结束或取消结果只发布一次。
 
 ## 终端渲染
+
+`tui/native-console.ts` 保存并恢复 raw/Win32 console mode，在 raw mode 之后启用
+VT 输入，提供本地 Shift 状态回退。Koffi 仅在 Windows 原生终端入口按需加载，作为
+外部运行时依赖随 npm 安装；非 Windows 平台不加载原生模块。主终端、独立设置提示和
+隐藏输入共用模式生命周期；管道/SSH 输入不使用本机修饰键状态。
 
 `tui/ui.ts` 是唯一终端写入者：一切可见内容都是 append-only 的块序列，可变块
 inline 流式更新，轮次结束后冻结、绝不重写。`tui/screen.ts` 是增量差分

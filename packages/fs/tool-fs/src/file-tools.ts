@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import { realpathSync } from "node:fs";
 import path from "node:path";
+import { resolveLocalPath, type LocalPathOptions } from "@laohuang/local-paths";
 
 import {
   cancelledResult,
@@ -19,6 +20,7 @@ export interface ToolFileIo {
 export interface FileToolDefinitionOptions {
   projectRoot: string;
   fileIo?: ToolFileIo;
+  pathOptions?: LocalPathOptions;
 }
 
 const READ_MAX_BYTES = 50 * 1024;
@@ -36,11 +38,11 @@ const mutationLocks = new Map<string, Promise<void>>();
 export function createFileToolDefinitions(
   options: FileToolDefinitionOptions,
 ): ToolAdapterDefinition[] {
-  const root = resolveNonStrictSync(path.resolve(options.projectRoot));
+  const root = resolveNonStrictSync(resolveLocalPath(options.projectRoot, process.cwd(), options.pathOptions));
   const io = options.fileIo ?? DEFAULT_IO;
 
   const resolvePath = (rawPath: string): Promise<string> =>
-    resolveNonStrict(path.resolve(root, rawPath));
+    resolveNonStrict(resolveLocalPath(rawPath, root, options.pathOptions));
 
   return [
     {
