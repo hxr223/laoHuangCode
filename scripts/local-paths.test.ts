@@ -85,7 +85,7 @@ test("file tools and Bash workdir share home expansion without rewriting command
     assert.equal(result.content, "after");
     const bash = createBashToolDefinition({ projectRoot: home, env, runBash: async (command, options) => {
       assert.equal(command, "printf '/c/not-a-path-argument'");
-      assert.equal(options.cwd, home);
+      assert.equal(options.cwd, await fs.promises.realpath(home));
       return { ok: true };
     } });
     await bash.execute({ command: "printf '/c/not-a-path-argument'", description: "test", workdir: "~" }, execution);
