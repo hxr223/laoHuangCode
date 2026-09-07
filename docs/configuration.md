@@ -123,9 +123,37 @@ laohuang config use default
 laohuang doctor
 ```
 
-`doctor` 只检查 provider、credential、catalog refresh 和 model 是否有效，不发真实模型
+`doctor` 检查 provider、credential、catalog refresh、model 和 Bash 路径是否有效，不发真实模型
 请求。动态 provider（例如 Radius）的 model catalog 会持久化在 `models.json`；refresh
 失败时保留已有缓存并报告错误。
+
+## Bash 路径
+
+可在 `config.json` 顶层添加 `shell_path`，与 `profiles` 同级，指定 Bash 可执行文件的
+绝对路径，也支持 `~/`（Windows 还支持 `~\`）展开用户主目录。例如：
+
+```json
+"shell_path": "/opt/homebrew/bin/bash"
+```
+
+Windows 路径在 JSON 中需要转义反斜杠：
+
+```json
+"shell_path": "C:\\Program Files\\Git\\bin\\bash.exe"
+```
+
+未配置时，macOS/Linux 优先使用 `/bin/bash`，其次按 `PATH` 顺序查找 `bash`；
+Windows 优先查找 `ProgramFiles`、`ProgramFiles(x86)` 下的 `Git\bin\bash.exe`，
+其次按 `PATH` 查找 `bash.exe`。忽略空或相对的 PATH 目录，不自动从项目目录选择 Bash；
+不回退到 `sh`，也不使用 Windows System32/Sysnative 下的旧版 WSL Bash 启动器。
+显式配置的路径无效时直接报错，不自动回退。命令继续使用 `-lc` 参数。
+
+`laohuang doctor` 显示同一定位逻辑选中的路径；找不到 Bash 时返回非零状态。
+Bash 工具在定位失败时返回 `spawn_failed`。路径检测不执行 Bash，也不验证其版本。
+配置更改在下次启动生效。
+
+Windows 自动定位仅解决 Bash 查找问题，尚未满足完整 Windows 支持契约：进程树取消、
+文件路径互通及终端交互仍需适配与验证。不需要为 Git Bash 定位安装 WSL。
 
 真实 provider E2E 是付费/联网测试，不属于普通测试套件：
 

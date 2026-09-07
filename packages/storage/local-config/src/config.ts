@@ -118,6 +118,10 @@ export class ConfigManager {
     return this.resolveSettings(options);
   }
 
+  getShellPath(): string | undefined {
+    return this.readDocument({ optional: true })["shell_path"] as string | undefined;
+  }
+
   resolveSettings(options: ResolveSettingsOptions = {}): Config {
     const document = this.readDocument();
     const environment = options.environ ?? process.env;
@@ -215,6 +219,10 @@ export class ConfigManager {
 }
 
 function validateDocument(document: Record<string, unknown>): void {
+  const shellPath = document["shell_path"];
+  if (shellPath !== undefined && (typeof shellPath !== "string" || !shellPath.trim())) {
+    throw new Error("Configuration shell_path must be a non-empty string");
+  }
   const version = document["version"] ?? 1;
   if (version !== 1) {
     throw new Error(`Unsupported configuration version: ${String(version)}`);

@@ -13,6 +13,7 @@ import {
 
 export interface RunBashOptions {
   cwd: string;
+  shellPath?: string | undefined;
   timeoutSeconds: number;
   maxOutputChars: number;
   context: ToolExecutionContextLike;
@@ -26,6 +27,8 @@ export type RunBash = (
 
 export interface BashToolDefinitionOptions {
   projectRoot: string;
+  shellPath?: string | undefined;
+  env?: Record<string, string | undefined> | undefined;
   bashTimeoutSeconds?: number;
   maxOutputChars?: number;
   runBash?: RunBash;
@@ -85,11 +88,12 @@ export function createBashToolDefinition(
       const timeoutMs = optionalPositiveInteger(args, "timeoutMs");
       return await runBash(command, {
         cwd,
+        shellPath: options.shellPath,
         timeoutSeconds:
           timeoutMs === undefined ? bashTimeoutSeconds : timeoutMs / 1000,
         maxOutputChars,
         context: execution,
-        env: process.env,
+        env: options.env ?? process.env,
       });
     },
   };
@@ -106,6 +110,7 @@ async function defaultRunBash(
     typeof options.context.publish === "function" ? options.context : null;
   const result = await runBashCommand(command, {
     cwd: options.cwd,
+    shellPath: options.shellPath,
     timeout: options.timeoutSeconds,
     maxOutputChars: options.maxOutputChars,
     context: context as ToolExecutionContext | null,
