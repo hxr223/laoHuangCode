@@ -28,7 +28,6 @@ export function createTestToolRegistry(
       ...createFileToolDefinitions({
         projectRoot,
         fileIo: options.io,
-        maxOutputChars: options.maxOutputChars,
       }),
       createBashToolDefinition({
         projectRoot,
