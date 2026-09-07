@@ -503,12 +503,11 @@ function makeToolContext(
     cancellationReason: cancelToken?.reason || "cancelled",
     publish: (kind: string, payload: Record<string, unknown>) => {
       if (typeof context?.publish === "function") {
-        context.publish(kind as EventKind, {
+        return context.publish(kind as EventKind, {
           source: EventSource.Tool,
           correlation_id: toolCallId,
           payload,
         });
-        return;
       }
       const bus = context?.eventBus ?? null;
       if (bus !== null) {

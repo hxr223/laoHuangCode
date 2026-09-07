@@ -1,7 +1,7 @@
 /** Append-only display transcript storage, independent from terminal drawing. */
 
 import type { UIUpdate } from "./state.ts";
-import { redactToolText, ToolOutputRedactor } from "./display-policy.ts";
+import { redactToolText, redactToolSnapshot, toolOutputNote, ToolOutputRedactor } from "./display-policy.ts";
 import type {
   HelpCommandViewModel,
   ProviderDetailViewModel,
@@ -55,6 +55,7 @@ export interface ToolTranscriptBlock extends BaseTranscriptBlock {
   stdout: string;
   stderr: string;
   expanded: boolean;
+  outputNote?: string;
 }
 
 export interface NoticeTranscriptBlock extends BaseTranscriptBlock {
@@ -344,6 +345,15 @@ export class TranscriptStore {
       }
       return;
     }
+    if (kind === "tool.output_snapshot") {
+      const item = this.#byCorrelation.get(`tool:${correlationId}`);
+      if (item?.kind === "tool" && item.mutable && (update.stream === "stdout" || update.stream === "stderr")) {
+        item[update.stream] = redactToolSnapshot(update.text, update.payload.start_mid_line === true);
+        if (update.payload.truncated === true) item.outputNote = "Output preview truncated.";
+        touchBlock(item);
+      }
+      return;
+    }
     if (kind === "tool.finished") {
       const item = this.#getOrCreateTool(correlationId);
       item.status = String(update.payload.status ?? "completed");
@@ -353,6 +363,11 @@ export class TranscriptStore {
       item.durationMs = typeof update.payload.duration_ms === "number"
         ? Math.trunc(update.payload.duration_ms)
         : null;
+      for (const stream of ["stdout", "stderr"] as const) {
+        const text = update.payload[stream];
+        if (typeof text === "string") item[stream] = redactToolSnapshot(text, update.payload[`${stream}_start_mid_line`] === true);
+      }
+      item.outputNote = toolOutputNote(update.payload);
       item.mutable = false;
       touchBlock(item);
       this.#toolOutputRedactor.clear(correlationId);
