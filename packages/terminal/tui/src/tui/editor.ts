@@ -8,6 +8,7 @@
  */
 
 import { charCellWidth } from "./screen.ts";
+import { isLocalWindowsConsole, isNativeShiftPressed } from "./native-console.ts";
 import { line, span, type StyledLine } from "./render-model.ts";
 import {
   makeKeyInput,
@@ -290,6 +291,7 @@ export class StdinBuffer {
 
 export interface TerminalInputFilterOptions {
   isAppleTerminal?: () => boolean;
+  isWindowsConsole?: () => boolean;
   shiftPressed?: () => boolean;
   enableModifyOtherKeys?: () => void;
   disableModifyOtherKeys?: () => void;
@@ -310,6 +312,7 @@ const ABANDONED_NEGOTIATION_TAIL_RE = /^\x1b\[\?[\d;]*([A-Za-z])$/;
 export class TerminalInputFilter {
   private pendingNegotiationPrefix = "";
   private readonly isAppleTerminal: () => boolean;
+  private readonly isWindowsConsole: () => boolean;
   private readonly shiftPressed: () => boolean;
   private readonly enableModifyOtherKeys: () => void;
   private readonly disableModifyOtherKeys: () => void;
@@ -317,7 +320,8 @@ export class TerminalInputFilter {
 
   constructor(options: TerminalInputFilterOptions = {}) {
     this.isAppleTerminal = options.isAppleTerminal ?? isAppleTerminalSession;
-    this.shiftPressed = options.shiftPressed ?? (() => false);
+    this.isWindowsConsole = options.isWindowsConsole ?? isLocalWindowsConsole;
+    this.shiftPressed = options.shiftPressed ?? isNativeShiftPressed;
     this.enableModifyOtherKeys = options.enableModifyOtherKeys ?? (() => {});
     this.disableModifyOtherKeys = options.disableModifyOtherKeys ?? (() => {});
   }
@@ -405,7 +409,7 @@ export class TerminalInputFilter {
   private normalizePlatformInput(sequence: string): string {
     if (
       sequence === "\r" &&
-      this.isAppleTerminal() &&
+      (this.isAppleTerminal() || this.isWindowsConsole()) &&
       this.shiftPressed()
     ) {
       return APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE;

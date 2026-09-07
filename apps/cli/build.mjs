@@ -12,5 +12,5 @@ await build({
   format: "esm",
   sourcemap: true,
   banner: { js: "#!/usr/bin/env node" },
-  external: ["@earendil-works/pi-ai", "@earendil-works/pi-ai/*"],
+  external: ["@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "koffi"],
 });

@@ -266,3 +266,47 @@ test("removes model keys from explicit environment", async () => {
     assert.equal(result.stdout, "");
   });
 });
+
+test("returns after shell exit when a quiet descendant retains stdout", { skip: process.platform === "win32" }, async () => {
+  await withTempDir(async (directory) => {
+    const result = await runBash('sleep 5 & printf "%s\\nready" "$!"', {
+      cwd: directory,
+      timeout: 2,
+      maxOutputChars: 100,
+    });
+    try {
+      assert.equal(result.status, "completed");
+      assert.ok(result.stdout.endsWith("ready"));
+      assert.equal(result.truncated, true);
+    } finally {
+      const pid = Number(result.stdout.split("\n")[0]);
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        try { process.kill(pid, "SIGKILL"); } catch { /* Already exited. */ }
+      }
+    }
+  });
+});
+
+test("continues collecting active descendant output after shell exit", async () => {
+  await withTempDir(async (directory) => {
+    const result = await runBash(
+      '(for i in 1 2 3 4 5 6; do printf chunk; sleep 0.03; done; printf tail) & printf ready',
+      { cwd: directory, timeout: 3, maxOutputChars: 100 },
+    );
+    assert.equal(result.status, "completed");
+    assert.ok(result.stdout.includes("tail"));
+    assert.equal(result.stdout.match(/chunk/g)?.length, 6);
+    assert.equal(result.truncated, false);
+  });
+});
+
+test("quiet foreground commands are not mistaken for leaked pipes", async () => {
+  await withTempDir(async (directory) => {
+    const result = await runBash("sleep 0.3; printf done", {
+      cwd: directory, timeout: 3, maxOutputChars: 100,
+    });
+    assert.equal(result.status, "completed");
+    assert.equal(result.stdout, "done");
+    assert.equal(result.truncated, false);
+  });
+});

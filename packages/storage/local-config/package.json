@@ -9,5 +9,6 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"]
+  "files": ["dist"],
+  "dependencies": { "@laohuang/local-paths": "0.0.0" }
 }

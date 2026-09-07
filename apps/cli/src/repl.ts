@@ -18,6 +18,7 @@ import {
 } from "@laohuang/session-runtime";
 import {
   PlainEventSink,
+  enterTerminalRawMode,
   PromptCancelledError,
   PromptEofError,
   StdTerminalDriver,
@@ -121,7 +122,7 @@ export function defaultSecretInputFn(prompt: string): string {
   // Echo-less read of one line on a TTY: raw mode, byte at a time.
   const byte = Buffer.alloc(1);
   let answer = "";
-  process.stdin.setRawMode(true);
+  const restoreRawMode = enterTerminalRawMode(process.stdin);
   try {
     for (;;) {
       const bytesRead = readSync(0, byte, 0, 1, null);
@@ -147,7 +148,7 @@ export function defaultSecretInputFn(prompt: string): string {
       answer += byte.toString("utf8", 0, 1);
     }
   } finally {
-    process.stdin.setRawMode(false);
+    restoreRawMode();
   }
   process.stderr.write("\n");
   return answer;

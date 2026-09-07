@@ -2,13 +2,13 @@
  * Streaming, cancellable execution for the Bash tool.
  *
  * The runner deliberately owns process lifecycle and pipe draining, while
- * callers decide how emitted events are presented. It targets macOS and
- * Linux, where a detached child becomes a process-group leader so that
- * cancellation can terminate the whole command process group.
+ * callers decide how emitted events are presented. Unix uses process-group
+ * signals for cancellation; Windows uses taskkill to terminate the tree.
  */
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { constants as osConstants } from "node:os";
+import { win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 
 import type { CancelToken } from "@laohuang/runtime-protocol";
@@ -27,6 +27,9 @@ const FLUSH_INTERVAL_MS = 40;
 const FLUSH_CHARS = 4096;
 const TERMINATION_GRACE_MS = 2000;
 const WATCHDOG_INTERVAL_MS = 10;
+const POST_EXIT_IDLE_MS = 100;
+const TERMINATION_EXIT_GRACE_MS = 1000;
+const TASKKILL_TIMEOUT_MS = 5000;
 
 export const MODEL_API_KEY_ENV_NAMES = [
   "OPENAI_API_KEY",
@@ -310,16 +313,30 @@ function errnoCode(error: unknown): string | undefined {
 }
 
 /**
- * SIGTERM the whole process group, escalating to SIGKILL after a grace
- * period. Falls back to signalling only the leader when group signalling
- * is not possible.
+ * Terminate the Windows process tree, or signal the Unix process group with
+ * SIGTERM and escalate to SIGKILL after a grace period.
  */
-async function terminateProcessGroup(
+async function terminateProcessTree(
   child: ChildProcess,
   graceMs: number = TERMINATION_GRACE_MS,
 ): Promise<void> {
   const pid = child.pid;
   if (pid === undefined) return;
+
+  if (process.platform === "win32") {
+    const taskkill = win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+    await new Promise<void>((resolve, reject) => {
+      execFile(taskkill, ["/F", "/T", "/PID", String(pid)], {
+        windowsHide: true,
+        timeout: TASKKILL_TIMEOUT_MS,
+        killSignal: "SIGKILL",
+      }, (error) => {
+        if (error) reject(new Error(`taskkill failed: ${error.message}`));
+        else resolve();
+      });
+    });
+    return;
+  }
 
   try {
     process.kill(-pid, "SIGTERM");
@@ -405,9 +422,16 @@ export async function runBash(
   }
 
   const environment = cleanEnvironment(options.env ?? process.env);
-  let shellPath: string;
+  let child: ChildProcess;
   try {
-    shellPath = resolveBashPath({ shellPath: options.shellPath, env: environment });
+    const shellPath = resolveBashPath({ shellPath: options.shellPath, env: environment });
+    child = spawn(shellPath, ["-lc", command], {
+      cwd: options.cwd,
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    });
   } catch (error) {
     const result = new BashResult({
       status: "spawn_failed",
@@ -417,13 +441,6 @@ export async function runBash(
     execution.publish("tool.finished", result.asDict());
     return result;
   }
-  const child = spawn(shellPath, ["-lc", command], {
-    cwd: options.cwd,
-    env: environment,
-    stdio: ["ignore", "pipe", "pipe"],
-    detached: true,
-  });
-
   const spawnError = await new Promise<Error | null>((resolve) => {
     child.once("spawn", () => resolve(null));
     child.once("error", (error) => resolve(error));
@@ -451,6 +468,18 @@ export async function runBash(
   };
   const pending: Record<StreamName, string> = { stdout: "", stderr: "" };
   const streamSequence: Record<StreamName, number> = { stdout: 0, stderr: 0 };
+  let exited = false;
+  let lastOutputAt = performance.now();
+  let outputIncomplete = false;
+
+  const closeOutput = (): void => {
+    for (const pipe of [child.stdout, child.stderr]) {
+      if (pipe && !pipe.readableEnded && !pipe.destroyed) {
+        outputIncomplete = true;
+        pipe.destroy();
+      }
+    }
+  };
 
   const flush = (stream: StreamName): void => {
     const text = pending[stream];
@@ -479,37 +508,72 @@ export async function runBash(
     };
     try {
       for await (const chunk of pipe) {
+        lastOutputAt = performance.now();
         ingest(sanitizer.feed(decoder.write(chunk as Buffer)));
       }
-      ingest(sanitizer.feed(decoder.end()));
     } catch {
-      // Pipes can be torn down by cancellation cleanup while readers are active.
+      // Cancellation can tear down a pipe; never claim its output is complete.
+      outputIncomplete = true;
+    } finally {
+      ingest(sanitizer.feed(decoder.end()));
     }
   };
 
   const stdoutDone = readPipe("stdout", child.stdout!);
   const stderrDone = readPipe("stderr", child.stderr!);
-  const exitInfo = new Promise<{
+  type ExitInfo = {
     code: number | null;
     signal: NodeJS.Signals | null;
-  }>((resolve) => {
-    child.once("exit", (code, signal) => resolve({ code, signal }));
+  };
+  let resolveExit!: (info: ExitInfo) => void;
+  const exitInfo = new Promise<ExitInfo>((resolve) => {
+    resolveExit = resolve;
   });
+  const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
+    exited = true;
+    lastOutputAt = performance.now();
+    resolveExit({ code, signal });
+  };
+  child.once("exit", onExit);
 
   let terminalStatus: BashStatus | null = null;
   const startedAt = performance.now();
   let lastFlush = startedAt;
   const timeoutMs = options.timeout * 1000;
+  let termination: Promise<void> | null = null;
+  let terminationCompletedAt: number | null = null;
+  let cleanupError: string | null = null;
+  const terminate = (): void => {
+    if (termination !== null) return;
+    termination = terminateProcessTree(child).catch((error: unknown) => {
+      cleanupError = error instanceof Error ? error.message : String(error);
+      // A leader-only fallback cannot confirm descendant cleanup, so keep the error.
+      try { child.kill("SIGKILL"); } catch { /* Report the cleanup failure below. */ }
+    }).finally(() => {
+      terminationCompletedAt = performance.now();
+    });
+  };
 
   const watchdog = setInterval(() => {
     const now = performance.now();
     if (terminalStatus === null) {
       if (execution.isCancelled()) {
         terminalStatus = "cancelled";
-        void terminateProcessGroup(child);
+        terminate();
       } else if (options.timeout >= 0 && now - startedAt >= timeoutMs) {
         terminalStatus = "timed_out";
-        void terminateProcessGroup(child);
+        terminate();
+      }
+    }
+    // Descendants can inherit pipes after the shell exits. Keep active output,
+    // but release quiet handles rather than waiting indefinitely for EOF.
+    if (exited && now - lastOutputAt >= POST_EXIT_IDLE_MS) closeOutput();
+    if (terminationCompletedAt !== null && now - terminationCompletedAt >= TERMINATION_EXIT_GRACE_MS) {
+      closeOutput();
+      if (!exited) {
+        cleanupError ??= "Bash did not exit after process termination";
+        child.unref();
+        resolveExit({ code: null, signal: null });
       }
     }
     if (now - lastFlush >= FLUSH_INTERVAL_MS) {
@@ -524,9 +588,8 @@ export async function runBash(
     await Promise.all([stdoutDone, stderrDone, exitInfo]);
   } finally {
     clearInterval(watchdog);
-    if (child.exitCode === null && child.signalCode === null) {
-      await terminateProcessGroup(child);
-    }
+    child.removeListener("exit", onExit);
+    await termination;
   }
   flush("stdout");
   flush("stderr");
@@ -536,7 +599,7 @@ export async function runBash(
   const stdout = outputs.stdout.render();
   const stderr = outputs.stderr.render();
   const durationMs = Math.trunc(performance.now() - invokedAt);
-  const truncated = outputs.stdout.truncated || outputs.stderr.truncated;
+  const truncated = outputIncomplete || outputs.stdout.truncated || outputs.stderr.truncated;
 
   let result: BashResult;
   if (terminalStatus === "cancelled") {
@@ -580,6 +643,9 @@ export async function runBash(
     });
   }
 
+  if (cleanupError !== null) {
+    result.error = `${result.error ?? "Bash execution failed"}; Process cleanup failed: ${cleanupError}`;
+  }
   execution.publish("tool.finished", result.asDict());
   return result;
 }

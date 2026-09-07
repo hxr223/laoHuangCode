@@ -9,8 +9,8 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { getHomeDirectory, normalizeLocalPath } from "@laohuang/local-paths";
 
 /** Runtime configuration resolved from a stored profile. */
 export interface Config {
@@ -58,16 +58,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function expandUser(input: string): string {
-  if (input === "~") {
-    return homedir();
-  }
-  if (input.startsWith("~/")) {
-    return join(homedir(), input.slice(2));
-  }
-  return input;
-}
-
 /**
  * Default location of the configuration file:
  * `$LAOHUANG_CONFIG`, else `$XDG_CONFIG_HOME/laohuang/config.json`,
@@ -78,10 +68,10 @@ export function defaultConfigPath(
 ): string {
   const explicit = environ["LAOHUANG_CONFIG"];
   if (explicit) {
-    return expandUser(explicit);
+    return normalizeLocalPath(explicit, { env: environ });
   }
   const configHome = environ["XDG_CONFIG_HOME"];
-  const root = configHome ? expandUser(configHome) : join(homedir(), ".config");
+  const root = configHome ? normalizeLocalPath(configHome, { env: environ }) : join(getHomeDirectory({ env: environ }), ".config");
   return join(root, "laohuang", "config.json");
 }
 

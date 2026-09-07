@@ -30,6 +30,7 @@ import { AgentSession, SessionRecorder, routeHumanIntent } from "@laohuang/sessi
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
 import { ToolRegistry } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
+import { getHomeDirectory } from "@laohuang/local-paths";
 import { createBashToolDefinition, resolveBashPath } from "@laohuang/tool-bash";
 
 import {
@@ -388,7 +389,10 @@ export async function main(
   }
 
   const toolRegistry = new ToolRegistry([
-    ...createFileToolDefinitions({ projectRoot }),
+    ...createFileToolDefinitions({ projectRoot, pathOptions: {
+      env: environ,
+      shellPath: () => resolveBashPath({ shellPath, env: environ }),
+    } }),
     createBashToolDefinition({ projectRoot, shellPath, env: environ }),
   ]);
   const activeConversationHistory = {
@@ -639,7 +643,7 @@ export async function main(
     sessionController,
     onComposerText: (text) => terminalUi?.setComposerText(text),
     onSessionChanged: refreshSessionView,
-    homeDirectory: environ["HOME"],
+    homeDirectory: getHomeDirectory({ env: environ }),
     onModelSelected: (selection) => {
       semanticClassifier.configure({
         provider: selection.config.provider,
@@ -736,7 +740,7 @@ export async function main(
 }
 
 function defaultSessionsRoot(environ: Record<string, string | undefined>): string {
-  return join(environ["HOME"] ?? process.cwd(), ".laohuang", "sessions");
+  return join(getHomeDirectory({ env: environ }), ".laohuang", "sessions");
 }
 
 function defaultContextPolicy() {

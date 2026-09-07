@@ -7,6 +7,7 @@
   },
   "include": ["src"],
   "references": [
+    { "path": "../../packages/fs/local-paths" },
     { "path": "../../packages/core/runtime-protocol" },
     { "path": "../../packages/core/tools" },
     { "path": "../../packages/core/agent-runtime" },
