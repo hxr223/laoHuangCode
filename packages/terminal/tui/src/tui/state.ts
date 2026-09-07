@@ -233,6 +233,13 @@ export class UIEventReducer {
       }
       return createUpdate(kind, { text, correlationId, stream });
     }
+    if (kind === "tool.output_snapshot") {
+      const stream = String(payload.stream ?? "stdout");
+      const text = String(payload.text ?? "");
+      const tool = this.state.activeTools.get(correlationId);
+      if (tool !== undefined && (stream === "stdout" || stream === "stderr")) tool[stream] = text;
+      return createUpdate(kind, { text, correlationId, stream, payload });
+    }
     if (kind === "tool.finished") {
       const tool = this.state.activeTools.get(correlationId);
       this.state.activeTools.delete(correlationId);

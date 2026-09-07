@@ -79,7 +79,7 @@ test("streams stdout and stderr as separate events", async () => {
     const result = await runBash(command, {
       cwd: directory,
       timeout: 2,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
       context,
     });
 
@@ -98,14 +98,14 @@ test("streams stdout and stderr as separate events", async () => {
     assert.equal(finishedPayload["truncated"], false);
 
     const deltas = published.filter(
-      (event) => event.kind === "tool.output_delta",
+      (event) => event.kind === "tool.output_snapshot",
     );
     const byStream: Record<string, string> = { stdout: "", stderr: "" };
     for (const stream of ["stdout", "stderr"] as const) {
       byStream[stream] = deltas
         .filter((event) => event.payload["stream"] === stream)
         .map((event) => String(event.payload["text"]))
-        .join("");
+        .at(-1) ?? "";
     }
     assert.deepEqual(byStream, { stdout: "out", stderr: "err" });
     assert.ok(
@@ -118,24 +118,24 @@ test("preserves utf8 split across pipe reads", async () => {
   await withTempDir(async (directory) => {
     const result = await runBash(
       "printf '\\344\\275'; sleep 0.01; printf '\\240'",
-      { cwd: directory, timeout: 2, maxOutputChars: 100 },
+      { cwd: directory, timeout: 2, maxOutputBytes: 100 },
     );
 
     assert.equal(result.stdout, "你");
   });
 });
 
-test("final output keeps forty percent head and sixty percent tail", async () => {
+test("final output keeps a bounded tail and saves the complete output", async () => {
   await withTempDir(async (directory) => {
     const result = await runBash("printf 0123456789ABCDEF", {
       cwd: directory,
       timeout: 2,
-      maxOutputChars: 10,
+      maxOutputBytes: 10,
+      outputDirectory: path.join(directory, "logs"),
     });
 
-    assert.ok(result.stdout.startsWith("0123\n"));
-    assert.ok(result.stdout.includes("truncated 6 chars"));
-    assert.ok(result.stdout.endsWith("ABCDEF"));
+    assert.equal(result.stdout, "6789ABCDEF");
+    assert.equal(result.outputFileComplete, true);
     assert.equal(result.truncated, true);
     assert.ok(result.durationMs >= 0);
   });
@@ -146,7 +146,7 @@ test("nonzero exit is failed", async () => {
     const result = await runBash("printf problem >&2; exit 7", {
       cwd: directory,
       timeout: 2,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
     });
 
     assert.equal(result.ok, false);
@@ -161,7 +161,7 @@ test("timeout terminates process group", async () => {
     const result = await runBash("sleep 10", {
       cwd: directory,
       timeout: 0.02,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
     });
 
     assert.equal(result.ok, false);
@@ -179,7 +179,7 @@ test("cancel token stops running command", async () => {
     });
     const sink = (kind: string, payload: Record<string, unknown>) => {
       if (
-        kind === "tool.output_delta" &&
+        kind === "tool.output_snapshot" &&
         payload["stream"] === "stdout" &&
         String(payload["text"] ?? "").includes("before")
       ) {
@@ -200,7 +200,7 @@ test("cancel token stops running command", async () => {
       const result = await runBash("printf before; sleep 10; printf after", {
         cwd: directory,
         timeout: 5,
-        maxOutputChars: 100,
+        maxOutputBytes: 100,
         context,
       });
 
@@ -218,7 +218,7 @@ test("stdin is closed for noninteractive commands", async () => {
   await withTempDir(async (directory) => {
     const result = await runBash(
       "if read value; then printf open; else printf closed; fi",
-      { cwd: directory, timeout: 2, maxOutputChars: 100 },
+      { cwd: directory, timeout: 2, maxOutputBytes: 100 },
     );
 
     assert.equal(result.stdout, "closed");
@@ -229,7 +229,7 @@ test("removes terminal control sequences", async () => {
   await withTempDir(async (directory) => {
     const result = await runBash(
       "printf '\\033[31mred\\033[0m\\033]0;title\\007safe\\b'",
-      { cwd: directory, timeout: 2, maxOutputChars: 100 },
+      { cwd: directory, timeout: 2, maxOutputBytes: 100 },
     );
 
     assert.equal(result.stdout, "redsafe");
@@ -242,7 +242,7 @@ test("spawn error has spawn_failed status", async () => {
     const result = await runBash("true", {
       cwd: path.join(directory, "does-not-exist"),
       timeout: 2,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
     });
 
     assert.equal(result.status, "spawn_failed");
@@ -259,7 +259,7 @@ test("removes model keys from explicit environment", async () => {
     const result = await runBash('printf %s "$OPENAI_API_KEY"', {
       cwd: directory,
       timeout: 2,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
       env: environment,
     });
 
@@ -272,12 +272,12 @@ test("returns after shell exit when a quiet descendant retains stdout", { skip: 
     const result = await runBash('sleep 5 & printf "%s\\nready" "$!"', {
       cwd: directory,
       timeout: 2,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
     });
     try {
       assert.equal(result.status, "completed");
       assert.ok(result.stdout.endsWith("ready"));
-      assert.equal(result.truncated, true);
+      assert.equal(result.outputComplete, false);
     } finally {
       const pid = Number(result.stdout.split("\n")[0]);
       if (Number.isSafeInteger(pid) && pid > 0) {
@@ -291,7 +291,7 @@ test("continues collecting active descendant output after shell exit", async () 
   await withTempDir(async (directory) => {
     const result = await runBash(
       '(for i in 1 2 3 4 5 6; do printf chunk; sleep 0.03; done; printf tail) & printf ready',
-      { cwd: directory, timeout: 3, maxOutputChars: 100 },
+      { cwd: directory, timeout: 3, maxOutputBytes: 100 },
     );
     assert.equal(result.status, "completed");
     assert.ok(result.stdout.includes("tail"));
@@ -303,7 +303,7 @@ test("continues collecting active descendant output after shell exit", async () 
 test("quiet foreground commands are not mistaken for leaked pipes", async () => {
   await withTempDir(async (directory) => {
     const result = await runBash("sleep 0.3; printf done", {
-      cwd: directory, timeout: 3, maxOutputChars: 100,
+      cwd: directory, timeout: 3, maxOutputBytes: 100,
     });
     assert.equal(result.status, "completed");
     assert.equal(result.stdout, "done");

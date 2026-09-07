@@ -6,3 +6,5 @@ node_modules/
 *.tgz
 *.tsbuildinfo
 .worktrees/
+/docs/
+/.laohuang/

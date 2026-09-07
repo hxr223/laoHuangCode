@@ -13,6 +13,7 @@ import { StringDecoder } from "node:string_decoder";
 
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import { resolveBashPath } from "./bash-path.ts";
+import { BashOutput, type BashOutputOptions } from "./bash-output.ts";
 
 export type BashStatus =
   | "completed"
@@ -23,8 +24,7 @@ export type BashStatus =
 
 type StreamName = "stdout" | "stderr";
 
-const FLUSH_INTERVAL_MS = 40;
-const FLUSH_CHARS = 4096;
+const FLUSH_INTERVAL_MS = 100;
 const TERMINATION_GRACE_MS = 2000;
 const WATCHDOG_INTERVAL_MS = 10;
 const POST_EXIT_IDLE_MS = 100;
@@ -56,12 +56,12 @@ export interface ToolEventPublisher {
       correlation_id: string | null;
       payload: Record<string, unknown>;
     },
-  ): void;
+  ): unknown;
 }
 
 export type ToolEventSink =
   | ToolEventPublisher
-  | ((kind: string, payload: Record<string, unknown>) => void);
+  | ((kind: string, payload: Record<string, unknown>) => unknown);
 
 export interface ToolExecutionContextInit {
   sessionId?: string | null;
@@ -105,17 +105,16 @@ export class ToolExecutionContext {
   }
 
   /** Publish through an EventBus, with a tiny callback fallback for tests. */
-  publish(kind: string, payload: Record<string, unknown>): void {
+  publish(kind: string, payload: Record<string, unknown>): unknown {
     const sink = this.eventSink;
     if (sink == null) return;
 
     if (typeof sink === "function") {
-      sink(kind, payload);
-      return;
+      return sink(kind, payload);
     }
 
     if (typeof sink.publish === "function") {
-      sink.publish(kind, {
+      return sink.publish(kind, {
         source: "tool",
         session_id: this.sessionId ?? "local",
         task_id: this.taskId,
@@ -134,6 +133,12 @@ export interface BashResultInit {
   error?: string | null;
   durationMs?: number;
   truncated?: boolean;
+  outputComplete?: boolean;
+  outputFiles?: Record<StreamName, string> | null;
+  outputFileComplete?: boolean;
+  outputFileError?: string | null;
+  stdoutStartMidLine?: boolean;
+  stderrStartMidLine?: boolean;
 }
 
 export class BashResult {
@@ -144,6 +149,12 @@ export class BashResult {
   error: string | null;
   durationMs: number;
   truncated: boolean;
+  outputComplete: boolean;
+  outputFiles: Record<StreamName, string> | null;
+  outputFileComplete: boolean;
+  outputFileError: string | null;
+  stdoutStartMidLine: boolean;
+  stderrStartMidLine: boolean;
 
   constructor(init: BashResultInit) {
     this.status = init.status;
@@ -153,6 +164,12 @@ export class BashResult {
     this.error = init.error ?? null;
     this.durationMs = init.durationMs ?? 0;
     this.truncated = init.truncated ?? false;
+    this.outputComplete = init.outputComplete ?? true;
+    this.outputFiles = init.outputFiles ?? null;
+    this.outputFileComplete = init.outputFileComplete ?? false;
+    this.outputFileError = init.outputFileError ?? null;
+    this.stdoutStartMidLine = init.stdoutStartMidLine ?? false;
+    this.stderrStartMidLine = init.stderrStartMidLine ?? false;
   }
 
   get ok(): boolean {
@@ -168,68 +185,17 @@ export class BashResult {
       stderr: this.stderr,
       duration_ms: this.durationMs,
       truncated: this.truncated,
+      output_complete: this.outputComplete,
+      output_files: this.outputFiles,
+      output_file_complete: this.outputFileComplete,
+      stdout_start_mid_line: this.stdoutStartMidLine,
+      stderr_start_mid_line: this.stderrStartMidLine,
     };
+    if (this.outputFileError) result["output_file_error"] = this.outputFileError;
     if (this.error) {
       result["error"] = this.error;
     }
     return result;
-  }
-}
-
-/** Keep a 40% head and 60% tail without retaining unbounded output. */
-class BoundedOutput {
-  readonly limit: number;
-  readonly headLimit: number;
-  readonly tailLimit: number;
-  totalChars = 0;
-  private whole = "";
-  private head = "";
-  private tail = "";
-  private isTruncated = false;
-
-  constructor(limit: number) {
-    this.limit = Math.max(0, Math.trunc(limit));
-    this.headLimit = Math.trunc(this.limit * 0.4);
-    this.tailLimit = this.limit - this.headLimit;
-  }
-
-  append(text: string): void {
-    if (!text) return;
-    this.totalChars += text.length;
-    if (this.limit === 0) {
-      this.isTruncated = true;
-      return;
-    }
-
-    if (!this.isTruncated && this.whole.length + text.length <= this.limit) {
-      this.whole += text;
-      return;
-    }
-
-    if (!this.isTruncated) {
-      const combined = this.whole + text;
-      this.head = combined.slice(0, this.headLimit);
-      this.tail = this.tailLimit > 0 ? combined.slice(-this.tailLimit) : "";
-      this.whole = "";
-      this.isTruncated = true;
-      return;
-    }
-
-    if (this.tailLimit > 0) {
-      this.tail = (this.tail + text).slice(-this.tailLimit);
-    }
-  }
-
-  render(): string {
-    if (!this.isTruncated) return this.whole;
-    const retained = this.head.length + this.tail.length;
-    const omitted = Math.max(0, this.totalChars - retained);
-    const marker = `\n...[truncated ${omitted} chars]...\n`;
-    return this.head + marker + this.tail;
-  }
-
-  get truncated(): boolean {
-    return this.isTruncated;
   }
 }
 
@@ -393,23 +359,41 @@ function toExitCode(
   return typeof signalNumber === "number" ? -signalNumber : null;
 }
 
-export interface RunBashOptions {
+export interface RunBashOptions extends BashOutputOptions {
   cwd: string;
   shellPath?: string | undefined;
   /** Seconds; a negative value disables the timeout. */
   timeout: number;
-  maxOutputChars: number;
-  context?: ToolExecutionContext | null;
+  context?: Pick<ToolExecutionContext, "isCancelled" | "cancellationReason" | "publish"> | null;
   env?: Record<string, string | undefined> | null;
 }
 
-/** Run one non-interactive Bash command and emit sanitized output deltas. */
+/** Run one non-interactive Bash command and emit bounded output snapshots. */
 export async function runBash(
   command: string,
   options: RunBashOptions,
 ): Promise<BashResult> {
   const invokedAt = performance.now();
   const execution = options.context ?? new ToolExecutionContext();
+  const output = new BashOutput(options);
+  let publicationError: string | null = null;
+  const publish = async (kind: string, payload: Record<string, unknown>): Promise<void> => {
+    try {
+      await execution.publish(kind, payload);
+    } catch (error) {
+      publicationError ??= `Bash event publication failed: ${String(error)}`;
+    }
+  };
+  const finish = async (result: BashResult): Promise<BashResult> => {
+    await publish("tool.finished", result.asDict());
+    if (publicationError !== null) {
+      result.status = "failed";
+      if (!result.error?.includes(publicationError)) {
+        result.error = [result.error, publicationError].filter(Boolean).join("; ");
+      }
+    }
+    return result;
+  };
 
   if (execution.isCancelled()) {
     const result = new BashResult({
@@ -417,8 +401,7 @@ export async function runBash(
       error: execution.cancellationReason,
       durationMs: Math.trunc(performance.now() - invokedAt),
     });
-    execution.publish("tool.finished", result.asDict());
-    return result;
+    return await finish(result);
   }
 
   const environment = cleanEnvironment(options.env ?? process.env);
@@ -438,8 +421,7 @@ export async function runBash(
       error: String(error),
       durationMs: Math.trunc(performance.now() - invokedAt),
     });
-    execution.publish("tool.finished", result.asDict());
-    return result;
+    return await finish(result);
   }
   const spawnError = await new Promise<Error | null>((resolve) => {
     child.once("spawn", () => resolve(null));
@@ -451,29 +433,25 @@ export async function runBash(
       error: String(spawnError),
       durationMs: Math.trunc(performance.now() - invokedAt),
     });
-    execution.publish("tool.finished", result.asDict());
-    return result;
+    return await finish(result);
   }
   // Later asynchronous kill failures must not surface as unhandled errors.
   child.on("error", () => {});
 
-  execution.publish("tool.started", {
-    name: "bash",
-    arguments: { command },
-  });
-
-  const outputs: Record<StreamName, BoundedOutput> = {
-    stdout: new BoundedOutput(options.maxOutputChars),
-    stderr: new BoundedOutput(options.maxOutputChars),
-  };
-  const pending: Record<StreamName, string> = { stdout: "", stderr: "" };
-  const streamSequence: Record<StreamName, number> = { stdout: 0, stderr: 0 };
+  const started = publish("tool.started", { name: "bash", arguments: { command } });
+  let publishing: Promise<void> | null = null;
+  let publishedRevision = 0;
   let exited = false;
   let lastOutputAt = performance.now();
   let outputIncomplete = false;
+  const ingesting: Record<StreamName, boolean> = { stdout: false, stderr: false };
 
-  const closeOutput = (): void => {
-    for (const pipe of [child.stdout, child.stderr]) {
+  const closeOutput = (force = false): void => {
+    for (const stream of ["stdout", "stderr"] as const) {
+      const pipe = child[stream];
+      // Waiting for disk is backpressure, not an idle inherited pipe. Finish
+      // persisting the current read and draining Node's buffered bytes first.
+      if (!force && (ingesting[stream] || (pipe?.readableLength ?? 0) > 0)) continue;
       if (pipe && !pipe.readableEnded && !pipe.destroyed) {
         outputIncomplete = true;
         pipe.destroy();
@@ -481,18 +459,24 @@ export async function runBash(
     }
   };
 
-  const flush = (stream: StreamName): void => {
-    const text = pending[stream];
-    if (!text) return;
-    pending[stream] = "";
-    outputs[stream].append(text);
-    streamSequence[stream] += 1;
-    execution.publish("tool.output_delta", {
-      name: "bash",
-      stream,
-      text,
-      stream_sequence: streamSequence[stream],
-    });
+  const flush = (): void => {
+    if (publishing !== null || publicationError !== null || publishedRevision === output.revision) return;
+    const snapshot = output.snapshot();
+    publishedRevision = output.revision;
+    const revision = publishedRevision;
+    // Only one publication is in flight. Further reads update bounded state;
+    // the next tick sends the latest state instead of queueing every revision.
+    publishing = (async () => {
+      await started;
+      for (const stream of ["stdout", "stderr"] as const) {
+        if (publicationError !== null) break;
+        await publish("tool.output_snapshot", {
+          name: "bash", stream, text: snapshot[stream].text,
+          stream_sequence: revision, truncated: snapshot[stream].truncated,
+          start_mid_line: snapshot[stream].startMidLine,
+        });
+      }
+    })().finally(() => { publishing = null; });
   };
 
   const readPipe = async (
@@ -501,21 +485,22 @@ export async function runBash(
   ): Promise<void> => {
     const decoder = new StringDecoder("utf8");
     const sanitizer = new TerminalSanitizer();
-    const ingest = (text: string): void => {
-      if (!text) return;
-      pending[stream] += text;
-      if (pending[stream].length >= FLUSH_CHARS) flush(stream);
-    };
     try {
       for await (const chunk of pipe) {
         lastOutputAt = performance.now();
-        ingest(sanitizer.feed(decoder.write(chunk as Buffer)));
+        ingesting[stream] = true;
+        try {
+          await output.append(stream, sanitizer.feed(decoder.write(chunk as Buffer)));
+        } finally {
+          ingesting[stream] = false;
+          lastOutputAt = performance.now();
+        }
       }
     } catch {
       // Cancellation can tear down a pipe; never claim its output is complete.
       outputIncomplete = true;
     } finally {
-      ingest(sanitizer.feed(decoder.end()));
+      await output.append(stream, sanitizer.feed(decoder.end()));
     }
   };
 
@@ -557,7 +542,10 @@ export async function runBash(
   const watchdog = setInterval(() => {
     const now = performance.now();
     if (terminalStatus === null) {
-      if (execution.isCancelled()) {
+      if (publicationError !== null) {
+        terminalStatus = "failed";
+        terminate();
+      } else if (execution.isCancelled()) {
         terminalStatus = "cancelled";
         terminate();
       } else if (options.timeout >= 0 && now - startedAt >= timeoutMs) {
@@ -569,7 +557,7 @@ export async function runBash(
     // but release quiet handles rather than waiting indefinitely for EOF.
     if (exited && now - lastOutputAt >= POST_EXIT_IDLE_MS) closeOutput();
     if (terminationCompletedAt !== null && now - terminationCompletedAt >= TERMINATION_EXIT_GRACE_MS) {
-      closeOutput();
+      closeOutput(true);
       if (!exited) {
         cleanupError ??= "Bash did not exit after process termination";
         child.unref();
@@ -577,8 +565,7 @@ export async function runBash(
       }
     }
     if (now - lastFlush >= FLUSH_INTERVAL_MS) {
-      flush("stdout");
-      flush("stderr");
+      flush();
       lastFlush = now;
     }
   }, WATCHDOG_INTERVAL_MS);
@@ -590,16 +577,20 @@ export async function runBash(
     clearInterval(watchdog);
     child.removeListener("exit", onExit);
     await termination;
+    await output.close();
   }
-  flush("stdout");
-  flush("stderr");
+  await started;
+  await publishing;
+  flush();
+  await publishing;
 
   const { code, signal } = await exitInfo;
   const exitCode = toExitCode(code, signal);
-  const stdout = outputs.stdout.render();
-  const stderr = outputs.stderr.render();
+  const snapshot = output.snapshot();
+  const stdout = snapshot.stdout.text;
+  const stderr = snapshot.stderr.text;
   const durationMs = Math.trunc(performance.now() - invokedAt);
-  const truncated = outputIncomplete || outputs.stdout.truncated || outputs.stderr.truncated;
+  const truncated = snapshot.stdout.truncated || snapshot.stderr.truncated;
 
   let result: BashResult;
   if (terminalStatus === "cancelled") {
@@ -646,6 +637,15 @@ export async function runBash(
   if (cleanupError !== null) {
     result.error = `${result.error ?? "Bash execution failed"}; Process cleanup failed: ${cleanupError}`;
   }
-  execution.publish("tool.finished", result.asDict());
-  return result;
+  result.outputComplete = !outputIncomplete;
+  result.outputFiles = output.files;
+  result.outputFileComplete = output.files !== null && output.fileError === null && !outputIncomplete;
+  result.outputFileError = output.fileError;
+  result.stdoutStartMidLine = snapshot.stdout.startMidLine;
+  result.stderrStartMidLine = snapshot.stderr.startMidLine;
+  if (publicationError !== null) {
+    result.status = "failed";
+    result.error = publicationError + (cleanupError === null ? "" : `; Process cleanup failed: ${cleanupError}`);
+  }
+  return await finish(result);
 }

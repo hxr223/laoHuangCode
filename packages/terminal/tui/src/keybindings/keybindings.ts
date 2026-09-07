@@ -5,6 +5,7 @@ export type ActionId =
   | "toggle_tool_output"
   | "editor_newline"
   | "select_model"
+  | "delete_to_line_start"
   | "steer_now"
   | "submit_follow_up"
   | "dismiss"

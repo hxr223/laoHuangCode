@@ -57,7 +57,7 @@ test("Windows starts Bash without detachment or a visible console and preserves 
   const fixture = windowsFixture(t);
   const command = 'printf "%s" "a b"\nprintf done';
   const execution = runBash(command, {
-    cwd: process.cwd(), shellPath: process.execPath, timeout: 2, maxOutputChars: 100,
+    cwd: process.cwd(), shellPath: process.execPath, timeout: 2, maxOutputBytes: 100,
     context: new ToolExecutionContext({ eventSink: (kind) => {
       if (kind === "tool.started") setImmediate(fixture.exit);
     } }),
@@ -83,7 +83,7 @@ for (const reason of ["cancelled", "timed_out"] as const) {
     });
     const result = await runBash("sleep 10", {
       cwd: process.cwd(), shellPath: process.execPath, timeout: reason === "timed_out" ? 0.02 : 2,
-      maxOutputChars: 100,
+      maxOutputBytes: 100,
       context: new ToolExecutionContext({
         cancelToken: { isCancelled: () => cancelled },
         eventSink: (kind) => { if (kind === "tool.started" && reason === "cancelled") cancelled = true; },
@@ -110,11 +110,11 @@ for (const failure of ["nonzero", "spawn", "no-exit"] as const) {
       done(failure === "nonzero" ? new Error("Access denied") : null);
     });
     const result = await runBash("sleep 10", {
-      cwd: process.cwd(), shellPath: process.execPath, timeout: 0.01, maxOutputChars: 100,
+      cwd: process.cwd(), shellPath: process.execPath, timeout: 0.01, maxOutputBytes: 100,
     });
     assert.equal(result.status, "timed_out");
     assert.equal(result.exitCode, null);
-    assert.equal(result.truncated, true);
+    assert.equal(result.outputComplete, false);
     assert.match(result.error ?? "", /Process cleanup failed/);
     assert.match(result.error ?? "", failure === "no-exit" ? /did not exit/ : failure === "spawn" ? /ENOENT/ : /Access denied/);
     assert.equal(fixture.kills.length, 1);
@@ -128,7 +128,7 @@ test("a synchronous spawn error is returned as spawn_failed", async (t) => {
   const fixture = windowsFixture(t);
   fixture.spawnMock.mock.mockImplementation(() => { throw new Error("invalid spawn argument"); });
   const result = await runBash("true", {
-    cwd: process.cwd(), shellPath: process.execPath, timeout: 1, maxOutputChars: 100,
+    cwd: process.cwd(), shellPath: process.execPath, timeout: 1, maxOutputBytes: 100,
   });
   assert.equal(result.status, "spawn_failed");
   assert.match(result.error ?? "", /invalid spawn argument/);
@@ -145,12 +145,12 @@ for (const mode of ["cancel", "exit"] as const) {
     let output = "";
     try {
       const result = await runBash(command, {
-        cwd: process.cwd(), timeout: 5, maxOutputChars: 1000,
+        cwd: process.cwd(), timeout: 5, maxOutputBytes: 1000,
         context: new ToolExecutionContext({
           cancelToken: { isCancelled: () => cancelled },
           eventSink: (kind, payload) => {
-            if (kind !== "tool.output_delta" || payload["stream"] !== "stdout") return;
-            output += String(payload["text"]);
+            if (kind !== "tool.output_snapshot" || payload["stream"] !== "stdout") return;
+            output = String(payload["text"]);
             const match = output.match(/worker:(\d+)\r?\n/);
             if (match) { pid = Number(match[1]); cancelled = mode === "cancel"; }
           },
@@ -162,7 +162,7 @@ for (const mode of ["cancel", "exit"] as const) {
         assert.equal(result.error?.includes("cleanup failed"), false);
         assert.throws(() => process.kill(pid!, 0), { code: "ESRCH" });
       } else {
-        assert.equal(result.truncated, true);
+        assert.equal(result.outputComplete, false);
       }
     } finally {
       if (pid !== undefined) {

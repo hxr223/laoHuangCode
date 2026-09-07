@@ -57,6 +57,7 @@ import {
 import {
   DisplayPolicy,
   displayGapMessage,
+  toolOutputNote,
   type DisplayEvent,
   type DisplayEventLike,
 } from "./display-policy.ts";
@@ -361,6 +362,14 @@ export class InteractiveTerminalLoop {
     }
     if (!this.#ui.shouldQueueDisplayEvent(event)) {
       return;
+    }
+    if (isRecord(event) && event.kind === "tool.output_snapshot" && isRecord(event.payload)) {
+      const stream = event.payload.stream;
+      const previous = this.#work.findIndex((item) => item.type === "event" &&
+        isRecord(item.event) && item.event.kind === event.kind &&
+        item.event.correlation_id === event.correlation_id &&
+        isRecord(item.event.payload) && item.event.payload.stream === stream);
+      if (previous >= 0) this.#work.splice(previous, 1);
     }
     if (
       this.#work.length >= InteractiveTerminalLoop.WORK_QUEUE_LIMIT - 128 &&
@@ -677,6 +686,8 @@ export class InteractiveTerminalLoop {
     }
     if (action === "editor_newline") {
       this.#applyEditorAction(inputAction(InputActionKind.Newline));
+    } else if (action === "delete_to_line_start") {
+      this.#applyEditorAction(inputAction(InputActionKind.DeleteToLineStart));
     } else if (action === "steer_now") {
       this.#applySteerSubmit();
     } else if (action === "submit_follow_up") {
@@ -1580,7 +1591,17 @@ export class PlainEventSink {
       if (text) {
         this.outputFn(`[${correlationId || "unknown"}:${stream}] ${text}`);
       }
+    } else if (kind === "tool.output_snapshot") {
+      // Non-TTY output cannot replace previous lines. Print the final preview once.
+      return;
     } else if (kind === "tool.finished") {
+      for (const stream of ["stdout", "stderr"]) {
+        if (typeof payload[stream] === "string" && payload[stream] !== "") {
+          this.outputFn(`[${correlationId || "unknown"}:${stream}] ${payload[stream]}`);
+        }
+      }
+      const note = toolOutputNote(payload);
+      if (note) this.outputFn(note);
       const status = String(payload.status ?? "completed");
       this.outputFn(`[tool:${correlationId || "unknown"}] ${status}`);
     } else if (kind === "task.failed") {

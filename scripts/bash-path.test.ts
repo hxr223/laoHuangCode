@@ -92,7 +92,7 @@ test("configured path reaches the real Bash runner through the tool", { skip: pr
 test("resolution failure produces spawn_failed and a terminal event", async () => {
   const events: string[] = [];
   const result = await runBash("true", {
-    cwd: process.cwd(), shellPath: join(tmpdir(), "missing-bash-path-test", "bash"), timeout: 1, maxOutputChars: 100,
+    cwd: process.cwd(), shellPath: join(tmpdir(), "missing-bash-path-test", "bash"), timeout: 1, maxOutputBytes: 100,
     context: new ToolExecutionContext({ eventSink: (kind) => { events.push(kind); } }),
   });
   assert.equal(result.status, "spawn_failed");

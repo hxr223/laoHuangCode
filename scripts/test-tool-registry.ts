@@ -13,7 +13,7 @@ import {
 
 export interface TestToolRegistryOptions {
   bashTimeoutSeconds?: number;
-  maxOutputChars?: number;
+  maxOutputBytes?: number;
   executionModes?: Record<string, ToolExecutionMode>;
   runBash?: RunBash;
   io?: ToolFileIo;
@@ -32,7 +32,7 @@ export function createTestToolRegistry(
       createBashToolDefinition({
         projectRoot,
         bashTimeoutSeconds: options.bashTimeoutSeconds,
-        maxOutputChars: options.maxOutputChars,
+        maxOutputBytes: options.maxOutputBytes,
         runBash: options.runBash,
       }),
     ],
