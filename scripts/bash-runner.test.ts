@@ -290,7 +290,9 @@ test("returns after shell exit when a quiet descendant retains stdout", { skip: 
 test("continues collecting active descendant output after shell exit", async () => {
   await withTempDir(async (directory) => {
     const result = await runBash(
-      '(for i in 1 2 3 4 5 6; do printf chunk; sleep 0.03; done; printf tail) & printf ready',
+      // External sleep startup can exceed the inherited-pipe idle deadline on
+      // loaded CI hosts. Keep this fixture continuously writing instead.
+      '(for i in 1 2 3 4 5 6; do printf chunk; done; printf tail) & printf ready',
       { cwd: directory, timeout: 3, maxOutputBytes: 100 },
     );
     assert.equal(result.status, "completed");

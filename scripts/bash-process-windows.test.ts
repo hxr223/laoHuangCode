@@ -135,6 +135,26 @@ test("a synchronous spawn error is returned as spawn_failed", async (t) => {
   assert.equal(fixture.kills.length, 0);
 });
 
+test("Windows reports incomplete collection when inherited pipes must be closed", async (t) => {
+  const fixture = windowsFixture(t);
+  const result = await runBash("background worker", {
+    cwd: process.cwd(), shellPath: process.execPath, timeout: 2,
+    context: new ToolExecutionContext({ eventSink: (kind) => {
+      if (kind === "tool.started") setImmediate(() => {
+        fixture.child.stdout?.push("ready");
+        fixture.child.exitCode = 0;
+        fixture.child.emit("exit", 0, null);
+        // Keep the pipes open after the leader exits, independent of Git Bash's forwarding.
+      });
+    } }),
+  });
+  assert.equal(result.status, "completed");
+  assert.equal(result.stdout, "ready");
+  assert.equal(result.outputComplete, false);
+  assert.equal(fixture.child.stdout?.destroyed, true);
+  assert.equal(fixture.kills.length, 0);
+});
+
 for (const mode of ["cancel", "exit"] as const) {
   test(`native Windows process tree ${mode}`, { skip: process.platform !== "win32", timeout: 15000 }, async () => {
     const fixturePath = fileURLToPath(new URL("./fixtures/bash-process-tree.cjs", import.meta.url));
@@ -162,7 +182,11 @@ for (const mode of ["cancel", "exit"] as const) {
         assert.equal(result.error?.includes("cleanup failed"), false);
         assert.throws(() => process.kill(pid!, 0), { code: "ESRCH" });
       } else {
-        assert.equal(result.outputComplete, false);
+        // Git Bash may close its forwarding pipes when the native leader exits.
+        // Collection can end naturally even though the worker remains alive.
+        assert.ok(result.stdout.includes(`worker:${pid}`));
+        assert.equal(result.truncated, false);
+        assert.ok(result.durationMs < 5000);
       }
     } finally {
       if (pid !== undefined) {
