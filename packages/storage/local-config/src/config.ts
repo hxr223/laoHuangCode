@@ -9,8 +9,8 @@ import {
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { getHomeDirectory, normalizeLocalPath } from "@laohuang/local-paths";
 
 /** Runtime configuration resolved from a stored profile. */
 export interface Config {
@@ -58,16 +58,6 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function expandUser(input: string): string {
-  if (input === "~") {
-    return homedir();
-  }
-  if (input.startsWith("~/")) {
-    return join(homedir(), input.slice(2));
-  }
-  return input;
-}
-
 /**
  * Default location of the configuration file:
  * `$LAOHUANG_CONFIG`, else `$XDG_CONFIG_HOME/laohuang/config.json`,
@@ -78,10 +68,10 @@ export function defaultConfigPath(
 ): string {
   const explicit = environ["LAOHUANG_CONFIG"];
   if (explicit) {
-    return expandUser(explicit);
+    return normalizeLocalPath(explicit, { env: environ });
   }
   const configHome = environ["XDG_CONFIG_HOME"];
-  const root = configHome ? expandUser(configHome) : join(homedir(), ".config");
+  const root = configHome ? normalizeLocalPath(configHome, { env: environ }) : join(getHomeDirectory({ env: environ }), ".config");
   return join(root, "laohuang", "config.json");
 }
 
@@ -116,6 +106,10 @@ export class ConfigManager {
 
   resolve(options: ResolveSettingsOptions = {}): Config {
     return this.resolveSettings(options);
+  }
+
+  getShellPath(): string | undefined {
+    return this.readDocument({ optional: true })["shell_path"] as string | undefined;
   }
 
   resolveSettings(options: ResolveSettingsOptions = {}): Config {
@@ -215,6 +209,10 @@ export class ConfigManager {
 }
 
 function validateDocument(document: Record<string, unknown>): void {
+  const shellPath = document["shell_path"];
+  if (shellPath !== undefined && (typeof shellPath !== "string" || !shellPath.trim())) {
+    throw new Error("Configuration shell_path must be a non-empty string");
+  }
   const version = document["version"] ?? 1;
   if (version !== 1) {
     throw new Error(`Unsupported configuration version: ${String(version)}`);

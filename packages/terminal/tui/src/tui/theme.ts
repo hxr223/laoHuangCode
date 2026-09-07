@@ -47,7 +47,7 @@ export class TerminalTheme {
 
 type ThemeToken = StyleToken | "border" | "border_muted";
 
-export const PI_DARK = new TerminalTheme("dark", {
+export const DEFAULT_DARK_THEME = new TerminalTheme("dark", {
   accent: "#8abeb7",
   border: "#5f87ff",
   border_muted: "#505050",
@@ -69,7 +69,7 @@ export const PI_DARK = new TerminalTheme("dark", {
   bash: "#b5bd68",
 });
 
-export const PI_LIGHT = new TerminalTheme("light", {
+export const DEFAULT_LIGHT_THEME = new TerminalTheme("light", {
   accent: "#5a8080",
   border: "#547da7",
   border_muted: "#b0b0b0",
@@ -98,10 +98,10 @@ export function resolveTerminalTheme(
 ): TerminalTheme {
   const requested = (name ?? "auto").trim().toLowerCase() || "auto";
   if (requested === "light") {
-    return PI_LIGHT;
+    return DEFAULT_LIGHT_THEME;
   }
   if (requested === "dark") {
-    return PI_DARK;
+    return DEFAULT_DARK_THEME;
   }
   if (requested !== "auto") {
     throw new Error("terminal theme must be 'auto', 'dark', or 'light'");
@@ -111,7 +111,7 @@ export function resolveTerminalTheme(
   const background = colorfgbg ? (colorfgbg.split(";").pop() as string) : "";
   // Mirror Python int(): optional sign and surrounding whitespace, digits only.
   if (/^\s*[+-]?\d+\s*$/.test(background)) {
-    return parseInt(background, 10) >= 7 ? PI_LIGHT : PI_DARK;
+    return parseInt(background, 10) >= 7 ? DEFAULT_LIGHT_THEME : DEFAULT_DARK_THEME;
   }
-  return PI_DARK;
+  return DEFAULT_DARK_THEME;
 }

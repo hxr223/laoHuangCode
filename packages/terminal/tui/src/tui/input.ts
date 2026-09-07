@@ -8,6 +8,7 @@
  */
 
 import type { Readable, Writable } from "node:stream";
+import { enterTerminalRawMode, type RawModeInput } from "./native-console.ts";
 
 import {
   BufferedInputKind,
@@ -44,12 +45,12 @@ export class PromptEofError extends Error {
   }
 }
 
-export type PromptInput = Readable & { setRawMode?: (mode: boolean) => void };
+export type PromptInput = Readable & RawModeInput;
 export type PromptOutput = Writable & { readonly columns?: number };
 
-export interface PiInputSessionOptions {
+export interface TerminalInputSessionOptions {
   /**
-   * Accepted for PromptSession API compatibility. The Python PiInputSession
+   * Accepted for PromptSession API compatibility. The Python implementation
    * stores the message but its layout never renders it; kept for parity.
    */
   message?: string;
@@ -96,7 +97,7 @@ function resolveSetupPromptAction(action: InputAction): InputAction {
 }
 
 /** Compact PromptSession-compatible editor for setup questions only. */
-export class PiInputSession {
+export class TerminalInputSession {
   private readonly multiline: boolean;
   private readonly sharedHistory: string[] | null;
   private readonly completer: ((text: string) => CompletionItem[]) | null;
@@ -109,7 +110,7 @@ export class PiInputSession {
 
   private history: string[] = [];
 
-  constructor(options: PiInputSessionOptions = {}) {
+  constructor(options: TerminalInputSessionOptions = {}) {
     this.multiline = options.multiline ?? true;
     this.sharedHistory = options.history ?? null;
     this.completer = options.completer ?? null;
@@ -136,6 +137,8 @@ export class PiInputSession {
     let lastCompletedText: string | null = null;
     let settled = false;
     let flushTimer: NodeJS.Timeout | null = null;
+    let restoreRawMode: (() => void) | null = null;
+    let pasteEnabled = false;
 
     const termWidth = (): number =>
       typeof output.columns === "number" && output.columns > 0
@@ -217,8 +220,16 @@ export class PiInputSession {
           flushTimer = null;
         }
         input.removeListener("data", onData);
-        if (typeof input.setRawMode === "function") {
-          input.setRawMode(false);
+        input.removeListener("end", onEnd);
+        input.removeListener("error", onError);
+        try {
+          if (pasteEnabled) output.write("\x1b[?2004l");
+        } finally {
+          try {
+            restoreRawMode?.();
+          } catch (restoreError) {
+            error = new AggregateError([error, restoreError].filter(Boolean), "Terminal mode restoration failed");
+          }
         }
         if (this.eraseWhenDone) {
           let chunk = "";
@@ -336,12 +347,20 @@ export class PiInputSession {
         scheduleEscapeFlush();
       };
 
-      if (typeof input.setRawMode === "function") {
-        input.setRawMode(true);
+      const onEnd = (): void => finish(new PromptEofError(), "");
+      const onError = (error: Error): void => finish(error, "");
+      try {
+        restoreRawMode = enterTerminalRawMode(input);
+        pasteEnabled = true;
+        output.write("\x1b[?2004h");
+        input.on("data", onData);
+        input.on("end", onEnd);
+        input.on("error", onError);
+        refreshCompletions();
+        redraw();
+      } catch (error) {
+        finish(error instanceof Error ? error : new Error(String(error)), "");
       }
-      input.on("data", onData);
-      refreshCompletions();
-      redraw();
     });
   }
 

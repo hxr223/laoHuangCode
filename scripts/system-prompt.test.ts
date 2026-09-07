@@ -44,7 +44,8 @@ Tool guidelines:
 - Supply a concise description of what the command does.
 - Use workdir instead of cd.
 - Each call runs in an independent shell; state does not persist between calls.
-- On a non-zero exit, inspect the output before retrying.`;
+- On a non-zero exit, inspect the output before retrying.
+- When output is truncated, use read or a targeted Bash search on output_files instead of repeating the command. Saved output expires after 7 days; files are capped at 64MiB per call.`;
 
 async function makeTempDir(t: import("node:test").TestContext): Promise<string> {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "prompt-test-"));

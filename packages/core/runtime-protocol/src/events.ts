@@ -34,6 +34,7 @@ export const EventKind = {
 
   ToolStarted: "tool.started",
   ToolOutputDelta: "tool.output_delta",
+  ToolOutputSnapshot: "tool.output_snapshot",
   ToolFinished: "tool.finished",
 
   SessionReady: "session.ready",
@@ -146,6 +147,14 @@ export interface ToolOutputDeltaPayload extends EventPayloadBase {
   coalesced_from_sequence?: number;
 }
 
+export interface ToolOutputSnapshotPayload extends EventPayloadBase {
+  stream: string;
+  text: string;
+  stream_sequence?: number;
+  truncated?: boolean;
+  start_mid_line?: boolean;
+}
+
 export interface ToolFinishedPayload extends EventPayloadBase {
   status: string;
 }
@@ -189,6 +198,7 @@ export interface EventPayloadMap {
   "agent.repeat_warning": AgentRepeatWarningPayload;
   "tool.started": ToolStartedPayload;
   "tool.output_delta": ToolOutputDeltaPayload;
+  "tool.output_snapshot": ToolOutputSnapshotPayload;
   "tool.finished": ToolFinishedPayload;
   "session.ready": EventPayloadBase;
   "session.stopped": EventPayloadBase;
@@ -261,7 +271,7 @@ export interface EventSpecOptions {
   payload_types?: Readonly<Record<string, PayloadFieldType>>;
   require_task_id?: boolean;
   require_correlation_id?: boolean;
-  max_payload_chars?: number;
+  max_payload_chars?: number | null;
   validator?: EventValidator | null;
 }
 
@@ -286,7 +296,7 @@ export class EventSpec {
   readonly payload_types: Readonly<Record<string, PayloadFieldType>>;
   readonly require_task_id: boolean;
   readonly require_correlation_id: boolean;
-  readonly max_payload_chars: number;
+  readonly max_payload_chars: number | null;
   readonly validator: EventValidator | null;
 
   constructor(options: EventSpecOptions) {
@@ -297,7 +307,7 @@ export class EventSpec {
     this.require_task_id = options.require_task_id ?? false;
     this.require_correlation_id = options.require_correlation_id ?? false;
     this.max_payload_chars =
-      options.max_payload_chars ?? DEFAULT_MAX_PAYLOAD_CHARS;
+      options.max_payload_chars === undefined ? DEFAULT_MAX_PAYLOAD_CHARS : options.max_payload_chars;
     this.validator = options.validator ?? null;
   }
 
@@ -345,7 +355,7 @@ export class EventSpec {
         { cause: error },
       );
     }
-    if (payloadSize > this.max_payload_chars) {
+    if (this.max_payload_chars !== null && payloadSize > this.max_payload_chars) {
       throw new EventValidationError(
         `event ${event.kind} payload exceeds ${this.max_payload_chars} characters`,
       );
@@ -364,7 +374,7 @@ interface SpecInit {
   payload_types?: Record<string, PayloadFieldType>;
   require_task_id?: boolean;
   require_correlation_id?: boolean;
-  max_payload_chars?: number;
+  max_payload_chars?: number | null;
 }
 
 function spec(kind: EventKind, init: SpecInit): EventSpec {
@@ -535,7 +545,16 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
       payload_types: { stream: "string", text: "string" },
       require_task_id: true,
       require_correlation_id: true,
-      max_payload_chars: 16_384,
+      max_payload_chars: null,
+    }),
+    spec(EventKind.ToolOutputSnapshot, {
+      sources: [EventSource.Tool],
+      required_payload: ["stream", "text"],
+      payload_types: { stream: "string", text: "string", stream_sequence: "integer" },
+      require_task_id: true,
+      require_correlation_id: true,
+      // Producers own output budgets; JSON escaping must not reject valid previews.
+      max_payload_chars: null,
     }),
     spec(EventKind.ToolFinished, {
       sources: [EventSource.Tool],
@@ -543,7 +562,7 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
       payload_types: { status: "string" },
       require_task_id: true,
       require_correlation_id: true,
-      max_payload_chars: 100_000,
+      max_payload_chars: null,
     }),
     spec(EventKind.RoutingDecided, {
       sources: [EventSource.Router],
@@ -690,6 +709,13 @@ export interface ProjectedEvent {
   payload: unknown;
 }
 
+/** Cropping may remove the label that identifies a credential on the first line. */
+export function omitPartialOutputLine(value: string): string {
+  if (value === "") return value;
+  const newline = value.indexOf("\n");
+  return `[partial line omitted]${newline >= 0 ? value.slice(newline) : ""}`;
+}
+
 /** Produce JSON-friendly, recursively redacted audience projections. */
 export class EventProjector {
   static readonly AUDIENCES: ReadonlySet<string> = new Set([
@@ -705,6 +731,16 @@ export class EventProjector {
     if (!EventProjector.AUDIENCES.has(audience)) {
       throw new Error(`unknown event audience: ${audience}`);
     }
+    const payload = { ...event.payload };
+    if (event.kind === EventKind.ToolOutputSnapshot && payload["start_mid_line"] === true && typeof payload["text"] === "string") {
+      payload["text"] = omitPartialOutputLine(payload["text"]);
+    } else if (event.kind === EventKind.ToolFinished) {
+      for (const stream of ["stdout", "stderr"]) {
+        if (payload[`${stream}_start_mid_line`] === true && typeof payload[stream] === "string") {
+          payload[stream] = omitPartialOutputLine(payload[stream]);
+        }
+      }
+    }
     return {
       event_id: event.event_id,
       kind: event.kind,
@@ -713,7 +749,7 @@ export class EventProjector {
       task_id: event.task_id,
       correlation_id: event.correlation_id,
       sequence: event.sequence,
-      payload: projectValue(event.payload),
+      payload: projectValue(payload),
     };
   }
 }
@@ -723,6 +759,7 @@ const COALESCIBLE_EVENTS: ReadonlySet<EventKind> = new Set([
   EventKind.ModelReasoningDelta,
   EventKind.ModelToolCallDelta,
   EventKind.ToolOutputDelta,
+  EventKind.ToolOutputSnapshot,
 ]);
 const MAX_COALESCED_TEXT_CHARS = 65_536;
 // Reserved headroom so control/lifecycle events always fit in a mailbox even
@@ -783,6 +820,7 @@ class SubscriberMailbox {
       left.kind !== right.kind ||
       left.task_id !== right.task_id ||
       left.correlation_id !== right.correlation_id ||
+      left.kind === EventKind.ToolOutputSnapshot ||
       !COALESCIBLE_EVENTS.has(left.kind)
     ) {
       return null;
@@ -810,11 +848,23 @@ class SubscriberMailbox {
     if (this.closed) {
       return false;
     }
+    if (event.kind === EventKind.ToolOutputSnapshot) {
+      const previous = this.items.findIndex((item) =>
+        item.kind === event.kind && item.task_id === event.task_id &&
+        item.correlation_id === event.correlation_id && item.payload.stream === event.payload.stream,
+      );
+      if (previous >= 0) {
+        const old = this.items.splice(previous, 1)[0]!;
+        this.unfinished--;
+        this.pendingGap += gapOf(old.payload);
+      }
+    }
     if (this.items.length > 0) {
       const last = this.items[this.items.length - 1]!;
       const merged = SubscriberMailbox.merge(last, event);
       if (
         merged !== null &&
+        event.kind !== EventKind.ToolOutputSnapshot &&
         this.items.length >= this.maxItems - MAILBOX_CRITICAL_HEADROOM
       ) {
         this.items[this.items.length - 1] = this.withGapMarker(merged);
@@ -822,7 +872,7 @@ class SubscriberMailbox {
       }
     }
     if (
-      COALESCIBLE_EVENTS.has(event.kind) &&
+      COALESCIBLE_EVENTS.has(event.kind) && event.kind !== EventKind.ToolOutputSnapshot &&
       this.items.length >= this.maxItems - MAILBOX_CRITICAL_HEADROOM
     ) {
       this.recordDrop();
@@ -1038,6 +1088,13 @@ export class EventBus {
     }
     this.sequence += 1;
     const published = { ...event, sequence: this.sequence };
+    if (event.kind === EventKind.ToolOutputSnapshot) {
+      const previous = this.buffer.findIndex((item) =>
+        item.kind === event.kind && item.task_id === event.task_id &&
+        item.correlation_id === event.correlation_id && item.payload.stream === event.payload.stream,
+      );
+      if (previous >= 0) this.buffer.splice(previous, 1);
+    }
     if (this.buffer.length >= this.maxBufferedEvents) {
       // Subscriber mailboxes retain/coalesce independently. The pull buffer
       // is bounded so an unused diagnostic queue cannot grow forever during

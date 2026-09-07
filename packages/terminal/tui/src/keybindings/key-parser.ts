@@ -28,6 +28,9 @@ function controlKeyId(character: string): KeyId {
   if (character === "l") {
     return "ctrl_l";
   }
+  if (character === "u") {
+    return "ctrl_u";
+  }
   return "character";
 }
 
@@ -88,6 +91,7 @@ export function formatKey(key: KeyInput): string {
     : key.id === "ctrl_c" ? "C"
     : key.id === "ctrl_d" ? "D"
     : key.id === "ctrl_l" ? "L"
+    : key.id === "ctrl_u" ? "U"
     : key.id === "page_up" ? "PageUp"
     : key.id === "page_down" ? "PageDown"
     : key.id[0]!.toUpperCase() + key.id.slice(1);

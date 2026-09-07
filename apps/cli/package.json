@@ -1,6 +1,6 @@
 {
   "name": "laohuang",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "A terminal coding agent CLI with a provider-neutral model runtime.",
   "type": "module",
   "bin": {
@@ -21,9 +21,11 @@
     "LICENSE"
   ],
   "dependencies": {
+    "koffi": "3.2.1",
     "@earendil-works/pi-ai": "^0.83.0"
   },
   "devDependencies": {
+    "@laohuang/local-paths": "0.0.0",
     "@laohuang/agent-runtime": "0.0.0",
     "@laohuang/llm": "0.0.0",
     "@laohuang/llm-pi-ai": "0.0.0",

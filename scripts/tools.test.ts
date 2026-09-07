@@ -179,9 +179,11 @@ test("user can write then read a file", async (t) => {
     ok: true,
     content: "hello\n",
     offset: 1,
-    limit: null,
+    limit: 2000,
     total_lines: 1,
     has_more: false,
+    next_offset: null,
+    truncated_line_numbers: [],
   });
 });
 
@@ -376,16 +378,16 @@ test("bash timeout returns an error", async (t) => {
   assert.match(result.error as string, /timed out/i);
 });
 
-test("long tool output is truncated with a marker", async (t) => {
+test("long read lines identify truncation separately from file content", async (t) => {
   const root = await makeTempDir(t);
-  await fs.writeFile(path.join(root, "large.txt"), "abcdefghijklmno", "utf8");
-  const tools = createTestToolRegistry(root, { maxOutputChars: 10 });
+  await fs.writeFile(path.join(root, "large.txt"), "a".repeat(2001), "utf8");
+  const tools = createTestToolRegistry(root);
 
   const result = await tools.execute("read", { path: "large.txt" });
 
-  const content = result.content as string;
-  assert.equal(content.slice(0, 10), "abcdefghij");
-  assert.match(content, /truncated/);
+  assert.equal(result.content, "a".repeat(2000));
+  assert.deepEqual(result.truncated_line_numbers, [1]);
+  assert.match(String(result.note), /truncated/);
 });
 
 test("bash does not receive model api keys", async (t) => {
@@ -532,9 +534,11 @@ test("read pages through a file with offset and limit", async (t) => {
     ok: true,
     content: "1\n2\n3\n4\n5\n",
     offset: 1,
-    limit: null,
+    limit: 2000,
     total_lines: 5,
     has_more: false,
+    next_offset: null,
+    truncated_line_numbers: [],
   });
 
   const window = await tools.execute("read", {
@@ -549,6 +553,8 @@ test("read pages through a file with offset and limit", async (t) => {
     limit: 2,
     total_lines: 5,
     has_more: true,
+    next_offset: 4,
+    truncated_line_numbers: [],
   });
 
   const rest = await tools.execute("read", { path: "lines.txt", offset: 4 });
@@ -556,9 +562,11 @@ test("read pages through a file with offset and limit", async (t) => {
     ok: true,
     content: "4\n5\n",
     offset: 4,
-    limit: null,
+    limit: 2000,
     total_lines: 5,
     has_more: false,
+    next_offset: null,
+    truncated_line_numbers: [],
   });
 });
 
@@ -586,9 +594,11 @@ test("read handles an empty file", async (t) => {
     ok: true,
     content: "",
     offset: 1,
-    limit: null,
+    limit: 2000,
     total_lines: 0,
     has_more: false,
+    next_offset: null,
+    truncated_line_numbers: [],
   });
 });
 

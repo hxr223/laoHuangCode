@@ -206,7 +206,7 @@ test("persistent terminal repl exits without leaving its queue blocked", async (
 });
 
 test("persistent repl sends two inputs then exits cleanly", async () => {
-  class FakePiLoopUI {
+  class FakeLoopUI {
     commandRegistry = null;
     renderError: unknown = null;
     closed = false;
@@ -228,7 +228,7 @@ test("persistent repl sends two inputs then exits cleanly", async () => {
   }
 
   const session = new AgentSession(async () => "done");
-  const ui = new FakePiLoopUI();
+  const ui = new FakeLoopUI();
 
   const clean = await runSessionRepl(session, {
     ui,
@@ -241,7 +241,7 @@ test("persistent repl sends two inputs then exits cleanly", async () => {
 });
 
 test("persistent repl returns false for terminal write failure", async () => {
-  class FakePiLoopUI {
+  class FakeLoopUI {
     commandRegistry = null;
     renderError: unknown = new Error("broken pipe");
     showWelcome(): void {}
@@ -257,7 +257,7 @@ test("persistent repl returns false for terminal write failure", async () => {
   const session = new AgentSession(async () => "done");
 
   assert.equal(await runSessionRepl(session, {
-    ui: new FakePiLoopUI(),
+    ui: new FakeLoopUI(),
     presenter: new RecordingPresenter(),
     suggestCommand: () => null,
   }), false);
@@ -330,7 +330,7 @@ test("persistent exit reports slow prior routing failures through presenter", as
 
   const session = new FakeSession();
 
-  class FakePiLoopUI {
+  class FakeLoopUI {
     commandRegistry = null;
     renderError: unknown = null;
     messages: string[] = [];
@@ -348,7 +348,7 @@ test("persistent exit reports slow prior routing failures through presenter", as
     }
   }
 
-  const ui = new FakePiLoopUI();
+  const ui = new FakeLoopUI();
   const presenter = new RecordingPresenter();
   const result = await runSessionRepl(
     session as unknown as SessionReplSession,
@@ -374,7 +374,7 @@ test("persistent repl reports unclean shutdown before ui close", async () => {
     }
   }
 
-  class FakePiLoopUI {
+  class FakeLoopUI {
     commandRegistry = null;
     renderError: unknown = null;
     run(_submit: (text: string) => void): void {}
@@ -391,7 +391,7 @@ test("persistent repl reports unclean shutdown before ui close", async () => {
   const clean = await runSessionRepl(
     new FakeSession() as unknown as SessionReplSession,
     {
-      ui: new FakePiLoopUI(),
+      ui: new FakeLoopUI(),
       presenter,
       suggestCommand: () => null,
     },
@@ -601,7 +601,7 @@ test("persistent repl preserves follow-up submit metadata", async () => {
     return originalSubmitAction(action);
   };
 
-  class FakePiLoopUI {
+  class FakeLoopUI {
     commandRegistry = null;
     renderError: unknown = null;
     run(submit: (text: string, options?: { strategy?: "follow_up" | "steer" }) => void): void {
@@ -619,7 +619,7 @@ test("persistent repl preserves follow-up submit metadata", async () => {
   }
 
   await runSessionRepl(session, {
-    ui: new FakePiLoopUI(),
+    ui: new FakeLoopUI(),
     presenter: new RecordingPresenter(),
     suggestCommand: () => null,
   });

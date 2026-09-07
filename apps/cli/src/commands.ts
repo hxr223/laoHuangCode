@@ -1,6 +1,7 @@
 /** Slash commands available inside an interactive agent session. */
 
 import { EventKind, EventSource } from "@laohuang/runtime-protocol";
+import { displayLocalPath } from "@laohuang/local-paths";
 import { makeCancelAction } from "@laohuang/runtime-protocol";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
@@ -478,24 +479,13 @@ function sessionDisplayDescription(
   session: SessionDisplaySummary,
   options: { readonly homeDirectory: string | null; readonly now: Date },
 ): string {
-  const displayPath = displayPathFor(session.cwd ?? session.projectRoot ?? "", options.homeDirectory);
+  const displayPath = displayLocalPath(session.cwd ?? session.projectRoot ?? "", options.homeDirectory);
   const updated = relativeTimeLabel(session.updatedAt, options.now);
   return displayPath === "" ? updated : `${updated}  ${displayPath}`;
 }
 
 function cleanSingleLine(value: string | undefined): string {
   return value?.replace(/\s+/g, " ").trim() ?? "";
-}
-
-function displayPathFor(path: string, homeDirectory: string | null): string {
-  if (path === "" || homeDirectory === null || homeDirectory === "") {
-    return path;
-  }
-  const home = homeDirectory.endsWith("/") ? homeDirectory.slice(0, -1) : homeDirectory;
-  if (path === home) {
-    return "~";
-  }
-  return path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
 }
 
 function relativeTimeLabel(updatedAt: string, now: Date): string {

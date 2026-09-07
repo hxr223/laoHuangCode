@@ -9,10 +9,13 @@ import {
   StdinBuffer,
   TerminalInputFilter,
   inputAction,
+  toTuiInputEvent,
   type CompletionItem,
   type InputAction,
 } from "../packages/terminal/tui/src/tui/editor.ts";
 import { makeKeyInput } from "../packages/terminal/tui/src/keybindings/key-id.ts";
+import { KeybindingsManager } from "../packages/terminal/tui/src/keybindings/keybindings.ts";
+import { DEFAULT_KEYBINDINGS } from "../packages/terminal/tui/src/keybindings/default-keybindings.ts";
 import { lineText } from "../packages/terminal/tui/src/tui/render-model.ts";
 
 /**
@@ -83,6 +86,55 @@ test("decoder emits ctrl+c and ctrl+s as neutral key input", () => {
       makeKeyInput("character", { text: "s", ctrl: true }),
     ),
   ]);
+});
+
+test("decoder maps ctrl+u to delete-to-line-start", () => {
+  const decoder = new RawInputDecoder();
+
+  assert.deepEqual(decoder.feed(Buffer.from("\x15")), [
+    inputAction(InputActionKind.DeleteToLineStart),
+  ]);
+});
+
+test("enhanced ctrl+u decodes and resolves the editor binding", () => {
+  const bindings = new KeybindingsManager(DEFAULT_KEYBINDINGS);
+  for (const sequence of [
+    "\x1b[117;5u",
+    "\x1b[117;5:1u",
+    "\x1b[117;5:2u",
+    "\x1b[117;69u",
+    "\x1b[117;133u",
+    "\x1b[117;197u",
+    "\x1b[117:85;5u",
+    "\x1b[117::117;5u",
+    "\x1b[27;5;117~",
+  ]) {
+    const actions = decodeBuffered([
+      Buffer.from(sequence.slice(0, 3)),
+      Buffer.from(sequence.slice(3)),
+    ]);
+    assert.deepEqual(actions, [inputAction(InputActionKind.DeleteToLineStart)], sequence);
+    const event = toTuiInputEvent(actions[0]!);
+    assert.ok(event.type === "key");
+    assert.equal(bindings.resolve(event.key, ["editor"]), "delete_to_line_start", sequence);
+    const editor = new EditorState();
+    editor.apply(inputAction(InputActionKind.Insert, "draft"), { runtimeActive: false });
+    editor.apply(actions[0]!, { runtimeActive: false });
+    assert.equal(editor.text, "", sequence);
+  }
+});
+
+test("enhanced ctrl+u ignores release events and different modifier combinations", () => {
+  for (const sequence of [
+    "\x1b[117;5:3u",
+    "\x1b[117;69:3u",
+    "\x1b[117;6u",
+    "\x1b[117;7u",
+    "\x1b[27;6;117~",
+    "\x1b[27;7;117~",
+  ]) {
+    assert.deepEqual(decodeBuffered([Buffer.from(sequence)]), [], sequence);
+  }
 });
 
 test("decoder emits enhanced alt enter and shift tab as neutral keys", () => {
@@ -480,6 +532,66 @@ test("ctrl+d on a non-empty idle editor asks to clear it first", () => {
 
   assert.equal(effect.exitRequested, false);
   assert.equal(effect.notice, "Clear the editor before exiting.");
+});
+
+test("ctrl+u clears a single-line draft before the cursor", () => {
+  const editor = new EditorState();
+  editor.apply(inputAction(InputActionKind.Insert, "draft"), { runtimeActive: false });
+
+  const effect = editor.apply(inputAction(InputActionKind.DeleteToLineStart), {
+    runtimeActive: false,
+  });
+
+  assert.equal(editor.text, "");
+  assert.equal(editor.cursor, 0);
+  assert.equal(effect.submit, null);
+  assert.equal(effect.exitRequested, false);
+});
+
+test("ctrl+u deletes only to the current line start in multiline input", () => {
+  const editor = new EditorState();
+  editor.apply(inputAction(InputActionKind.Insert, "first\nsecond"), {
+    runtimeActive: false,
+  });
+  editor.apply(inputAction(InputActionKind.CursorLeft), { runtimeActive: false });
+  editor.apply(inputAction(InputActionKind.CursorLeft), { runtimeActive: false });
+
+  editor.apply(inputAction(InputActionKind.DeleteToLineStart), {
+    runtimeActive: false,
+  });
+
+  assert.equal(editor.text, "first\nnd");
+  assert.equal(editor.cursor, "first\n".length);
+});
+
+test("ctrl+u at a multiline row start joins with the previous row", () => {
+  const editor = new EditorState();
+  editor.apply(inputAction(InputActionKind.Insert, "first\nsecond"), {
+    runtimeActive: false,
+  });
+  for (let index = 0; index < "second".length; index += 1) {
+    editor.apply(inputAction(InputActionKind.CursorLeft), { runtimeActive: false });
+  }
+
+  editor.apply(inputAction(InputActionKind.DeleteToLineStart), {
+    runtimeActive: false,
+  });
+
+  assert.equal(editor.text, "firstsecond");
+  assert.equal(editor.cursor, "first".length);
+});
+
+test("ctrl+u at the beginning preserves empty drafts and leading newlines", () => {
+  for (const text of ["", "hello", "\n", "\nhello", "\n\nhello"]) {
+    const editor = new EditorState();
+    editor.apply(inputAction(InputActionKind.Insert, text), { runtimeActive: false });
+    for (let index = 0; index < text.length; index++) {
+      editor.apply(inputAction(InputActionKind.CursorLeft), { runtimeActive: false });
+    }
+    editor.apply(inputAction(InputActionKind.DeleteToLineStart), { runtimeActive: false });
+    assert.equal(editor.text, text);
+    assert.equal(editor.cursor, 0);
+  }
 });
 
 test("render lines places cursor on the newline row", () => {

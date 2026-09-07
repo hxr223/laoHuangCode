@@ -1,4 +1,5 @@
 export * from "./capabilities.ts";
+export { enterTerminalRawMode } from "./tui/native-console.ts";
 export * from "./tui/input.ts";
 export { MemoryTerminalDriver } from "./tui/screen.ts";
 export {

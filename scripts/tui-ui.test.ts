@@ -47,8 +47,8 @@ import {
 } from "@laohuang/session-store";
 import { TerminalInputDecoder } from "../packages/terminal/tui/src/tui/terminal-input-decoder.ts";
 import {
-  PI_DARK,
-  PI_LIGHT,
+  DEFAULT_DARK_THEME,
+  DEFAULT_LIGHT_THEME,
   type TerminalTheme,
 } from "../packages/terminal/tui/src/tui/theme.ts";
 import { makeToggleToolOutputDisplayAction } from "../packages/terminal/tui/src/tui/display-actions.ts";
@@ -64,7 +64,7 @@ import {
 } from "../apps/cli/src/repl.ts";
 import {
   MemoryTerminalDriver,
-  PiMainScreenRenderer,
+  MainScreenRenderer,
   stripTerminalControls,
   visibleWidth,
 } from "../packages/terminal/tui/src/tui/screen.ts";
@@ -268,7 +268,7 @@ function expectedStructuredStyleSnapshots(width: number): SemanticSnapshot[] {
 test("structured component style snapshots stay semantic across themes and widths", () => {
   for (const width of [40, 80]) {
     const expected = expectedStructuredStyleSnapshots(width);
-    for (const theme of [PI_DARK, PI_LIGHT]) {
+    for (const theme of [DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME]) {
       assert.deepEqual(
         structuredStyleComponents().map((component) =>
           semanticSnapshot(component, width, theme)
@@ -279,9 +279,9 @@ test("structured component style snapshots stay semantic across themes and width
   }
 
   const userSpans = new UserMessage({ text: "ordinary input" })
-    .render({ width: 40, theme: PI_DARK }).lines.flatMap((value) => value.spans);
+    .render({ width: 40, theme: DEFAULT_DARK_THEME }).lines.flatMap((value) => value.spans);
   const answerSpans = new AssistantMessage({ text: "ordinary answer" })
-    .render({ width: 40, theme: PI_DARK }).lines.flatMap((value) => value.spans);
+    .render({ width: 40, theme: DEFAULT_DARK_THEME }).lines.flatMap((value) => value.spans);
   assert.ok(userSpans.some((item) =>
     item.text.includes("ordinary input") && item.style?.foreground === undefined
   ));
@@ -299,7 +299,7 @@ test("completion popup is a focusable structured width-bounded component", () =>
     selectedIndex: 1,
   });
 
-  const rendered = popup.render({ width: 20, theme: PI_DARK });
+  const rendered = popup.render({ width: 20, theme: DEFAULT_DARK_THEME });
 
   assert.deepEqual(rendered.lines.map(lineText), [
     "  /help  Show help",
@@ -319,7 +319,7 @@ test("completion height follows actual candidates and uses structured selection 
     selectedIndex: 0,
   });
 
-  const rendered = popup.render({ width: 40, theme: PI_DARK });
+  const rendered = popup.render({ width: 40, theme: DEFAULT_DARK_THEME });
   const first = rendered.lines[0]!;
   const second = rendered.lines[1]!;
 
@@ -345,7 +345,7 @@ test("status line dims metadata while provider and model use terminal default", 
     state,
     cwd: "/worktree",
     effort: "high",
-  }).render({ width: 100, theme: PI_DARK });
+  }).render({ width: 100, theme: DEFAULT_DARK_THEME });
   const spans = rendered.lines[0]?.spans ?? [];
 
   assert.equal(spans.find((item) => item.text.includes("context: 6% (512/8.2K)"))?.style?.foreground, "dim");
@@ -367,8 +367,8 @@ test("frame colors the pi input prompt but leaves input text default without mov
   const inputLine = frame.lines[inputStart];
 
   assert.notEqual(inputStart, -1);
-  assert.ok(inputLine!.includes(PI_DARK.sgr("accent")));
-  assert.ok(!inputLine!.includes(PI_DARK.sgr("text")));
+  assert.ok(inputLine!.includes(DEFAULT_DARK_THEME.sgr("accent")));
+  assert.ok(!inputLine!.includes(DEFAULT_DARK_THEME.sgr("text")));
   assert.equal(stripTerminalControls(inputLine!), "│> 你好你  │");
   assert.equal(frame.cursorCol, 9);
   assert.ok(frame.lines.every((line) => visibleWidth(line) <= 12));
@@ -1543,7 +1543,7 @@ test("completion shrink clears stale rows without clearing scrollback", () => {
   ]);
   const ui = new TerminalUI({ driver: terminal, commandRegistry: registry });
   ui.acceptUserInput("saved scrollback");
-  const renderer = new PiMainScreenRenderer(terminal);
+  const renderer = new MainScreenRenderer(terminal);
   const editor = new EditorState();
   editor.apply({ kind: "insert", text: "/" }, { runtimeActive: false });
   editor.setCompletions(registry.complete(editor.text, { state: "IDLE" }));

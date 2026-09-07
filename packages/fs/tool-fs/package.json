@@ -11,6 +11,7 @@
   },
   "files": ["dist"],
   "dependencies": {
+    "@laohuang/local-paths": "0.0.0",
     "@laohuang/tools": "0.0.0"
   }
 }

@@ -151,3 +151,19 @@ test("malformed profile document has an actionable error", () => {
     );
   });
 });
+
+test("shell path is global, optional, and preserved when configuring profiles", () => {
+  withTempDir((directory) => {
+    const configPath = join(directory, "config.json");
+    const manager = new ConfigManager(configPath);
+    assert.equal(manager.getShellPath(), undefined);
+    writeFileSync(configPath, JSON.stringify({ shell_path: "~/custom/bash" }));
+    assert.equal(manager.getShellPath(), "~/custom/bash");
+    manager.configure({ name: "default", provider: "deepseek", model: "test", baseUrl: null });
+    assert.equal(manager.getShellPath(), "~/custom/bash");
+    for (const value of [null, 42, "", "   "]) {
+      writeFileSync(configPath, JSON.stringify({ shell_path: value }));
+      assert.throws(() => manager.getShellPath(), /shell_path must be a non-empty string/);
+    }
+  });
+});
