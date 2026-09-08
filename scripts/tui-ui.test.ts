@@ -1692,11 +1692,10 @@ test("interactive command component journey preserves scrollback and cursor", as
   await type("/help\r");
   await type("/providers\r");
   await type("/model\r");
-  assert.equal(ui.focusedComponentId(), "model-provider");
+  assert.equal(ui.focusedComponentId(), "model-name");
   await type("\x1b");
   assert.equal(ui.focusedComponentId(), "composer");
   await type("/model\r");
-  await type("\r");
   assert.equal(ui.focusedComponentId(), "model-name");
   await type("\x1b[B\r");
   await type("/effort\r");
@@ -1753,11 +1752,9 @@ test("model command uses persistent selectors for submit and cancellation", asyn
   const { commands, agent } = createSessionCommandFixture({ presenter });
 
   const cancelled = commands.execute("/model");
-  await drainUntil(ui, () => terminal.writes().includes("Select model provider"));
-  assert.ok(terminal.writes().includes("Select model provider"));
-  assert.equal(terminal.writes().includes("Select provider: "), false);
-  ui.feedInputBytes(bytes("\r"));
   await drainUntil(ui, () => terminal.writes().includes("Search models"));
+  assert.equal(terminal.writes().includes("Select model provider"), false);
+  assert.equal(terminal.writes().includes("Select provider: "), false);
   assert.ok(terminal.writes().includes("deepseek-v4-flash"));
   assert.equal(terminal.writes().includes("Select model or search: "), false);
   ui.feedInputBytes(bytes("\x1b"));
@@ -1766,14 +1763,49 @@ test("model command uses persistent selectors for submit and cancellation", asyn
   assert.equal(agent.model, "deepseek-v4-flash");
 
   const selected = commands.execute("/model");
-  await drainUntil(ui, () => ui.focusedComponentId() === "model-provider");
-  ui.feedInputBytes(bytes("\r"));
   await drainUntil(ui, () => ui.focusedComponentId() === "model-name");
   ui.feedInputBytes(bytes("\x1b[B\r"));
   ui.drainLoop();
   await selected;
 
   assert.equal(agent.model, "deepseek-v4-pro");
+});
+
+test("model picker searches all configured providers beyond the visible page", async () => {
+  const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
+  const emulator = new TerminalEmulator({ columns: 80, rows: 24 });
+  const ui = new TerminalUI({ driver: terminal });
+  ui.startLoop(() => {});
+  const { commands, catalog, agent } = createSessionCommandFixture({
+    presenter: new TerminalCommandPresenter(ui),
+    configured: new Set(["deepseek", "anthropic"]),
+  });
+  const template = catalog.listModels("anthropic")[0]!;
+  catalog.models.set("anthropic", Array.from({ length: 30 }, (_, index) => ({
+    ...template,
+    id: `model-${String(index).padStart(2, "0")}`,
+    name: `Model ${index}`,
+  })));
+
+  const selection = commands.execute("/model");
+  try {
+    await drainUntil(ui, () => ui.focusedComponentId() === "model-name");
+    assert.equal(ui.focusedComponentId(), "model-name");
+    emulator.write(terminal.writes());
+    assert.ok(emulator.viewportLines.some((line) => line.includes("Select model from configured providers")));
+    assert.ok(emulator.viewportLines.some((line) => line.includes("Search models")));
+    ui.feedInputBytes(bytes("anthropic/model-29\r"));
+    ui.drainLoop();
+    await selection;
+
+    assert.equal(agent.provider, "anthropic");
+    assert.equal(agent.model, "model-29");
+    assert.equal(ui.focusedComponentId(), "composer");
+    assert.equal(ui.interactiveLoop?.editor.text, "");
+  } finally {
+    ui.close();
+    await selection;
+  }
 });
 
 test("effort command uses persistent selector submit and cancellation", async () => {
