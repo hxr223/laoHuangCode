@@ -7,6 +7,7 @@ import {
   visibleWidth,
 } from "../packages/terminal/tui/src/tui/markdown.ts";
 import { DEFAULT_DARK_THEME, TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
+import { lineText } from "../packages/terminal/tui/src/tui/render-model.ts";
 
 test("plain assistant text uses terminal default foreground", () => {
   const rendered = renderMarkdownLines("plain response", 80, DEFAULT_DARK_THEME).join("\n");
@@ -90,6 +91,63 @@ test("markdown table semantics compile through the active theme", () => {
   assert.ok(
     lines.some((line) => line.includes("\x1b[38;2;0;255;0m ─ ")),
   );
+});
+
+test("table body pads missing continuation lines without losing cell content", () => {
+  const lines = renderMarkdownStyledLines(
+    "| A | B |\n|---|---|\n| x | abcdefghijklmnopqrst |\n| | uvwxyzabcdefghijk |",
+    12,
+  ).map(lineText);
+
+  assert.ok(lines.includes(" x  abcdefg "));
+  assert.ok(lines.includes("    hijklmn "));
+  assert.ok(lines.includes("    opqrst  "));
+  assert.ok(lines.includes("    uvwxyza "));
+  assert.ok(lines.includes("    bcdefgh "));
+  assert.ok(lines.includes("    ijk     "));
+  assert.ok(lines.every((value) => visibleWidth(value) <= 12));
+});
+
+test("table header pads shorter cells on continuation lines", () => {
+  const lines = renderMarkdownStyledLines(
+    "| ABCDEFGHIJKLMN | B |\n|---|---|\n| x | y |",
+    12,
+  ).map(lineText);
+
+  assert.ok(lines.includes(" ABCDEFG  B "));
+  assert.ok(lines.includes(" HIJKLMN    "));
+});
+
+test("tables use actual widths below twelve columns without truncating cells", () => {
+  const lines = renderMarkdownStyledLines(
+    "| A | B |\n|---|---|\n| x | abcdefghij |",
+    8,
+  ).map(lineText);
+
+  assert.ok(lines.includes(" x  abc "));
+  assert.ok(lines.includes("    def "));
+  assert.ok(lines.includes("    ghi "));
+  assert.ok(lines.includes("    j   "));
+  assert.ok(lines.every((value) => visibleWidth(value) <= 8));
+});
+
+test("tables too narrow for their columns preserve raw markdown", () => {
+  const markdown = "|A|B|C|D|E|\n|-|-|-|-|-|\n|1|2|3|4|5|";
+  for (const width of [1, 5, 12, 14]) {
+    const lines = renderMarkdownStyledLines(markdown, width).map(lineText);
+    assert.equal(lines.join(""), markdown.replaceAll("\n", ""), `width ${width}`);
+    assert.ok(lines.every((value) => visibleWidth(value) <= width));
+  }
+});
+
+test("Chinese table columns do not shrink below a character's display width", () => {
+  const lines = renderMarkdownStyledLines(
+    "| 名 | 说明 |\n|---|---|\n| 甲 | 这是很长的说明需要换行 |",
+    8,
+  ).map(lineText);
+
+  assert.ok(lines.every((value) => visibleWidth(value) <= 8));
+  assert.ok(lines.slice(4, -1).join("").replaceAll(" ", "").includes("甲这是很长的说明需要换行"));
 });
 
 test("markdown bullet list continuation lines keep hanging indent", () => {

@@ -775,6 +775,10 @@ export async function main(
     await sessionRecorder.close();
     await sessionController.close();
   }
+  const renderError = terminalUi?.renderError ?? null;
+  if (renderError !== null) {
+    throw new Error(`Terminal rendering failed: ${errorMessage(renderError)}`, { cause: renderError });
+  }
   return cleanShutdown ? 0 : 1;
 }
 
