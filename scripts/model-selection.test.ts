@@ -8,8 +8,8 @@ import {
 } from "../apps/cli/src/model-selection.ts";
 import type {
   AuthPromptHandler,
-  ProviderAuthController,
 } from "../apps/cli/src/provider-auth.ts";
+import { ProviderAuthController } from "../apps/cli/src/provider-auth.ts";
 
 const providers: readonly ModelProviderInfo[] = [
   {
@@ -170,7 +170,7 @@ test("session exact selection requires prior login without auth prompts", async 
   }]);
 });
 
-test("model search ranks exact ids and limits output", () => {
+test("model search ranks exact ids without truncating the catalog", () => {
   const searched = Array.from({ length: 30 }, (_, index) =>
     model(
       "openrouter",
@@ -179,10 +179,54 @@ test("model search ranks exact ids and limits output", () => {
     ),
   );
 
-  assert.deepEqual(filterModels(searched, "target-model", 20).map((item) => item.id), [
+  assert.deepEqual(filterModels(searched, "target-model").map((item) => item.id), [
     "target-model",
   ]);
-  assert.equal(filterModels(searched, "model", 20).length, 20);
+  assert.equal(filterModels(searched, "model").length, 30);
+});
+
+test("model listing skips unconfigured providers before refreshing", async () => {
+  const auth = new MemoryAuth();
+  auth.configured.clear();
+  const catalog = new MemoryCatalog();
+  const selector = new ModelSelector({ catalog, providerAuth: auth });
+
+  assert.deepEqual(await selector.listModels("deepseek", ""), []);
+  assert.deepEqual(catalog.refreshCalls, []);
+});
+
+test("provider model listing returns all models for client-side search", async () => {
+  const catalog = new MemoryCatalog();
+  catalog.listAvailableModels = async () => Array.from({ length: 30 }, (_, index) =>
+    model("openai", `model-${index}`, `Model ${index}`),
+  );
+  const selector = new ModelSelector({ catalog, providerAuth: new MemoryAuth() });
+
+  assert.equal((await selector.listModels("openai", "")).length, 30);
+});
+
+test("configured model listing includes environment credentials and isolates auth failures", async () => {
+  const catalog = new MemoryCatalog();
+  const auth = new ProviderAuthController({
+    auth: {
+      status: async (provider) => {
+        if (provider === "deepseek") throw new Error("credential store unavailable");
+        return { configured: true, source: "OPENAI_API_KEY" };
+      },
+      loginApiKey: async () => { throw new Error("listing must not request login"); },
+      logout: async () => {},
+    },
+  });
+  const selector = new ModelSelector({ catalog, providerAuth: auth });
+
+  const result = await selector.listConfiguredModels();
+
+  assert.deepEqual(result.models.map((item) => `${item.provider}/${item.id}`), [
+    "openai/gpt-a", "openai/gpt-z",
+  ]);
+  assert.equal(result.errors.length, 1);
+  assert.equal(result.errors[0]?.provider, "deepseek");
+  assert.match(String(result.errors[0]?.error), /credential store unavailable/);
 });
 
 test("exact model routes must exist in the provider catalog", async () => {

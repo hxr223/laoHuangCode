@@ -738,10 +738,11 @@ test("startup model selection uses the plain presenter and shared selector servi
 
   assert.equal(selection?.config.provider, "deepseek");
   assert.equal(selection?.config.model, "deepseek-v4-flash");
-  assert.deepEqual(auth.ensureConfiguredCalls, [
+  assert.deepEqual(auth.ensureConfiguredCalls.filter((call) => call.promptIfMissing), [
     { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
     { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
   ]);
+  assert.deepEqual(auth.loginCalls, []);
   assert.ok(output.includes("Select model provider"));
 });
 
