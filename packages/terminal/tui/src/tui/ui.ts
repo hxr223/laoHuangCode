@@ -1148,6 +1148,14 @@ export class TerminalUI {
     this.#loop?.requestRender();
   }
 
+  setContextUsage(tokens: number, contextWindow: number): void {
+    // Preserve ordering with request-start events already waiting to be rendered.
+    this.publishEvent({
+      kind: "ui.context_usage",
+      payload: { context_tokens: tokens, context_window: contextWindow },
+    });
+  }
+
   replaceTranscript(items: readonly RestoredTranscriptItemLike[]): void {
     this.#transcript.replace(items);
     this.#transcriptView.invalidate();

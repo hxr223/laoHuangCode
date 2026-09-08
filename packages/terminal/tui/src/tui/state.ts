@@ -116,6 +116,11 @@ export class UIEventReducer {
       });
     }
 
+    if (kind === "ui.context_usage") {
+      this.#updateContextUsage(payload);
+      return createUpdate(kind, { payload });
+    }
+
     if (kind === "task.state_changed") {
       const rawState = payload.state ?? "IDLE";
       this.state.sessionState = String(unwrapValue(rawState)).toUpperCase();

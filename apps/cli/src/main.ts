@@ -10,6 +10,8 @@ import {
   COMPACTION_SYSTEM_PROMPT,
   ContextBuilder,
   ContextGovernor,
+  DefaultTokenEstimator,
+  type BuildContextInput,
   type ConversationHistory,
 } from "@laohuang/session-context";
 import { projectTranscript } from "@laohuang/session-store";
@@ -28,7 +30,7 @@ import {
 import { findProjectRoot } from "@laohuang/project-instructions";
 import { AgentSession, SessionRecorder, routeHumanIntent } from "@laohuang/session-runtime";
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
-import { ToolRegistry } from "@laohuang/tools";
+import { ToolRegistry, type ToolSpec } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
 import { getHomeDirectory } from "@laohuang/local-paths";
 import { createBashToolDefinition, resolveBashPath } from "@laohuang/tool-bash";
@@ -121,6 +123,23 @@ export function resetEmptySessionTranscript(
 ): void {
   terminalUi?.replaceTranscript([]);
   terminalUi?.showWelcome();
+}
+
+/** Refresh presentation without running the governor or triggering compaction. */
+export function refreshSessionContextUsage(
+  terminalUi: Pick<TerminalUI, "setContextUsage"> | null,
+  input: BuildContextInput & {
+    readonly tools: readonly ToolSpec[];
+    readonly contextWindow: number;
+  },
+): void {
+  if (terminalUi === null) return;
+  const context = new ContextBuilder().build(input);
+  const estimator = new DefaultTokenEstimator();
+  terminalUi.setContextUsage(
+    estimator.estimateMessages(context.messages) + estimator.estimateTools(input.tools),
+    input.contextWindow,
+  );
 }
 
 export async function main(
@@ -597,6 +616,17 @@ export async function main(
       })
     : new TerminalCommandPresenter(terminalUi);
 
+  const refreshContextUsage = (): void => {
+    refreshSessionContextUsage(terminalUi, {
+      entries: sessionController.history?.entries() ?? [],
+      currentProvider: config.provider,
+      currentModel: config.model,
+      tools: toolRegistry.definitions,
+      contextWindow: selectedModel?.contextWindow ?? 0,
+    });
+  };
+  refreshContextUsage();
+
   const refreshSessionView = (): void => {
     const currentSessionId = sessionController.currentSessionId;
     if (currentSessionId !== null) {
@@ -618,6 +648,7 @@ export async function main(
         agent.messages = [system];
       }
       resetEmptySessionTranscript(terminalUi);
+      refreshContextUsage();
       return;
     }
     agent.messages = [...new ContextBuilder().build({
@@ -626,6 +657,7 @@ export async function main(
       currentModel: config.model,
     }).messages];
     terminalUi?.replaceTranscript(projectTranscript(entries));
+    refreshContextUsage();
   };
 
   const commands = new SessionCommands({
@@ -666,6 +698,7 @@ export async function main(
         terminalUi.state.model = selection.config.model;
         terminalUi.setRuntimeCapabilities({ reasoning: model?.reasoning ?? false });
       }
+      refreshContextUsage();
     },
   });
 
@@ -674,6 +707,12 @@ export async function main(
   unsubscribers.push(
     runtime.eventBus.subscribe((event) => {
       sessionSink.publishEvent(projector.project(event, "terminal"));
+      if (
+        event.session_id === runtime.sessionId &&
+        (event.kind === "task.completed" || event.kind === "task.cancelled" || event.kind === "task.failed")
+      ) {
+        refreshContextUsage();
+      }
     }),
   );
   if (terminalUi !== null) {
