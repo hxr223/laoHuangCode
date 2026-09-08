@@ -305,6 +305,7 @@ test("completion popup is a focusable structured width-bounded component", () =>
     "  /help  Show help",
     "› /model  Switch mod",
   ]);
+  assert.equal(visibleWidth(lineText(rendered.lines[1]!)), 20);
   assert.equal(popup.focused, false);
   popup.focused = true;
   assert.equal(popup.focused, true);
@@ -348,7 +349,7 @@ test("status line dims metadata while provider and model use terminal default", 
   }).render({ width: 100, theme: DEFAULT_DARK_THEME });
   const spans = rendered.lines[0]?.spans ?? [];
 
-  assert.equal(spans.find((item) => item.text.includes("context: 6% (512/8.2K)"))?.style?.foreground, "dim");
+  assert.equal(spans.find((item) => item.text.includes("context: 6.3% (512/8.2K)"))?.style?.foreground, "dim");
   assert.equal(spans.find((item) => item.text === "/worktree"), undefined);
   assert.equal(spans.find((item) => item.text.includes("queue"))?.style?.foreground, "dim");
   assert.equal(spans.find((item) => item.text === "openai/gpt-test")?.style, undefined);

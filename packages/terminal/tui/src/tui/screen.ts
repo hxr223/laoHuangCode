@@ -119,11 +119,15 @@ export class MainScreenRenderer {
     const width = Math.max(1, size.columns);
     const height = Math.max(1, size.rows);
     const newLines = frame.lines;
-    MainScreenRenderer.#validateLines(newLines, width);
-
     const widthChanged = this.#previousWidth !== 0 && this.#previousWidth !== width;
     const heightChanged =
       this.#previousHeight !== 0 && this.#previousHeight !== height;
+    // An unchanged line has already passed validation at this terminal size.
+    MainScreenRenderer.#validateLines(
+      newLines,
+      width,
+      widthChanged || heightChanged ? [] : this.#previousLines,
+    );
     const previousBufferLength =
       this.#previousHeight > 0
         ? this.#previousViewportTop + this.#previousHeight
@@ -381,8 +385,9 @@ export class MainScreenRenderer {
     this.#previousHeight = height;
   }
 
-  static #validateLines(lines: readonly string[], width: number): void {
+  static #validateLines(lines: readonly string[], width: number, previous: readonly string[]): void {
     lines.forEach((line, index) => {
+      if (previous[index] === line) return;
       if (/[\r\n]/u.test(line)) {
         throw new Error(`rendered line ${index} contains a physical newline`);
       }
@@ -400,15 +405,26 @@ export class MainScreenRenderer {
 // Visible-width string helpers (ANSI-aware, grapheme-cluster based)
 // ---------------------------------------------------------------------------
 
+const WIDTH_CACHE_SIZE = 512;
+const WIDTH_CACHE_MAX_TEXT_LENGTH = 4_096;
+const widthCache = new Map<string, number>();
+
 /** Visible column width of a string, ignoring terminal control sequences. */
 export function visibleWidth(text: string): number {
-  if (!text) {
-    return 0;
-  }
+  if (/^[\x20-\x7e]*$/u.test(text)) return text.length;
+  const cached = widthCache.get(text);
+  if (cached !== undefined) return cached;
   const stripped = stripTerminalControls(text).replace(/\t/g, "   ");
   let width = 0;
   for (const cluster of graphemeClusters(stripped)) {
     width += clusterWidth(cluster);
+  }
+  if (text.length <= WIDTH_CACHE_MAX_TEXT_LENGTH) {
+    if (widthCache.size >= WIDTH_CACHE_SIZE) {
+      const oldest = widthCache.keys().next().value;
+      if (oldest !== undefined) widthCache.delete(oldest);
+    }
+    widthCache.set(text, width);
   }
   return width;
 }
