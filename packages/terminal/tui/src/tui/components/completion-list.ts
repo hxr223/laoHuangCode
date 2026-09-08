@@ -51,7 +51,7 @@ export class CompletionPopup implements FocusableComponent {
     const boundedWidth = Math.max(1, width);
     return displayWidth(lineText(value)) <= boundedWidth
       ? value
-      : truncateStyledLine(value, boundedWidth + 1, "");
+      : truncateStyledLine(value, boundedWidth, "");
   }
 }
 

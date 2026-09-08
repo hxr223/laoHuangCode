@@ -154,7 +154,7 @@ export function truncateStyledLine(
     return line(...mergeAdjacent(result));
   }
 
-  const ellipsisWidth = charCellWidth(ellipsis);
+  const ellipsisWidth = ellipsis === "" ? 0 : charCellWidth(ellipsis);
   while (result.length > 0 && used + ellipsisWidth > width) {
     const removed = result.pop() as StyledSpan;
     used -= charCellWidth(removed.text);
