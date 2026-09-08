@@ -56,7 +56,7 @@ export function renderMarkdownStyledLines(text: string, width: number): StyledLi
   const layoutWidth = Math.max(12, width);
   const lines: StyledLine[] = [];
   let previous: BlockKind | null = null;
-  for (const block of renderBlocks(clean, layoutWidth)) {
+  for (const block of renderBlocks(clean, layoutWidth, Math.max(1, width))) {
     // Rich yields one blank line before each block-level element whose
     // predecessor sets new_line (every element except a horizontal rule).
     // Container blocks nest paragraph children, so the flag is already set
@@ -121,6 +121,7 @@ function styleKey(style: InlineStyle): string {
 function renderBlocks(
   text: string,
   layoutWidth: number,
+  tableWidth: number,
 ): Block[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks: Block[] = [];
@@ -184,6 +185,7 @@ function renderBlocks(
         delimiter.every((cell) => /^:?-+:?$/.test(cell))
       ) {
         flushParagraph();
+        const tableStart = index;
         index += 2;
         const rows: string[][] = [];
         while (index < lines.length) {
@@ -200,7 +202,7 @@ function renderBlocks(
         }
         blocks.push({
           kind: "table",
-          lines: renderTable(header, rows, layoutWidth),
+          lines: renderTable(header, rows, tableWidth, lines.slice(tableStart, index)),
         });
         continue;
       }
@@ -386,6 +388,7 @@ function renderTable(
   header: string[],
   rows: string[][],
   layoutWidth: number,
+  rawLines: string[],
 ): Segment[][] {
   const columnCount = header.length;
   const borderStyle: InlineStyle = {
@@ -404,6 +407,22 @@ function renderTable(
     normalize(row).map((cell) => parseInline(cell, {})),
   );
 
+  const minWidths = Array<number>(columnCount).fill(1);
+  for (const row of [headerCells, ...bodyCells]) {
+    for (let i = 0; i < columnCount; i += 1) {
+      for (const segment of row[i] as Segment[]) {
+        for (const cluster of graphemeClusters(segment.text)) {
+          minWidths[i] = Math.max(minWidths[i] as number, clusterWidth(cluster));
+        }
+      }
+    }
+  }
+  const spacingWidth = 2 * columnCount;
+  if (minWidths.reduce((total, width) => total + width, spacingWidth) > layoutWidth) {
+    // Keep the source readable when even one character per column will not fit.
+    return rawLines.flatMap((text) => wrapSegments([{ text, style: {} }], layoutWidth));
+  }
+
   const widths = Array.from({ length: columnCount }, (_, i) =>
     Math.max(
       1,
@@ -413,10 +432,13 @@ function renderTable(
   );
   const totalWidth = (): number =>
     widths.reduce((total, w) => total + w, 0) + 2 * (columnCount - 1) + 2;
-  while (totalWidth() > layoutWidth && Math.max(...widths) > 1) {
-    let widest = 0;
-    for (let i = 1; i < widths.length; i += 1) {
-      if ((widths[i] as number) > (widths[widest] as number)) {
+  while (totalWidth() > layoutWidth) {
+    let widest = -1;
+    for (let i = 0; i < widths.length; i += 1) {
+      if (
+        (widths[i] as number) > (minWidths[i] as number) &&
+        (widest === -1 || (widths[i] as number) > (widths[widest] as number))
+      ) {
         widest = i;
       }
     }
@@ -456,7 +478,7 @@ function renderTableRows(
       if (i > 0) {
         line.push({ style: borderStyle, text: " " });
       }
-      const cellLine = (wrappedCells[i] as Segment[][])[row] as Segment[];
+      const cellLine = (wrappedCells[i] as Segment[][])[row] ?? [];
       line.push(...cellLine);
       const pad = (widths[i] as number) - segmentsWidth(cellLine);
       if (pad > 0) {
