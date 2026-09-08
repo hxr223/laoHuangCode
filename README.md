@@ -34,12 +34,18 @@ laohuang
 
 Agent 提供 `read`、`write`、`edit`、`bash` 四个工具，支持流式回复、运行中追加任务和取消执行。
 
-- `/model`：选择模型。
+- `/model`：搜索并选择所有已配置供应商的可用模型。
 - `/login`：配置供应商凭据。
 - `/providers`：查看供应商及其配置、验证状态。
 - `/cancel`：取消当前任务。
 - `/help`：查看全部命令。
 - `/exit`：退出。
+
+用 `/login` 添加供应商凭据后，`/model` 会直接展示已配置供应商的完整模型列表，
+可按供应商 ID、模型 ID 或模型名称搜索。通过环境变量配置凭据的供应商也会出现在列表中。
+列表支持滚动；没有可用模型时会提示先执行 `/login`。
+`/model <provider>` 可只查看一个供应商的模型，`/model <provider> <model>` 可直接切换。
+模型切换只影响当前会话，不修改默认 Profile。
 
 供应商和模型来自 pi-ai 的 API-key catalog；可用范围、认证方式与验证状态见
 [模型配置文档](docs/configuration.md)。
