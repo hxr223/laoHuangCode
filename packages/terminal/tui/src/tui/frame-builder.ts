@@ -1,6 +1,6 @@
 /** Terminal frame data assembly, separate from terminal paint mechanics. */
 
-import { compileStyledLines } from "./ansi-renderer.ts";
+import { StyledLineCompiler } from "./ansi-renderer.ts";
 import type { EditorLike } from "./contracts.ts";
 import { CompletionPopup } from "./components/completion-list.ts";
 import { Composer } from "./components/composer.ts";
@@ -59,6 +59,11 @@ export class FrameBuilder {
   readonly #effort: string | null;
   readonly #title: string;
   readonly #theme: TerminalTheme;
+  readonly #transcriptView: Transcript;
+  readonly #lineCompiler = new StyledLineCompiler();
+  #previousWidth = 0;
+  #previousSources: readonly string[] = [];
+  #previousLines: readonly string[] = [];
 
   constructor(options: FrameBuilderOptions) {
     this.#state = options.state;
@@ -69,14 +74,22 @@ export class FrameBuilder {
     this.#effort = options.effort ?? null;
     this.#title = options.title ?? "laoHuang";
     this.#theme = options.theme ?? resolveTerminalTheme();
+    this.#transcriptView = new Transcript({ blocks: this.#transcript.blocks() });
   }
 
   build(options: BuildFrameOptions): DisplayFrame {
     const terminalWidth = Math.max(1, options.width);
     const width = Math.max(1, terminalWidth - 1);
     const mainScreen = options.compiledMainScreen ?? this.#fallbackMainScreen(options, width);
-    const lines = mainScreen.lines.map((value) =>
-      visibleWidth(value) <= width ? value : truncateToWidth(value, width));
+    const lines = mainScreen.lines.map((value, index) => {
+      if (this.#previousWidth === width && this.#previousSources[index] === value) {
+        return this.#previousLines[index]!;
+      }
+      return visibleWidth(value) <= width ? value : truncateToWidth(value, width);
+    });
+    this.#previousWidth = width;
+    this.#previousSources = [...mainScreen.lines];
+    this.#previousLines = lines;
     const cursor = {
       row: Math.max(0, Math.min(mainScreen.cursor.row, Math.max(0, lines.length - 1))),
       col: Math.max(0, Math.min(mainScreen.cursor.column, width - 1)),
@@ -102,9 +115,7 @@ export class FrameBuilder {
   }
 
   #fallbackMainScreen(options: BuildFrameOptions, width: number): CompiledMainScreen {
-    const transcript = new Transcript({
-      blocks: this.#transcript.blocks(),
-    }).renderWithMetadata({ width, theme: this.#theme });
+    const transcript = this.#transcriptView.renderWithMetadata({ width, theme: this.#theme });
     const transcriptLines = transcript.lines;
     const composer = new Composer({
       editor: options.editor,
@@ -119,7 +130,7 @@ export class FrameBuilder {
     const cursor = composer.cursor ?? { row: Math.max(0, composer.lines.length - 1), column: 0 };
     const lines = [...transcriptLines, ...composer.lines, ...completion.lines, ...status.lines];
     return {
-      lines: compileStyledLines(lines, width, this.#theme),
+      lines: this.#lineCompiler.compile(lines, width, this.#theme),
       cursor: {
         row: transcriptLines.length + cursor.row,
         column: cursor.column,
