@@ -305,6 +305,7 @@ test("completion popup is a focusable structured width-bounded component", () =>
     "  /help  Show help",
     "› /model  Switch mod",
   ]);
+  assert.equal(visibleWidth(lineText(rendered.lines[1]!)), 20);
   assert.equal(popup.focused, false);
   popup.focused = true;
   assert.equal(popup.focused, true);
