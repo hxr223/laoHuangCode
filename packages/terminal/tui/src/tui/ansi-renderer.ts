@@ -1,6 +1,27 @@
 import { visibleWidth } from "./screen.ts";
-import type { StyledLine, StyledSpan } from "./render-model.ts";
+import { truncateStyledLine, type StyledLine, type StyledSpan } from "./render-model.ts";
 import type { TerminalTheme } from "./theme.ts";
+
+/** Cache final terminal strings for immutable styled lines retained by components. */
+export class StyledLineCompiler {
+  #cache = new WeakMap<StyledLine, { width: number; theme: TerminalTheme; text: string }>();
+
+  compile(values: readonly StyledLine[], width: number, theme: TerminalTheme): string[] {
+    return values.map((value) => {
+      const cached = this.#cache.get(value);
+      if (cached !== undefined && cached.width === width && cached.theme === theme) {
+        return cached.text;
+      }
+      const text = compileStyledLine(truncateStyledLine(value, width, ""), width, theme);
+      this.#cache.set(value, { width, theme, text });
+      return text;
+    });
+  }
+
+  invalidate(): void {
+    this.#cache = new WeakMap();
+  }
+}
 
 const NAMED_COLOR_CODES: Record<string, string> = {
   black: "30",
