@@ -90,12 +90,11 @@ import type {
 } from "./contracts.ts";
 import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
-import { compileStyledLines } from "./ansi-renderer.ts";
+import { StyledLineCompiler } from "./ansi-renderer.ts";
 import { CompletionPopup } from "./components/completion-list.ts";
 import { Composer } from "./components/composer.ts";
 import { StatusLine } from "./components/status-line.ts";
 import { MainScreen } from "./main-screen.ts";
-import { truncateStyledLine } from "./render-model.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
   MainScreenRenderer,
@@ -979,6 +978,7 @@ export class TerminalUI {
   #loop: InteractiveTerminalLoop | null = null;
   readonly #transcript: TranscriptStore;
   readonly #transcriptView: Transcript;
+  readonly #lineCompiler = new StyledLineCompiler();
   #showReasoning = true;
   #displayPolicy = new DisplayPolicy({
     audience: "terminal",
@@ -1148,9 +1148,18 @@ export class TerminalUI {
     this.#loop?.requestRender();
   }
 
+  setContextUsage(tokens: number, contextWindow: number): void {
+    // Preserve ordering with request-start events already waiting to be rendered.
+    this.publishEvent({
+      kind: "ui.context_usage",
+      payload: { context_tokens: tokens, context_window: contextWindow },
+    });
+  }
+
   replaceTranscript(items: readonly RestoredTranscriptItemLike[]): void {
     this.#transcript.replace(items);
     this.#transcriptView.invalidate();
+    this.#lineCompiler.invalidate();
     this.#loop?.requestRender();
   }
 
@@ -1299,7 +1308,7 @@ export class TerminalUI {
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
     const rendered = this.#transcriptView.renderWithMetadata({ width, theme: this.theme });
     return {
-      lines: compileStyledLines(rendered.lines, Math.max(12, width), this.theme),
+      lines: this.#lineCompiler.compile(rendered.lines, Math.max(12, width), this.theme),
       activeStart: rendered.activeStart,
     };
   }
@@ -1338,8 +1347,8 @@ export class TerminalUI {
         effort: this.effort,
       }),
     }).renderWithMetadata({ width: contentWidth, theme: this.theme });
-    const lines = compileStyledLines(
-      rendered.lines.map((line) => truncateStyledLine(line, contentWidth, "")),
+    const lines = this.#lineCompiler.compile(
+      rendered.lines,
       contentWidth,
       this.theme,
     );

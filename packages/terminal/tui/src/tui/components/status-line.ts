@@ -91,7 +91,8 @@ function contextUsageLabel(tokens: number, contextWindow: number): string | null
     return null;
   }
   const used = normalizedCount(tokens);
-  const percent = Math.max(0, Math.min(100, Math.floor((used / window) * 100)));
+  const ratio = Math.min(100, (used / window) * 100);
+  const percent = ratio > 0 && ratio < 0.1 ? "<0.1" : formatScaled(ratio);
   return `context: ${percent}% (${formatCompactCount(used)}/${formatCompactCount(window)})`;
 }
 

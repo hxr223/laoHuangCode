@@ -92,7 +92,7 @@ test("status shows context usage instead of cwd", () => {
     effort: "high",
   }).build({ width: 80, editor: new EditorState() });
 
-  assert.ok(frame.statusBar.includes("context: 0% (1.2K/1M)"));
+  assert.ok(frame.statusBar.includes("context: 0.1% (1.2K/1M)"));
   assert.ok(frame.statusBar.includes("queue 2 pending / 0 held"));
   assert.ok(!frame.statusBar.includes("/a/very/long"));
   assert.ok(!frame.statusBar.includes("↑120"));
@@ -107,7 +107,7 @@ test("status shows context usage instead of cwd", () => {
     effort: "high",
   }).build({ width: 30, editor: new EditorState() });
 
-  assert.ok(narrow.statusBar.includes("context: 0%"));
+  assert.ok(narrow.statusBar.includes("context: 0.1%"));
   assert.ok(!narrow.statusBar.includes("/a/very/long"));
   assert.ok(!narrow.statusBar.includes("↑120"));
   assert.ok(narrow.screen.lines.every((line) => visibleWidth(line) <= 29));
