@@ -21,6 +21,8 @@ import {
   parseSessionHeader,
   parseSessionItem,
   validateSessionItems,
+  normalizeSessionTitle,
+  sessionTitleAt,
   type SessionHeader,
   type SessionItem,
 } from "@laohuang/session-store";
@@ -226,3 +228,29 @@ function makeTempRoot(): string {
   chmodSync(root, 0o700);
   return root;
 }
+
+test("session names reject controls and replay only normalized metadata", (t) => {
+  const root = makeTempRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  assert.equal(normalizeSessionTitle("  MCP 接入设计  "), "MCP 接入设计");
+  for (const invalid of ["", "   ", "name\n", "\tname", "a\x1bb", "a\u0085b", "a\u2028b", "a\u2029b"]) {
+    assert.throws(() => normalizeSessionTitle(invalid));
+  }
+  const journal = createSessionJournal({ sessionsRoot: root, header });
+  const first = journal.appendRecord({
+    recordType: "session_name_changed", payload: { title: "最初名称" },
+  });
+  const second = journal.appendRecord({
+    recordType: "session_name_changed", payload: { title: "最终名称" },
+  });
+  journal.flush();
+  journal.close();
+  const replay = readSessionFile(journal.path);
+  assert.equal(sessionTitleAt(replay.items), "最终名称");
+  assert.equal(sessionTitleAt(replay.items, first.seq), "最初名称");
+  assert.equal(sessionTitleAt(replay.items, 0), null);
+  assert.equal(replay.items.every((item) => item.kind === "record"), true);
+  for (const title of [null, 42, "", "   ", " padded ", "bad\nname"]) {
+    assert.throws(() => parseSessionItem({ ...second, payload: { title } }), SessionSchemaError);
+  }
+});

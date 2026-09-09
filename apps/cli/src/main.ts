@@ -63,6 +63,7 @@ import { TerminalCommandPresenter } from "./terminal-command-presenter.ts";
 import {
   CliUsageError,
   HELP,
+  UPDATE_HELP,
   USAGE,
   parseArgs,
   type ParseResult,
@@ -82,6 +83,9 @@ import {
   type InputFn,
   type OutputFn,
 } from "./repl.ts";
+import { resolveNpmInstallation } from "./update-installation.ts";
+import { runUpdate, updateDiagnostic } from "./update.ts";
+import { copyText, createClipboardRunner } from "./clipboard.ts";
 
 export const VERSION = readPackageVersion();
 
@@ -118,6 +122,7 @@ export interface MainOptions {
   outputFn?: OutputFn | undefined;
   stdin?: { isTTY?: boolean | undefined } | undefined;
   stdout?: { isTTY?: boolean | undefined } | undefined;
+  updateFn?: ((signal?: AbortSignal) => Promise<number>) | undefined;
 }
 
 export function resetEmptySessionTranscript(
@@ -168,8 +173,53 @@ export async function main(
     process.stdout.write(`${HELP}\n`);
     return 0;
   }
-  const args = parsed.args;
   const environ = options.environ ?? process.env;
+  const outputFn = options.outputFn ?? ((message: string) => console.log(message));
+  if (parsed.kind === "update-help") {
+    outputFn(UPDATE_HELP);
+    return 0;
+  }
+  if (parsed.kind === "update") {
+    const controller = new AbortController();
+    let signalExitCode: 130 | 143 | null = null;
+    const handleSigint = (): void => {
+      signalExitCode ??= 130;
+      controller.abort();
+    };
+    const handleSigterm = (): void => {
+      signalExitCode ??= 143;
+      controller.abort();
+    };
+    process.once("SIGINT", handleSigint);
+    process.once("SIGTERM", handleSigterm);
+    try {
+      let result: number;
+      if (options.updateFn !== undefined) {
+        result = await options.updateFn(controller.signal);
+      } else {
+        const entryPath = process.argv[1];
+        if (entryPath === undefined) {
+          throw new Error("CLI entry path is unavailable");
+        }
+        const installation = await resolveNpmInstallation(entryPath, environ, {
+          signal: controller.signal,
+        });
+        result = await runUpdate({
+          installation,
+          output: outputFn,
+          signal: controller.signal,
+        });
+      }
+      return signalExitCode ?? result;
+    } catch (error) {
+      outputFn(`${controller.signal.aborted ? "Update cancelled" : "Update failed"}: ${updateDiagnostic(error)}`);
+      return signalExitCode ?? (controller.signal.aborted ? 130 : 1);
+    } finally {
+      process.removeListener("SIGINT", handleSigint);
+      process.removeListener("SIGTERM", handleSigterm);
+    }
+  }
+  const args = parsed.args;
   const projectRoot = process.cwd();
   // Instruction loading roots at the nearest .git ancestor; the tool
   // registry keeps the plain cwd as its root.
@@ -181,7 +231,6 @@ export async function main(
     stdout: options.stdout,
   });
   const inputFn = options.inputFn ?? defaultInputFn;
-  const outputFn = options.outputFn ?? ((message) => console.log(message));
   const secretInputFn = options.secretInputFn ?? defaultSecretInputFn;
 
   const configPath = options.configPath ?? defaultConfigPath(environ);
@@ -690,6 +739,7 @@ export async function main(
       refreshContextUsage();
     };
 
+    const clipboardRunner = createClipboardRunner(environ);
     const commands = new SessionCommands({
       agent,
       selector,
@@ -701,6 +751,19 @@ export async function main(
       catalog: modelPlatform.catalog,
       providerAuth,
       presenter: commandPresenter,
+      copyText: (text) => copyText(text, {
+        platform: process.platform,
+        environ,
+        isTTY: (options.stdout ?? process.stdout).isTTY === true,
+        writeTerminal: (sequence) => {
+          if (terminalDriver !== null) {
+            terminalDriver.write(sequence);
+          } else {
+            process.stdout.write(sequence);
+          }
+        },
+        run: clipboardRunner,
+      }),
       session: runtime,
       sessionController,
       onComposerText: (text) => terminalUi?.setComposerText(text),
