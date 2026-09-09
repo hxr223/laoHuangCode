@@ -17,6 +17,7 @@ laohuang --help
 laohuang --version
 laohuang config set --provider deepseek --model deepseek-v4-flash
 laohuang doctor
+laohuang update
 ```
 
 Run `laohuang` in a project directory to start an interactive session. The CLI
@@ -36,6 +37,27 @@ If no models are available, the CLI points to `/login`.
 `/model <provider>` narrows the list, `/model <provider> <model>` switches
 directly, and `/apikey` remains a compatibility alias. Switching models affects
 only the current session, not the default profile.
+
+`laohuang update` updates the running npm installation to the latest stable
+release and verifies its installed version. Restart the CLI after updating.
+It supports global npm installations and direct project or workspace npm
+dependencies; local updates change the owning manifest and lockfile while
+preserving the dependency bucket and ordinary version-prefix style. It does
+not downgrade or update a different installation. Source checkouts, linked
+packages, temporary npx installations, and other package managers require
+their respective update methods. Installation failures are reported without
+claiming that npm rolled back changes.
+
+`/name MCP design` saves the current session name, and `/name` displays it.
+Names survive resume and appear in session lists. Clones inherit the current
+name; forks inherit the name at their history boundary.
+
+`/copy` copies the latest recorded assistant response's text with its Markdown
+intact, excluding reasoning and tool results. During streaming it copies the
+previous recorded response. Local sessions use the operating system clipboard;
+SSH sessions send an OSC 52 request to the user's terminal. A sent request is
+not confirmation that the terminal accepted it. Unsupported environments or
+clipboard failures produce an explanatory message.
 
 `verified` means an explicitly authorized live native
 tool-call/tool-result E2E was recorded; no providers are checked in as verified

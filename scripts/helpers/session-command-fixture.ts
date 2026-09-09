@@ -205,6 +205,7 @@ export interface SessionCommandFixtureOptions {
   readonly sessionController?: ConstructorParameters<typeof SessionCommands>[0]["sessionController"];
   readonly onComposerText?: ConstructorParameters<typeof SessionCommands>[0]["onComposerText"];
   readonly onSessionChanged?: ConstructorParameters<typeof SessionCommands>[0]["onSessionChanged"];
+  readonly copyText?: ConstructorParameters<typeof SessionCommands>[0]["copyText"];
 }
 
 export interface SessionCommandFixture {
@@ -238,6 +239,7 @@ export function createSessionCommandFixture(
       provider: "deepseek",
     },
     presenter: options.presenter,
+    copyText: options.copyText ?? (async () => ({ status: "unavailable", reason: "Test clipboard is not configured." })),
     session: options.session ?? null,
     sessionController: options.sessionController,
     onComposerText: options.onComposerText,

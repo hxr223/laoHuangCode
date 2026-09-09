@@ -1861,6 +1861,7 @@ test("login command routes secret input through the persistent auth dialog", asy
     },
   });
   const commands = new SessionCommands({
+    copyText: async () => ({ status: "unavailable", reason: "Test clipboard is disabled." }),
     agent: new FakeAgent({ model: "deepseek-v4-flash", provider: "deepseek" }),
     selector: new ModelSelector({ catalog, providerAuth }),
     catalog,
