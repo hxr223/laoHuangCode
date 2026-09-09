@@ -6,6 +6,8 @@ import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 export type HistoryMessage = ModelMessage;
 
 export interface ConversationHistoryLike {
+  appendToolDefinitions?(input: { readonly message: Extract<ModelMessage, { role: "system" }> }): unknown;
+  appendToolCatalog?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
   appendUser(input: {
     readonly message: Extract<ModelMessage, { readonly role: "user" }>;
     readonly inputEventIds: readonly string[];
@@ -169,6 +171,18 @@ export class HistoryCommitter {
 
   snapshot(): HistoryMessage[] {
     return [...this.messages];
+  }
+
+  commitToolContext(message: Extract<ModelMessage, { role: "system" | "user" }>): void {
+    this.raiseIfCancelled();
+    if (message.role === "system") this.conversationHistory?.appendToolDefinitions?.({ message });
+    else this.conversationHistory?.appendToolCatalog?.({ message });
+    this.messages.push(message);
+  }
+
+  /** Adopt the governor's retained context without rewriting the append-only journal. */
+  retain(messages: readonly ModelMessage[]): void {
+    this.messages.splice(0, this.messages.length, ...messages);
   }
 
   private commitContextMessage(
