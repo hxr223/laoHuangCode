@@ -115,18 +115,18 @@ function createRunner(options: {
     cancelToken: token,
     createCancelled: (message) => new AgentCancelled(message),
   });
+  const registry = {
+    definitions: [{ name: "read", description: "Read file", parameters: { type: "object" }, promptGuidelines: [] }],
+    orderedSpecs: [], executionMode: () => undefined,
+    execute: async () => options.executeTool?.() ?? { ok: true, content: "tool result" },
+  };
   return new AgentStepRunner({
     model: "test-model",
     provider: "openai",
     baseUrl: null,
     modelRuntime: new ModelRuntime(options.adapter),
-    toolRuntime: new ToolRuntime({
-      definitions: [],
-      orderedSpecs: [],
-      executionMode: () => undefined,
-      execute: async () => options.executeTool?.() ?? { ok: true, content: "tool result" },
-    }),
-    toolDefinitions: [],
+    toolRuntime: new ToolRuntime(registry),
+    getTools: () => registry,
     toolExecution: "parallel",
     history: committer,
     contextGovernor: options.contextGovernor ?? null,

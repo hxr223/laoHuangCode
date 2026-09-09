@@ -53,7 +53,7 @@ import {
 import { RepeatToolPolicy } from "./core/repeat-tool-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
 import { ModelRuntime } from "@laohuang/llm";
-import { ToolRuntime } from "@laohuang/tools";
+import { ToolRuntime, ToolSelection } from "@laohuang/tools";
 import type {
   AgentContextGovernor,
 } from "./core/agent-step-runner.ts";
@@ -134,6 +134,7 @@ export interface CodingAgentOptions {
   startupCwd?: string | null;
   conversationHistory?: ConversationHistoryLike | null;
   contextGovernor?: AgentContextGovernor | null;
+  prepareTools?: (signal?: AbortSignal) => Promise<void>;
 }
 
 /** Execution context handed to every tool call in a batch. */
@@ -169,6 +170,7 @@ export class CodingAgent {
   private modelRuntime: ModelRuntime;
   private reasoningEffort: ReasoningEffort;
   private readonly toolRuntime: ToolRuntime;
+  private readonly selection = new ToolSelection();
   readonly tools: AgentToolRegistry;
   readonly repeatToolReminderThresholds: readonly number[];
   readonly toolExecution: ToolExecutionMode;
@@ -187,6 +189,7 @@ export class CodingAgent {
   private activeRequestId: string | null = null;
   private readonly conversationHistory: ConversationHistoryLike | null;
   private readonly contextGovernor: AgentContextGovernor | null;
+  private readonly prepareTools: CodingAgentOptions["prepareTools"];
 
   constructor(options: CodingAgentOptions) {
     this.repeatToolReminderThresholds = normalizeReminderThresholds(
@@ -204,6 +207,7 @@ export class CodingAgent {
     this.adapter = options.modelAdapter;
     this.conversationHistory = options.conversationHistory ?? null;
     this.contextGovernor = options.contextGovernor ?? null;
+    this.prepareTools = options.prepareTools;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
@@ -272,12 +276,14 @@ export class CodingAgent {
     this.turn += 1;
     try {
       const runner = new AgentStepRunner({
+        selection: this.selection,
         model: this.model,
         provider: this.provider,
         baseUrl: this.baseUrl,
         modelRuntime: this.modelRuntime,
         toolRuntime: this.toolRuntime,
-        toolDefinitions: this.tools.definitions,
+        getTools: () => this.tools.snapshot?.() ?? this.tools,
+        prepareTools: this.prepareTools,
         toolExecution: this.toolExecution,
         history: new HistoryCommitter({
           messages: this.messages,
@@ -499,6 +505,7 @@ function makeToolContext(
     taskId,
     toolCallId,
     cancelToken,
+    signal: cancelToken?.signal,
     isCancelled: () => isCancelled(cancelToken),
     cancellationReason: cancelToken?.reason || "cancelled",
     publish: (kind: string, payload: Record<string, unknown>) => {

@@ -184,6 +184,14 @@ export class ConversationHistory {
     });
   }
 
+  appendToolDefinitions(input: { readonly message: SystemModelMessage }): SessionEntry {
+    return this.append({ entryType: "tool_definitions", payload: input });
+  }
+
+  appendToolCatalog(input: { readonly message: UserModelMessage }): SessionEntry {
+    return this.append({ entryType: "tool_catalog", payload: input });
+  }
+
   appendCompaction(input: CompactionPayload): CompactionEntry {
     return this.append({
       entryType: "compaction",
