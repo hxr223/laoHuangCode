@@ -91,15 +91,18 @@ test("closing during startup aborts discovery and cannot publish a late catalog"
   } finally { await service.close(); await fixture.close(); }
 });
 
-test("concurrent failed calls share one reconnect and each returns one final result", async () => {
-  const fixture = await startMcpFixture({ protocol: "modern", transport: "http", dropFirstCalls: 2 });
+test("concurrent failed calls share one reconnect and each returns one final result", { timeout: 5000 }, async () => {
+  const fixture = await startMcpFixture({ protocol: "modern", transport: "http", dropFirstBatch: 2 });
   const { registry, service } = runtime(fixture.config);
   try {
     await service.start();
     const view = registry.snapshot();
     const name = view.definitions[0]!.name;
-    const results = await Promise.all([view.execute(name, { value: 1 }), view.execute(name, { value: 2 })]);
-    assert.ok(results.every(result => result.ok), JSON.stringify(results));
+    const first = view.execute(name, { value: 1 });
+    await until(() => fixture.calls() === 1);
+    assert.equal(fixture.requests.filter(r => r.method === "tools/list").length, 1);
+    const results = await Promise.all([first, view.execute(name, { value: 2 })]);
+    assert.ok(results.every(result => result.ok), JSON.stringify({ results, requests: fixture.requests }));
     assert.equal(fixture.calls(), 4);
     assert.equal(fixture.requests.filter(r => r.method === "tools/list").length, 2);
     assert.equal(service.status()[0]?.state, "ready");
