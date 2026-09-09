@@ -19,6 +19,7 @@ import {
   projectKeyForRoot,
 } from "./session-paths.ts";
 import { buildSessionTree, type SessionTreeNode } from "./session-tree.ts";
+import { sessionTitleAt } from "./session-metadata.ts";
 import type {
   NewSessionEntry,
   SessionEntry,
@@ -56,6 +57,7 @@ export interface SessionSummary {
   readonly model: string;
   readonly origin: SessionHeader["origin"];
   readonly parentSessionId?: string;
+  readonly title?: string;
   readonly lastUserText: string;
   readonly status: "open" | "closed" | "interrupted" | "corrupt";
 }
@@ -178,6 +180,7 @@ export class SessionManager {
     });
     const throughSeq = options.mode === "before" ? target.seq - 1 : target.seq;
     copyEntries(child, parent.items.filter(isEntry).filter((item) => item.seq <= throughSeq));
+    appendTitleSnapshot(child, sessionTitleAt(parent.items, throughSeq));
     child.close();
     return {
       sessionId: child.header.sessionId,
@@ -208,6 +211,7 @@ export class SessionManager {
       },
     });
     copyEntries(child, parent.items.filter(isEntry));
+    appendTitleSnapshot(child, sessionTitleAt(parent.items));
     child.close();
     return { sessionId: child.header.sessionId, path: child.path };
   }
@@ -245,6 +249,7 @@ function summaryForPath(path: string): SessionSummary {
   try {
     const replay = readSessionFile(path);
     const last = replay.items.at(-1);
+    const title = sessionTitleAt(replay.items);
     return {
       sessionId: replay.header.sessionId,
       path,
@@ -256,6 +261,7 @@ function summaryForPath(path: string): SessionSummary {
       model: replay.header.model,
       origin: replay.header.origin,
       ...(replay.header.parentSessionId === undefined ? {} : { parentSessionId: replay.header.parentSessionId }),
+      ...(title === null ? {} : { title }),
       lastUserText: lastUserText(replay.items),
       status: last?.kind === "record" && last.recordType === "session_closed"
         ? "closed"
@@ -317,4 +323,13 @@ function copyEntries(journal: SessionJournal, entries: readonly SessionEntry[]):
 
 function isEntry(item: SessionItem): item is SessionEntry {
   return item.kind === "entry";
+}
+
+function appendTitleSnapshot(journal: SessionJournal, title: string | null): void {
+  if (title !== null) {
+    journal.appendRecord({
+      recordType: "session_name_changed",
+      payload: { title },
+    });
+  }
 }

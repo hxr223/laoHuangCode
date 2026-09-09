@@ -54,7 +54,7 @@ export class DefaultTokenEstimator implements TokenEstimator {
     if (tools.length === 0) {
       return 0;
     }
-    return this.estimateText(canonicalJson(tools)) + BLOCK_OVERHEAD;
+    return this.estimateText(canonicalJson(tools.map(({ name, description, parameters }) => ({ name, description, parameters })))) + BLOCK_OVERHEAD;
   }
 
   estimateText(text: string): number {
@@ -83,6 +83,7 @@ export class DefaultTokenEstimator implements TokenEstimator {
   }
 
   private estimateMessage(message: ModelMessage): number {
+    if (message.role === "system" && message.toolDefinitions !== undefined) return 0;
     if (message.role === "system" || message.role === "user") {
       return MESSAGE_OVERHEAD + BLOCK_OVERHEAD + this.estimateText(message.content);
     }
@@ -141,6 +142,7 @@ function sortStable(value: unknown): unknown {
 
 function messagesForEntries(entries: readonly SessionEntry[]): readonly ModelMessage[] {
   return entries.flatMap((entry): ModelMessage[] => {
+    if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog") return [entry.payload.message];
     if (entry.entryType === "system_context") {
       return [entry.payload.message];
     }
