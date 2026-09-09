@@ -58,7 +58,7 @@ function main() {
     if (!skipBuild) {
       run("npm", ["run", "build"]);
     }
-    const filename = parsePackOutput(run("npm", ["pack", "--workspace", "laohuang", "--json"]));
+    const filename = parsePackOutput(run("npm", ["pack", "--workspace", "laohuang", "--json", "--ignore-scripts"]));
     tarballPath = resolve(repositoryRoot, filename);
     run("npm", ["install", tarballPath, "--ignore-scripts"], { cwd: installDir });
     const binPath = join(installDir, "node_modules", ".bin", binName);
@@ -66,6 +66,7 @@ function main() {
       throw new Error(`installed package did not create ${binName} binary`);
     }
     const versionOutput = run(binPath, ["--version"], { cwd: installDir });
+    run(process.execPath, ["--input-type=module", "-e", "import { Client } from '@modelcontextprotocol/client'; import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'; if (!Client || !StdioClientTransport) process.exit(1);"], { cwd: join(installDir, "node_modules", "laohuang") });
     if (!versionOutput.includes(manifest.version)) {
       throw new Error(`expected ${binName} --version to include ${manifest.version}, got ${versionOutput}`);
     }

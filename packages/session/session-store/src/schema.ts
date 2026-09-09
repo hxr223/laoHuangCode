@@ -6,6 +6,7 @@ import type {
   UserModelMessage,
   ReasoningEffort,
 } from "@laohuang/llm";
+import { normalizeSessionTitle } from "./session-metadata.ts";
 
 export type SessionOrigin = "new" | "fork" | "clone" | "import";
 
@@ -104,6 +105,8 @@ export interface CompactionPayload {
 }
 
 export type SessionEntryType =
+  | "tool_definitions"
+  | "tool_catalog"
   | "system_context"
   | "project_instructions"
   | "user_message"
@@ -113,6 +116,16 @@ export type SessionEntryType =
   | "compaction";
 
 export type SessionEntry =
+  | (SessionItemBase & {
+      readonly kind: "entry";
+      readonly entryType: "tool_definitions";
+      readonly payload: { readonly message: SystemModelMessage };
+    })
+  | (SessionItemBase & {
+      readonly kind: "entry";
+      readonly entryType: "tool_catalog";
+      readonly payload: { readonly message: UserModelMessage };
+    })
   | (SessionItemBase & {
       readonly kind: "entry";
       readonly entryType: "system_context";
@@ -176,6 +189,7 @@ export type SessionRecordType =
   | "queue_finished"
   | "compaction_started"
   | "compaction_finished"
+  | "session_name_changed"
   | "session_closed";
 
 export interface SessionRecord extends SessionItemBase {
@@ -200,6 +214,8 @@ export interface NewSessionRecord {
 }
 
 const ENTRY_TYPES: ReadonlySet<string> = new Set([
+  "tool_definitions",
+  "tool_catalog",
   "system_context",
   "project_instructions",
   "user_message",
@@ -228,6 +244,7 @@ const RECORD_TYPES: ReadonlySet<string> = new Set([
   "queue_finished",
   "compaction_started",
   "compaction_finished",
+  "session_name_changed",
   "session_closed",
 ]);
 
@@ -313,6 +330,32 @@ export function parseSessionItem(
       throw new SessionSchemaError("invalid session entry type");
     }
     objectOf(input["payload"], "entry payload");
+    if (entryType === "tool_definitions" || entryType === "tool_catalog") {
+      const payload = objectOf(input["payload"], "tool context payload");
+      const message = objectOf(payload["message"], "tool context message");
+      if (typeof message["content"] !== "string") throw new SessionSchemaError("tool context content must be text");
+      if (entryType === "tool_definitions") {
+        if (message["role"] !== "system" || !Array.isArray(message["toolDefinitions"])) throw new SessionSchemaError("invalid tool definitions message");
+        for (const raw of message["toolDefinitions"]) {
+          const definition = objectOf(raw, "loaded tool");
+          requireString(definition, "version");
+          const spec = objectOf(definition["spec"], "tool spec");
+          requireString(spec, "name");
+          if (typeof spec["description"] !== "string" || !Array.isArray(spec["promptGuidelines"]) || spec["promptGuidelines"].some(value => typeof value !== "string")) throw new SessionSchemaError("invalid tool spec");
+          objectOf(spec["parameters"], "tool parameters");
+          if (spec["catalog"] !== undefined) {
+            const catalog = objectOf(spec["catalog"], "tool catalog metadata");
+            for (const key of ["source", "originalName", "binding"]) requireString(catalog, key);
+            if (catalog["exposure"] !== "direct" && catalog["exposure"] !== "deferred") throw new SessionSchemaError("invalid exposure");
+          }
+        }
+      } else {
+        if (message["role"] !== "user") throw new SessionSchemaError("invalid catalog message role");
+        const catalog = objectOf(message["toolCatalog"], "tool catalog");
+        if (catalog["mode"] !== "full" && catalog["mode"] !== "deferred") throw new SessionSchemaError("invalid tool mode");
+        for (const version of Object.values(objectOf(catalog["tools"], "tool versions"))) if (typeof version !== "string") throw new SessionSchemaError("invalid tool version");
+      }
+    }
     return input as unknown as SessionEntry;
   }
   if (kind === "record") {
@@ -320,7 +363,23 @@ export function parseSessionItem(
     if (!RECORD_TYPES.has(recordType)) {
       throw new SessionSchemaError("invalid session record type");
     }
-    objectOf(input["payload"], "record payload");
+    const payload = objectOf(input["payload"], "record payload");
+    if (recordType === "session_name_changed") {
+      const title = payload["title"];
+      if (typeof title !== "string") {
+        throw new SessionSchemaError("invalid session name record");
+      }
+      try {
+        if (normalizeSessionTitle(title) !== title) {
+          throw new SessionSchemaError("session name must already be normalized");
+        }
+      } catch (error) {
+        if (error instanceof SessionSchemaError) {
+          throw error;
+        }
+        throw new SessionSchemaError("invalid session name record");
+      }
+    }
     return input as unknown as SessionRecord;
   }
   throw new SessionSchemaError("invalid session item kind");

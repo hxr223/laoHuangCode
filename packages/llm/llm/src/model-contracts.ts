@@ -1,5 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
-import type { ToolCall, ToolSpec } from "@laohuang/tools";
+import type { LoadedTool, ToolCatalogState, ToolCall, ToolSpec } from "@laohuang/tools";
 
 /** Raised when a streamed model response is incomplete or invalid. */
 export class ModelStreamError extends Error {
@@ -40,11 +40,13 @@ export type AttemptState = "provisional" | "validated" | "aborted";
 export interface SystemModelMessage {
   readonly role: "system";
   readonly content: string;
+  readonly toolDefinitions?: readonly LoadedTool[];
 }
 
 export interface UserModelMessage {
   readonly role: "user";
   readonly content: string;
+  readonly toolCatalog?: ToolCatalogState;
 }
 
 export interface TextContentBlock {

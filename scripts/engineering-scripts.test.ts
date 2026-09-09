@@ -99,7 +99,7 @@ const command = args.join(" ");
 if (command === "run build") {
   process.exit(0);
 }
-if (command === "pack --workspace laohuang --json") {
+if (command === "pack --workspace laohuang --json --ignore-scripts") {
   writeFileSync("laohuang-${version}.tgz", "fake tarball", "utf8");
   console.log(JSON.stringify([{ filename: "laohuang-${version}.tgz" }]));
   process.exit(0);
@@ -110,6 +110,12 @@ if (args[0] === "install") {
   const cliPath = join(binDir, "laohuang");
   writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('${version}')\\n", "utf8");
   chmodSync(cliPath, 0o755);
+  mkdirSync(join(process.cwd(), "node_modules", "laohuang"), { recursive: true });
+  const sdkDir = join(process.cwd(), "node_modules", "@modelcontextprotocol", "client");
+  mkdirSync(sdkDir, { recursive: true });
+  writeFileSync(join(sdkDir, "package.json"), JSON.stringify({ type: "module", exports: { ".": "./index.js", "./stdio": "./stdio.js" } }));
+  writeFileSync(join(sdkDir, "index.js"), "export class Client {}");
+  writeFileSync(join(sdkDir, "stdio.js"), "export class StdioClientTransport {}");
   process.exit(0);
 }
 console.error("unexpected npm command", command);

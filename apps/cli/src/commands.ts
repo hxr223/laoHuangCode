@@ -2,6 +2,8 @@
 
 import { EventKind, EventSource } from "@laohuang/runtime-protocol";
 import { displayLocalPath } from "@laohuang/local-paths";
+import { normalizeSessionTitle } from "@laohuang/session-store";
+import type { CopyResult } from "./clipboard.ts";
 import { makeCancelAction } from "@laohuang/runtime-protocol";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
@@ -35,7 +37,7 @@ export interface CompletionItem {
   readonly start: number;
 }
 
-export type CommandHandler = (args: string[]) => boolean | Promise<boolean>;
+export type CommandHandler = (args: string[], rawCommand: string) => boolean | Promise<boolean>;
 
 export type ArgumentCompleter = (
   args: readonly string[],
@@ -321,7 +323,7 @@ export class CommandRegistry {
       return { status: "not_found", command: first };
     }
     try {
-      return (await spec.handler(parts.slice(1)))
+      return (await spec.handler(parts.slice(1), command))
         ? { status: "handled" }
         : { status: "not_found", command: first };
     } catch (error) {
@@ -399,6 +401,9 @@ export interface SessionLike {
 export interface SessionControllerLike {
   readonly currentSessionId: string | null;
   readonly currentPath: string | null;
+  readonly currentTitle: string | null;
+  setName(input: string): void;
+  latestAssistantText(): string | null;
   list(): ReadonlyArray<{
     readonly sessionId: string;
     readonly updatedAt: string;
@@ -428,6 +433,7 @@ export interface SessionCommandsOptions {
   >;
   readonly currentConfig: SelectionConfig;
   readonly presenter: CommandPresenter;
+  readonly copyText: (text: string) => Promise<CopyResult>;
   readonly session?: SessionLike | null | undefined;
   readonly sessionController?: SessionControllerLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
@@ -534,6 +540,7 @@ export class SessionCommands {
     "status" | "login" | "logout" | "ensureConfigured"
   >;
   readonly #presenter: CommandPresenter;
+  readonly #copyText: (text: string) => Promise<CopyResult>;
   readonly #session: SessionLike | null;
   readonly #sessionController: SessionControllerLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
@@ -550,6 +557,7 @@ export class SessionCommands {
     this.#providerAuth = options.providerAuth;
     this.#currentConfig = options.currentConfig;
     this.#presenter = options.presenter;
+    this.#copyText = options.copyText;
     this.#session = options.session ?? null;
     this.#sessionController = options.sessionController ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
@@ -626,6 +634,20 @@ export class SessionCommands {
         usage: "/new",
         handler: (args) => this.handleNew(args),
         allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/name",
+        description: "查看或设置当前会话名称",
+        usage: "/name [name]",
+        handler: (args, rawCommand) => this.handleName(args, rawCommand),
+        allowedStates: ALL_STATES,
+      },
+      {
+        name: "/copy",
+        description: "复制最近一条已记录的助手正文",
+        usage: "/copy",
+        handler: (args) => this.handleCopy(args),
+        allowedStates: ALL_STATES,
       },
       {
         name: "/session",
@@ -817,9 +839,47 @@ export class SessionCommands {
       return true;
     }
     this.notice(
-      `Current session: ${controller.currentSessionId}\nPath: ${controller.currentPath ?? ""}`,
+      `Current session: ${controller.currentSessionId}\nName: ${controller.currentTitle ?? "Untitled session"}\nPath: ${controller.currentPath ?? ""}`,
       "info",
     );
+    return true;
+  }
+
+  private handleName(args: string[], rawCommand: string): boolean {
+    // Reject controls in the original input, before tokenization can hide them
+    // by treating tabs and newlines as argument separators.
+    normalizeSessionTitle(rawCommand);
+    const controller = this.#sessionController;
+    if (controller === null || controller.currentSessionId === null) {
+      this.notice("No active session.", "warning");
+      return true;
+    }
+    if (args.length === 0) {
+      this.notice(`Session name: ${controller.currentTitle ?? "Untitled session"}`, "info");
+      return true;
+    }
+    controller.setName(args.join(" "));
+    this.notice(`Session named: ${controller.currentTitle}`, "success");
+    return true;
+  }
+
+  private async handleCopy(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      throw new Error("Usage: /copy");
+    }
+    const text = this.#sessionController?.latestAssistantText() ?? null;
+    if (text === null || text.length === 0) {
+      this.notice("No recorded assistant text to copy.", "info");
+      return true;
+    }
+    const result = await this.#copyText(text);
+    if (result.status === "copied") {
+      this.notice("Copied assistant text to clipboard.", "success");
+    } else if (result.status === "sent-to-terminal") {
+      this.notice("Copy request sent to terminal; clipboard access depends on terminal settings.", "info");
+    } else {
+      this.notice(`Clipboard unavailable: ${result.reason}`, "warning");
+    }
     return true;
   }
 
