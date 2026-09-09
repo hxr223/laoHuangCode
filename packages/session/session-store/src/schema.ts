@@ -6,6 +6,7 @@ import type {
   UserModelMessage,
   ReasoningEffort,
 } from "@laohuang/llm";
+import { normalizeSessionTitle } from "./session-metadata.ts";
 
 export type SessionOrigin = "new" | "fork" | "clone" | "import";
 
@@ -176,6 +177,7 @@ export type SessionRecordType =
   | "queue_finished"
   | "compaction_started"
   | "compaction_finished"
+  | "session_name_changed"
   | "session_closed";
 
 export interface SessionRecord extends SessionItemBase {
@@ -228,6 +230,7 @@ const RECORD_TYPES: ReadonlySet<string> = new Set([
   "queue_finished",
   "compaction_started",
   "compaction_finished",
+  "session_name_changed",
   "session_closed",
 ]);
 
@@ -320,7 +323,23 @@ export function parseSessionItem(
     if (!RECORD_TYPES.has(recordType)) {
       throw new SessionSchemaError("invalid session record type");
     }
-    objectOf(input["payload"], "record payload");
+    const payload = objectOf(input["payload"], "record payload");
+    if (recordType === "session_name_changed") {
+      const title = payload["title"];
+      if (typeof title !== "string") {
+        throw new SessionSchemaError("invalid session name record");
+      }
+      try {
+        if (normalizeSessionTitle(title) !== title) {
+          throw new SessionSchemaError("session name must already be normalized");
+        }
+      } catch (error) {
+        if (error instanceof SessionSchemaError) {
+          throw error;
+        }
+        throw new SessionSchemaError("invalid session name record");
+      }
+    }
     return input as unknown as SessionRecord;
   }
   throw new SessionSchemaError("invalid session item kind");

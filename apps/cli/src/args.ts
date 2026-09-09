@@ -6,7 +6,11 @@ export const USAGE =
   "usage: laohuang [--version] [--profile PROFILE] [--model MODEL] " +
   "[--base-url BASE_URL] [--theme {auto,dark,light}] " +
   "[--continue | --resume SESSION_ID] " +
-  "[config ...] [doctor]";
+  "[config ...] [doctor] [update]";
+
+export const UPDATE_HELP = `usage: laohuang update
+
+Update the current npm installation of laohuang`;
 
 export const HELP = `${USAGE}
 
@@ -24,7 +28,8 @@ options:
 
 subcommands:
   config [set|list|use] [target] [--profile P] [--provider P] [--model M] [--base-url U]
-  doctor             check local configuration`;
+  doctor             check local configuration
+  update             update the current npm installation`;
 
 export interface ParsedArguments {
   command: "config" | "doctor" | null;
@@ -45,6 +50,8 @@ export interface ParsedArguments {
 export type ParseResult =
   | { kind: "version" }
   | { kind: "help" }
+  | { kind: "update" }
+  | { kind: "update-help" }
   | { kind: "run"; args: ParsedArguments };
 
 function splitOption(token: string): [string, string | undefined] {
@@ -58,6 +65,15 @@ function splitOption(token: string): [string, string | undefined] {
 }
 
 export function parseArgs(argv: readonly string[]): ParseResult {
+  if (argv[0] === "update") {
+    if (argv.length === 1) {
+      return { kind: "update" };
+    }
+    if (argv.length === 2 && (argv[1] === "-h" || argv[1] === "--help")) {
+      return { kind: "update-help" };
+    }
+    throw new CliUsageError(`unrecognized arguments: ${argv.slice(1).join(" ")}`);
+  }
   const args: ParsedArguments = {
     command: null,
     profile: null,

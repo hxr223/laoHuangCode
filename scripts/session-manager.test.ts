@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   SessionManager,
   readSessionFile,
+  sessionTitleAt,
   type SessionEntry,
 } from "@laohuang/session-store";
 
@@ -175,3 +176,31 @@ function makeTempRoot(): string {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return root;
 }
+
+test("fork snapshots the boundary name and clone includes renames after the final entry", (t) => {
+  const root = makeTempRoot();
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const manager = makeManager(root);
+  const parent = manager.create({
+    projectRoot: "/tmp/project", initialCwd: "/tmp/project",
+    provider: "pi-ai", model: "gpt-test", reasoningEffort: "high",
+  });
+  const first = parent.journal.appendEntry(user("unnamed point"));
+  parent.journal.appendRecord({ recordType: "session_name_changed", payload: { title: "分叉名称" } });
+  const second = parent.journal.appendEntry(user("named point"));
+  parent.journal.appendRecord({ recordType: "session_name_changed", payload: { title: "当前名称" } });
+  parent.journal.close();
+  const unnamed = manager.fork({ parentSessionId: parent.header.sessionId, entryId: first.id, mode: "at" });
+  assert.equal(sessionTitleAt(readSessionFile(unnamed.path).items), null);
+  for (const mode of ["before", "at"] as const) {
+    const forked = manager.fork({ parentSessionId: parent.header.sessionId, entryId: second.id, mode });
+    assert.equal(sessionTitleAt(readSessionFile(forked.path).items), "分叉名称");
+  }
+  const cloned = manager.clone({ parentSessionId: parent.header.sessionId });
+  assert.equal(sessionTitleAt(readSessionFile(cloned.path).items), "当前名称");
+  const openedClone = manager.open(cloned.sessionId);
+  openedClone.journal.appendRecord({ recordType: "session_name_changed", payload: { title: "子会话名称" } });
+  openedClone.journal.close();
+  assert.equal(manager.list().find((item) => item.sessionId === cloned.sessionId)?.title, "子会话名称");
+  assert.equal(manager.list().find((item) => item.sessionId === parent.header.sessionId)?.title, "当前名称");
+});
