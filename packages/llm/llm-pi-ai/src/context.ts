@@ -17,7 +17,7 @@ function toolsOf(request: ModelRequest): PiTool[] | undefined {
 export function toPiContext(request: ModelRequest): PiContext {
   const systems = request.messages.filter(
     (message): message is Extract<ModelMessage, { role: "system" }> =>
-      message.role === "system",
+      message.role === "system" && message.toolDefinitions === undefined,
   );
   if (systems.length > 1) {
     throw new ModelError("model history contains more than one system message", {

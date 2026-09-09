@@ -59,6 +59,8 @@ export function serializeConversation(entries: readonly SessionEntry[]): string 
       }
     } else if (entry.entryType === "tool_result") {
       lines.push(`[tool-result ${entry.payload.message.toolCallId} ${entry.payload.message.toolName}] ${entry.payload.message.content}`);
+    } else if (entry.entryType === "tool_definitions") {
+      lines.push(`[loaded tool definitions] ${(entry.payload.message.toolDefinitions ?? []).map(tool => tool.spec.name).join(", ")}`);
     } else if (
       entry.entryType === "user_message" ||
       entry.entryType === "reminder" ||
@@ -74,8 +76,10 @@ export function serializeConversation(entries: readonly SessionEntry[]): string 
 
 function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[] {
   const units: SemanticUnit[] = [];
+  const groupedDefinitions = new Set<string>();
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
+    if (groupedDefinitions.has(entry.id)) continue;
     if (entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "compaction") {
       continue;
     }
@@ -95,6 +99,12 @@ function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[
           }
           grouped.push(entries[resultIndex]!);
         }
+        const lastResultIndex = entries.findIndex(candidate => candidate.id === grouped.at(-1)!.id);
+        const definitions = entries[lastResultIndex + 1];
+        if (definitions?.entryType === "tool_definitions") {
+          grouped.push(definitions);
+          groupedDefinitions.add(definitions.id);
+        }
         units.push({ entries: grouped, messages: grouped.map(messageForEntry) });
         continue;
       }
@@ -108,6 +118,7 @@ function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[
 }
 
 function messageForEntry(entry: SessionEntry): ModelMessage {
+  if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog") return entry.payload.message;
   if (entry.entryType === "assistant_message") {
     return entry.payload.message;
   }

@@ -13,8 +13,8 @@ import {
   type TextContentBlock,
   type ToolCallContentBlock,
 } from "@laohuang/llm";
-import { touchedPathOf } from "@laohuang/tools";
-import type { ToolCall, ToolExecutionMode, ToolResult, ToolSpec } from "@laohuang/tools";
+import { touchedPathOf, ToolSelection, toolVersion } from "@laohuang/tools";
+import type { ToolCall, ToolExecutionMode, ToolResult, ToolSpec, ToolRegistryLike } from "@laohuang/tools";
 import {
   HistoryCommitter,
   type HistoryCommitContext,
@@ -43,20 +43,26 @@ export interface AgentContextGovernor {
     readonly tools: readonly ToolSpec[];
     readonly provider: string;
     readonly model: string;
+    readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
+    readonly reserveTokens?: number;
+    readonly pendingToolCall?: boolean;
   }): Promise<{
     readonly messages: readonly ModelMessage[];
     readonly contextTokens?: number;
     readonly contextWindow?: number;
+    readonly hardInputLimit?: number;
   }>;
 }
 
 export interface AgentStepRunnerOptions {
+  selection?: ToolSelection;
   model: string;
   provider: string;
   baseUrl: string | null;
   modelRuntime: ModelRuntime;
   toolRuntime: ToolRuntime;
-  toolDefinitions: readonly ToolSpec[];
+  getTools(): ToolRegistryLike;
+  prepareTools?: (signal?: AbortSignal) => Promise<void>;
   toolExecution: ToolExecutionMode;
   history: HistoryCommitter;
   contextGovernor?: AgentContextGovernor | null;
@@ -103,6 +109,11 @@ export class AgentStepRunner {
     }
     this.emit("user_message", { content: userInput });
     this.options.injectBaselineInstructions(cancelToken);
+    try { await this.options.prepareTools?.(cancelToken?.signal); }
+    catch (error) {
+      this.raiseIfCancelled();
+      throw this.options.createError("Tool preparation failed", error);
+    }
 
     for (;;) {
       this.raiseIfCancelled();
@@ -115,16 +126,59 @@ export class AgentStepRunner {
         ? this.options.requestId
         : randomUUID();
       this.options.onRequestId(requestId);
-      const candidateMessages = history.snapshot();
-      const prepared = this.options.contextGovernor === null ||
-        this.options.contextGovernor === undefined
-        ? { messages: candidateMessages }
-        : await this.options.contextGovernor.prepare({
-          messages: candidateMessages,
-          tools: this.options.toolDefinitions,
-          provider: this.options.provider,
-          model: this.options.model,
-        });
+      const registry = this.options.getTools();
+      const selection = this.options.selection ?? new ToolSelection();
+      let remainingTokens = Number.POSITIVE_INFINITY;
+      let preflightCompacted = false;
+      const select = (messages: readonly ModelMessage[]) => selection.prepare(registry,
+        messages.map(message => message.role === "system" || message.role === "user" ? message : {}),
+        async (pending, resultBytes) => {
+          const snapshot = history.snapshot();
+          const assistant = snapshot.at(-1);
+          const reserve = Math.ceil((resultBytes + Buffer.byteLength(JSON.stringify(assistant ?? {}), "utf8")) / 4);
+          const cost = reserve + pending.reduce((sum, { spec: { name, description, parameters } }) => sum + Math.ceil(Buffer.byteLength(JSON.stringify({ name, description, parameters }), "utf8") / 4) + 8, 0);
+          if (cost <= remainingTokens) return true;
+          if (preflightCompacted || !this.options.contextGovernor) return false;
+          preflightCompacted = true;
+          if (assistant?.role !== "assistant") return false;
+          // The current call has no result yet. Compact only its completed prefix,
+          // reserving space for the whole pending call/result/definition unit.
+          try {
+            const projectTools = (retained: readonly ModelMessage[]) => selection.prepare(registry,
+              [...retained.map(message => message.role === "system" || message.role === "user" ? message : {}), { toolDefinitions: pending }]).view.definitions;
+            const compacted = await this.options.contextGovernor.prepare({
+              messages: snapshot.slice(0, -1), tools: projectTools(snapshot), projectTools,
+              provider: this.options.provider, model: this.options.model, pendingToolCall: true,
+              reserveTokens: reserve + 1024,
+            });
+            history.retain([...compacted.messages, assistant]);
+            remainingTokens = compacted.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
+              : Math.max(0, compacted.hardInputLimit - (compacted.contextTokens ?? 0)) + cost;
+            return cost <= remainingTokens;
+          } catch (error) {
+            if (error instanceof Error && error.name === "ContextBudgetError") return false;
+            throw error;
+          }
+        }, () => history.snapshot().map(message => message.role === "system" || message.role === "user" ? message : {}));
+      let selected = select(history.snapshot());
+      if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
+      let prepared: { messages: readonly ModelMessage[]; contextTokens?: number; contextWindow?: number; hardInputLimit?: number } = { messages: history.snapshot() };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        prepared = await this.options.contextGovernor?.prepare({
+          messages: history.snapshot(), tools: selected.view.definitions,
+          provider: this.options.provider, model: this.options.model,
+          projectTools: messages => select(messages).view.definitions,
+        }) ?? { messages: history.snapshot() };
+        history.retain(prepared.messages);
+        selected = select(prepared.messages);
+        if (!selected.announcement) break;
+        if (attempt === 1) throw this.options.createError("Tool catalog announcement cannot fit the retained context.");
+        history.commitToolContext({ role: "user", ...selected.announcement });
+      }
+      remainingTokens = prepared.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
+        : Math.max(0, prepared.hardInputLimit - (prepared.contextTokens ?? 0) - 1024);
+      const tools = selected.view;
+      const definitions = tools.definitions;
       const requestMessages = [...prepared.messages];
       this.emit("model_request", {
         round: modelRound,
@@ -145,7 +199,7 @@ export class AgentStepRunner {
           model: this.options.model,
           ...(this.options.baseUrl === null ? {} : { baseUrl: this.options.baseUrl }),
           messages: requestMessages,
-          tools: this.options.toolDefinitions,
+          tools: definitions,
           reasoningEffort: this.options.getReasoningEffort(),
           requestId,
           cancelToken,
@@ -234,6 +288,7 @@ export class AgentStepRunner {
       toolRounds += 1;
       context?.toolsStarted?.();
       const toolResults = (await this.options.toolRuntime.execute({
+        registry: tools,
         toolCalls,
         executionMode: this.options.toolExecution,
         cancelToken,
@@ -243,6 +298,9 @@ export class AgentStepRunner {
       const repeated = repeatToolPolicy.record(toolCalls, toolResults);
       history.commitToolResults(toolCalls, toolResults);
       this.raiseIfCancelled();
+      const current = new Map(this.options.getTools().definitions.map(spec => [spec.name, toolVersion(spec)]));
+      const pending = selected.pending().filter(tool => current.get(tool.spec.name) === tool.version);
+      if (pending.length) history.commitToolContext({ role: "system", content: "", toolDefinitions: pending });
       const touchedPaths: string[] = [];
       for (const toolResult of toolResults) {
         const touched = touchedPathOf(toolResult);

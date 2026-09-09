@@ -8,6 +8,7 @@ import type {
 } from "./index.ts";
 
 export interface ToolRuntimeRequest {
+  registry?: ToolRegistryLike;
   toolCalls: readonly ToolCall[];
   executionMode: ToolExecutionMode;
   cancelToken: CancelToken | null;
@@ -48,6 +49,7 @@ export class ToolRuntime {
     this.tools = tools;
     this.createExecutionContext = options.createExecutionContext ??
       ((_, cancelToken) => ({
+        signal: cancelToken?.signal,
         isCancelled: () => isCancelled(cancelToken),
         cancellationReason: cancelToken?.reason || "cancelled",
         publish: () => {},
@@ -55,6 +57,7 @@ export class ToolRuntime {
   }
 
   async execute(request: ToolRuntimeRequest): Promise<ToolBatchResult> {
+    const registry = request.registry ?? this.tools;
     interface Prepared extends ToolRuntimeToolEvent {}
 
     const results: Array<ToolResult | undefined> = new Array<ToolResult | undefined>(
@@ -96,7 +99,7 @@ export class ToolRuntime {
 
     const sequentialBatch = request.executionMode === "sequential" ||
       request.toolCalls.some(
-        (toolCall) => this.tools.executionMode(toolCall.name) === "sequential",
+        (toolCall) => registry.executionMode(toolCall.name) === "sequential",
       ) ||
       request.toolCalls.some(
         (toolCall) => toolCall.name === "write" || toolCall.name === "edit",
@@ -107,7 +110,7 @@ export class ToolRuntime {
         result = cancelledToolResult(request.cancelToken);
       } else {
         try {
-          result = await this.tools.execute(
+          result = await registry.execute(
             event.toolCall.name,
             event.args,
             this.createExecutionContext(event.toolCall.id, request.cancelToken),

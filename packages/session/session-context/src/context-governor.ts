@@ -41,6 +41,8 @@ export interface CalculatedModelBudget {
 }
 
 export interface PrepareContextInput {
+  readonly reserveTokens?: number;
+  readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
   readonly entries: readonly SessionEntry[];
   readonly currentProvider: string;
   readonly currentModel: string;
@@ -103,6 +105,7 @@ export class ContextGovernor {
     let tokens = this.measure(input, built);
     const calculated = calculateModelBudget({ budget: input.budget, policy: input.policy });
     if (!input.policy.auto || tokens <= calculated.autoTrigger) {
+      if (tokens > calculated.hardInputLimit) throw new ContextBudgetError("context exceeds hard input limit");
       return { built, messages: built.messages, compacted: false, tokens };
     }
     const result = await this.compact({ ...input, trigger: "automatic" });
@@ -119,7 +122,9 @@ export class ContextGovernor {
     const calculated = calculateModelBudget({ budget: input.budget, policy: input.policy });
     const plan = selectCompactionPlan({
       entries: input.entries,
-      retainTokens: calculated.retainTokens,
+      // A search preflight reserves the pending call/result/definition unit.
+      // Keep the latest completed unit and summarize older units to make room.
+      retainTokens: input.reserveTokens === undefined ? calculated.retainTokens : 1,
       estimator: this.#estimator,
     });
     if (input.trigger === "manual" && plan.summarizedEntries.length === 0) {
@@ -130,9 +135,9 @@ export class ContextGovernor {
     const activeCompaction = [...input.entries].reverse().find(
       (entry): entry is CompactionEntry => entry.entryType === "compaction",
     );
-    const tokensBefore = this.#estimator.estimateMessages(
-      this.#builder.build(input).messages,
-    ) + this.#estimator.estimateTools(input.tools);
+    const messagesBefore = this.#builder.build(input).messages;
+    const tokensBefore = this.#estimator.estimateMessages(messagesBefore)
+      + this.#estimator.estimateTools(input.projectTools?.(messagesBefore) ?? input.tools);
     const summary = plan.summarizedEntries.length === 0
       ? {
           summary: "No prior conversation needed compaction.",
@@ -178,9 +183,10 @@ export class ContextGovernor {
   }
 
   private measure(input: PrepareContextInput, built: BuiltContext): number {
+    const tools = input.projectTools?.(built.messages) ?? input.tools;
     return this.#estimator.measure({
       messages: built.messages,
-      tools: input.tools,
+      tools,
       entries: input.entries,
       anchor: input.anchor ?? null,
       provider: input.currentProvider,
@@ -191,8 +197,8 @@ export class ContextGovernor {
       projectInstructionsFingerprint: fingerprintContextPart(
         built.messages.filter((message, index) => index > 0 && message.role === "user"),
       ),
-      toolsFingerprint: fingerprintContextPart(input.tools),
-    }).totalTokens;
+      toolsFingerprint: fingerprintContextPart(tools),
+    }).totalTokens + (input.reserveTokens ?? 0);
   }
 }
 
