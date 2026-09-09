@@ -6,12 +6,13 @@ export async function startMcpFixture(options: {
   protocol: "legacy" | "modern"; transport: "http" | "sse";
   rejectStatus?: number; hangList?: boolean; requireBearer?: string;
   oauth?: { issuer: string; token(): string };
-  listChanged?: boolean; pages?: number; callDelayMs?: number; dropCall?: boolean; dropFirstCalls?: number;
+  listChanged?: boolean; pages?: number; callDelayMs?: number; dropCall?: boolean; dropFirstBatch?: number;
 }) {
   const requests: { method: string; params?: Record<string, unknown> }[] = [];
   const streams = new Set<ServerResponse>();
   const subscriptions = new Map<ServerResponse, string>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
+  const failedBatch: ServerResponse[] = [];
   let toolNames = ["echo"];
   let calls = 0;
   let url = "";
@@ -65,7 +66,16 @@ export async function startMcpFixture(options: {
         break;
       case "tools/call":
         calls++;
-        if (options.dropCall || calls <= (options.dropFirstCalls ?? 0)) { response.destroy(); return; }
+        if (options.dropCall) { response.destroy(); return; }
+        if (calls <= (options.dropFirstBatch ?? 0)) {
+          // All initial calls must arrive before reconnect can abort their transport.
+          failedBatch.push(response);
+          if (failedBatch.length === options.dropFirstBatch) {
+            for (const pending of failedBatch) pending.destroy();
+            failedBatch.length = 0;
+          }
+          return;
+        }
         result = { content: [{ type: "text", text: JSON.stringify(message.params.arguments) }] }; break;
       case "resources/list": result = { resources: [{ uri: "fixture://text", name: "text" }] }; break;
       case "resources/templates/list": result = { resourceTemplates: [] }; break;
