@@ -10,6 +10,7 @@
     { "path": "../../packages/fs/local-paths" },
     { "path": "../../packages/core/runtime-protocol" },
     { "path": "../../packages/core/tools" },
+    { "path": "../../packages/core/mcp" },
     { "path": "../../packages/core/agent-runtime" },
     { "path": "../../packages/session/session-store" },
     { "path": "../../packages/session/session-context" },
