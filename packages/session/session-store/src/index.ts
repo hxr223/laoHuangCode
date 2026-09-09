@@ -1,4 +1,5 @@
 export * from "./schema.ts";
+export * from "./session-metadata.ts";
 export * from "./session-paths.ts";
 export * from "./session-reader.ts";
 export * from "./session-journal.ts";

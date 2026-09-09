@@ -128,6 +128,9 @@ test("session lifecycle commands delegate to the session controller", async () =
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [{
         sessionId: "session-1",
         updatedAt: "2026-08-31T23:57:00.000Z",
@@ -161,7 +164,7 @@ test("session lifecycle commands delegate to the session controller", async () =
   ]);
   assert.deepEqual(composerTexts, ["edit me"]);
   assert.deepEqual(noticeTexts(presenter), [
-    "Current session: session-1\nPath: /tmp/session.jsonl",
+    "Current session: session-1\nName: Untitled session\nPath: /tmp/session.jsonl",
     "Untitled session\n3 minutes ago  ~/data/code/laoHuangCode",
     "Started a new session.",
     "Resumed session.",
@@ -179,6 +182,9 @@ test("compact reports an error when there is no summarizable context", async () 
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [],
       createNew: async () => {},
       resume: async () => {},
@@ -210,6 +216,9 @@ test("resume without an id selects a recent session and restores it", async () =
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session-1.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [
         {
           sessionId: "session-1",
@@ -267,6 +276,9 @@ test("resume completes session ids with recent conversation details", () => {
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session-1.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [
         {
           sessionId: "session-1",
@@ -806,6 +818,7 @@ test("login cancellation and service failures use warning and error notices", as
     ensureConfigured: async () => false,
   };
   const commands = new SessionCommands({
+    copyText: async () => ({ status: "unavailable", reason: "Test clipboard is disabled." }),
     agent: new FakeAgent({ model: "claude-sonnet-4-5", provider: "anthropic" }),
     selector: new ModelSelector({ catalog, providerAuth }),
     catalog,
