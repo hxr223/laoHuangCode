@@ -1,7 +1,5 @@
 /** REPL and terminal-loop helpers for the laohuang CLI. */
 
-import { readSync } from "node:fs";
-
 import { AgentError } from "@laohuang/agent-runtime";
 import {
   makeFollowUpIntent,
@@ -18,7 +16,6 @@ import {
 } from "@laohuang/session-runtime";
 import {
   PlainEventSink,
-  enterTerminalRawMode,
   PromptCancelledError,
   PromptEofError,
   StdTerminalDriver,
@@ -29,6 +26,7 @@ import {
 
 import type { InputFn as PromptFn } from "./model-selection.ts";
 import type { CommandPresenter } from "./command-presentation.ts";
+import { StdinPrompts } from "./stdin-prompts.ts";
 
 // REPL-facing input stays liberal (sync or async); the model selector and
 // session commands require the stricter async `PromptFn` contract.
@@ -57,101 +55,21 @@ function isInterruptedError(error: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Synchronous stdin line prompts (non-TTY and pre-loop setup questions)
+// Async stdin line prompts (non-TTY and pre-loop setup questions)
 // ---------------------------------------------------------------------------
 
-// These blocking readers are the non-interactive fallback: before the
-// terminal loop starts (first-run setup, pipes, tests) nothing else owns
-// fd 0, so reading lines synchronously is safe. Once the interactive loop
-// runs, questions must go through TerminalUI.prompt/promptSecret instead —
-// see terminalUiPrompts below.
-const stdinBuffer = { pending: "", eof: false };
+// The running TUI owns its own input loop; these prompts release stdin after
+// every answer so startup can hand the stream over without a second reader.
+let stdinPrompts: StdinPrompts | undefined;
 
-function readLineFromStdin(): string {
-  const chunk = Buffer.alloc(4096);
-  for (;;) {
-    const newline = stdinBuffer.pending.indexOf("\n");
-    if (newline !== -1) {
-      const line = stdinBuffer.pending.slice(0, newline);
-      stdinBuffer.pending = stdinBuffer.pending.slice(newline + 1);
-      return line.endsWith("\r") ? line.slice(0, -1) : line;
-    }
-    if (stdinBuffer.eof) {
-      const rest = stdinBuffer.pending;
-      stdinBuffer.pending = "";
-      if (rest) {
-        return rest;
-      }
-      throw new PromptEofError();
-    }
-    let bytesRead = 0;
-    try {
-      bytesRead = readSync(0, chunk, 0, chunk.length, null);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EAGAIN") {
-        // A non-blocking fd 0: wait briefly and retry (mirrors blocking input).
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-        continue;
-      }
-      throw error;
-    }
-    if (bytesRead === 0) {
-      stdinBuffer.eof = true;
-      continue;
-    }
-    stdinBuffer.pending += chunk.toString("utf8", 0, bytesRead);
-  }
+export function defaultInputFn(prompt: string): Promise<string> {
+  stdinPrompts ??= new StdinPrompts(process.stdin);
+  return stdinPrompts.prompt(prompt, process.stdout);
 }
 
-/** Default replacement for Python's ``input(prompt)``. */
-export function defaultInputFn(prompt: string): string {
-  if (prompt) {
-    process.stdout.write(prompt);
-  }
-  return readLineFromStdin();
-}
-
-/** Default replacement for Python's ``getpass.getpass(prompt)``. */
-export function defaultSecretInputFn(prompt: string): string {
-  if (prompt) {
-    process.stderr.write(prompt);
-  }
-  if (!process.stdin.isTTY || typeof process.stdin.setRawMode !== "function") {
-    return readLineFromStdin();
-  }
-  // Echo-less read of one line on a TTY: raw mode, byte at a time.
-  const byte = Buffer.alloc(1);
-  let answer = "";
-  const restoreRawMode = enterTerminalRawMode(process.stdin);
-  try {
-    for (;;) {
-      const bytesRead = readSync(0, byte, 0, 1, null);
-      if (bytesRead === 0) {
-        throw new PromptEofError();
-      }
-      const value = byte[0]!;
-      if (value === 0x03) {
-        process.stderr.write("\n");
-        throw new PromptCancelledError();
-      }
-      if (value === 0x04) {
-        process.stderr.write("\n");
-        throw new PromptEofError();
-      }
-      if (value === 0x0a || value === 0x0d) {
-        break;
-      }
-      if (value === 0x7f || value === 0x08) {
-        answer = [...answer].slice(0, -1).join("");
-        continue;
-      }
-      answer += byte.toString("utf8", 0, 1);
-    }
-  } finally {
-    restoreRawMode();
-  }
-  process.stderr.write("\n");
-  return answer;
+export function defaultSecretInputFn(prompt: string): Promise<string> {
+  stdinPrompts ??= new StdinPrompts(process.stdin);
+  return stdinPrompts.prompt(prompt, process.stderr, true);
 }
 
 // ---------------------------------------------------------------------------

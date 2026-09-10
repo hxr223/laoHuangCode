@@ -265,6 +265,8 @@ export interface LoopInputSource {
   on(event: "data", listener: (data: Uint8Array) => void): unknown;
   on(event: "end", listener: () => void): unknown;
   off?(event: "data" | "end", listener: (...args: never[]) => void): unknown;
+  /** Take over a stream paused by a startup prompt or previous input owner. */
+  resume?(): unknown;
   /** Stop flowing mode so the handle no longer keeps the event loop alive. */
   pause?(): unknown;
 }
@@ -478,6 +480,7 @@ export class InteractiveTerminalLoop {
       input?.on("end", onEnd);
       this.#wakeupEnabled = true;
       try {
+        input?.resume?.();
         if (!this.#exitRequested) {
           await new Promise<void>((resolve) => {
             this.#exitResolve = resolve;
