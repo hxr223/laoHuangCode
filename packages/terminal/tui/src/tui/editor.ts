@@ -7,7 +7,7 @@
  * text/history/completion state machine those actions drive.
  */
 
-import { charCellWidth } from "./screen.ts";
+import { projectInput, previousGraphemeBoundary, nextGraphemeBoundary } from "./terminal-text.ts";
 import { isLocalWindowsConsole, isNativeShiftPressed } from "./native-console.ts";
 import { line, span, type StyledLine } from "./render-model.ts";
 import {
@@ -194,22 +194,27 @@ export class StdinBuffer {
     if (data.length === 0) {
       return [];
     }
-    let chunk = Buffer.from(data);
-    // High-bit meta bytes (e.g. 0xE1) arrive as ESC + (byte - 128).
-    if (chunk.length === 1 && chunk[0]! > 127) {
-      chunk = Buffer.concat([ESCAPE, Buffer.from([chunk[0]! - 128])]);
-    }
+    const chunk = Buffer.from(data);
     this.buffer = Buffer.concat([this.buffer, chunk]);
     const events: BufferedInput[] = [];
     this.processBuffer(events);
     return events;
   }
 
+  pendingKind(): "escape" | "sequence" | "paste" | "none" {
+    if (this.pasteMode) return "paste";
+    if (this.buffer.length === 0) return "none";
+    return this.buffer.length === 1 && this.buffer[0] === ESC ? "escape" : "sequence";
+  }
+
   flush(): BufferedInput[] {
     if (this.pasteMode || this.buffer.length === 0) {
       return [];
     }
-    const sequence = this.buffer;
+    // Resolve legacy high-bit Meta only after the UTF-8 reassembly window.
+    const sequence = this.buffer.length === 1 && this.buffer[0]! > 127
+      ? Buffer.from([ESC, this.buffer[0]! - 128])
+      : this.buffer;
     this.buffer = Buffer.alloc(0);
     this.pendingKittyPrintableCodepoint = null;
     return [{ kind: BufferedInputKind.Sequence, data: sequence }];
@@ -328,6 +333,8 @@ export class TerminalInputFilter {
     this.enableModifyOtherKeys = options.enableModifyOtherKeys ?? (() => {});
     this.disableModifyOtherKeys = options.disableModifyOtherKeys ?? (() => {});
   }
+
+  get negotiationPending(): boolean { return this.pendingNegotiationPrefix.length > 0; }
 
   feed(sequence: Uint8Array): Buffer[] {
     const text = Buffer.from(sequence).toString("latin1");
@@ -542,7 +549,7 @@ export class RawInputDecoder {
       this.buffer = Buffer.alloc(0);
       return [inputAction(InputActionKind.Dismiss)];
     }
-    if (this.buffer.length > 1 && this.buffer[0] === ESC && this.buffer[1] === 0x5b) {
+    if (this.buffer.length > 1 && this.buffer[0] === ESC) {
       this.buffer = Buffer.alloc(0);
     }
     return this.feed(Buffer.alloc(0));
@@ -553,6 +560,15 @@ export class RawInputDecoder {
       return ESCAPE_INCOMPLETE;
     }
     const second = this.buffer[1]!;
+    if (second === 0x5d || second === 0x50 || second === 0x5f || second === 0x5e || second === 0x58) {
+      for (let index = 2; index < this.buffer.length; index++) {
+        if (this.buffer[index] === 7 || (this.buffer[index] === ESC && this.buffer[index + 1] === 0x5c)) {
+          this.buffer = this.buffer.subarray(index + (this.buffer[index] === 7 ? 1 : 2));
+          return ESCAPE_CONSUMED;
+        }
+      }
+      return ESCAPE_INCOMPLETE;
+    }
     if (second === 10 || second === 13) {
       this.buffer = this.buffer.subarray(2);
       return {
@@ -605,7 +621,8 @@ export class RawInputDecoder {
         ? { status: "action", action: inputAction(kind) }
         : ESCAPE_CONSUMED;
     }
-    if (second === 0x4f /* O */ && this.buffer.length >= 3) {
+    if (second === 0x4f /* O */) {
+      if (this.buffer.length < 3) return ESCAPE_INCOMPLETE;
       const sequence = this.buffer.subarray(0, 3).toString("latin1");
       const kind = ESCAPE_ACTIONS.get(sequence);
       this.buffer = this.buffer.subarray(3);
@@ -764,7 +781,7 @@ function completeSequenceStatus(data: Buffer): SequenceStatus {
       ? "complete"
       : "incomplete";
   }
-  if (second === 0x50 /* P */ || second === 0x5f /* _ */) {
+  if (second === 0x50 /* P */ || second === 0x5f /* _ */ || second === 0x5e || second === 0x58) {
     return endsWithEscapeBackslash(data) ? "complete" : "incomplete";
   }
   if (second === 0x4f /* O */) {
@@ -1082,14 +1099,6 @@ function decodeModifyOtherKeysPrintable(sequence: string): string | null {
   }
 }
 
-function displayWidth(text: string): number {
-  let width = 0;
-  for (const char of text) {
-    width += charCellWidth(char);
-  }
-  return width;
-}
-
 // ---------------------------------------------------------------------------
 // Editor state
 // ---------------------------------------------------------------------------
@@ -1211,40 +1220,7 @@ export class EditorState {
   }
 
   #renderProjection(width: number, prompt: string, mask: boolean): EditorProjection {
-    const boundedWidth = Math.max(3, width);
-    const promptWidth = Math.max(1, displayWidth(prompt));
-    const contentWidth = Math.max(1, boundedWidth - promptWidth);
-    const displayText = mask ? "*".repeat(this.text.length) : this.text;
-    const sourceLines = displayText.split("\n");
-    const rows: string[] = [];
-    for (const source of sourceLines) {
-      rows.push(...wrapLine(source, contentWidth));
-    }
-    const lastLine = sourceLines[sourceLines.length - 1]!;
-    if (
-      displayText &&
-      !displayText.endsWith("\n") &&
-      displayWidth(lastLine) % contentWidth === 0
-    ) {
-      rows.push("");
-    }
-    const before = displayText.slice(0, this.cursor);
-    const beforeLines = before.split("\n");
-    let priorRows = 0;
-    for (const line of beforeLines.slice(0, -1)) {
-      priorRows += wrapLine(line, contentWidth).length;
-    }
-    const current = beforeLines[beforeLines.length - 1]!;
-    const [currentRow, currentColumn] = cursorPosition(current, contentWidth);
-    const cursorRow = priorRows + currentRow;
-    const cursorColumn = promptWidth + currentColumn;
-    return {
-      rows,
-      prompt,
-      promptWidth,
-      cursorRow: Math.min(cursorRow, rows.length - 1),
-      cursorColumn: Math.min(cursorColumn, boundedWidth - 1),
-    };
+    return projectInput(this.text, this.cursor, width, prompt, mask);
   }
 
   private submit(): EditorEffect {
@@ -1309,16 +1285,18 @@ export class EditorState {
       this.insert(action.text);
     } else if (action.kind === InputActionKind.Backspace && this.cursor > 0) {
       this.clearCompletions();
-      this.text = this.text.slice(0, this.cursor - 1) + this.text.slice(this.cursor);
-      this.cursor -= 1;
+      const previous = previousGraphemeBoundary(this.text, this.cursor);
+      const end = nextGraphemeBoundary(this.text, previous);
+      this.text = this.text.slice(0, previous) + this.text.slice(end);
+      this.cursor = previous;
     } else if (action.kind === InputActionKind.DeleteToLineStart) {
       this.deleteToLineStart();
     } else if (action.kind === InputActionKind.CursorLeft) {
       this.clearCompletions();
-      this.cursor = Math.max(0, this.cursor - 1);
+      this.cursor = previousGraphemeBoundary(this.text, this.cursor);
     } else if (action.kind === InputActionKind.CursorRight) {
       this.clearCompletions();
-      this.cursor = Math.min(this.text.length, this.cursor + 1);
+      this.cursor = nextGraphemeBoundary(this.text, this.cursor);
     } else if (action.kind === InputActionKind.HistoryUp) {
       this.historyUp();
     } else if (action.kind === InputActionKind.HistoryDown) {
@@ -1415,42 +1393,4 @@ export class EditorState {
     this.completions = [];
     this.selectedCompletion = null;
   }
-}
-
-function wrapLine(text: string, width: number): string[] {
-  const rows: string[] = [];
-  let row = "";
-  let rowWidth = 0;
-  for (const char of text) {
-    const charWidth = Math.max(1, charCellWidth(char));
-    if (row && rowWidth + charWidth > width) {
-      rows.push(row);
-      row = "";
-      rowWidth = 0;
-    }
-    row += char;
-    rowWidth += charWidth;
-  }
-  if (row || rows.length === 0) {
-    rows.push(row);
-  }
-  return rows;
-}
-
-function cursorPosition(text: string, width: number): [number, number] {
-  let row = 0;
-  let column = 0;
-  for (const char of text) {
-    const charWidth = Math.max(1, charCellWidth(char));
-    if (column && column + charWidth > width) {
-      row += 1;
-      column = 0;
-    }
-    column += charWidth;
-    if (column === width) {
-      row += 1;
-      column = 0;
-    }
-  }
-  return [row, column];
 }

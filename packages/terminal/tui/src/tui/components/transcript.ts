@@ -42,7 +42,7 @@ export class Transcript implements TuiComponent {
   }
 
   renderWithMetadata(context: RenderContext): TranscriptRenderResult {
-    const usableWidth = Math.max(12, context.width);
+    const usableWidth = Math.max(1, context.width);
     const lines: StyledLine[] = [];
     let activeStart: number | null = null;
     const seenKeys = new Set<string>();
