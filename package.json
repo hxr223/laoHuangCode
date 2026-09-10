@@ -11,6 +11,8 @@
   },
   "scripts": {
     "build": "tsc -b && npm run bundle --workspace laohuang",
+    "build:standalone": "node scripts/build-standalone.mjs",
+    "smoke:standalone": "node scripts/standalone-smoke.mjs",
     "test": "node --test \"scripts/**/*.test.ts\"",
     "test:e2e:pi-ai": "LAOHUANG_RUN_PROVIDER_E2E=1 node --test scripts/pi-ai-provider.e2e.test.ts",
     "check:version": "node scripts/check-package-version.mjs",
@@ -31,6 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@xterm/headless": "5.5.0",
     "esbuild": "^0.28.2",
     "promptfoo": "0.122.2",
     "typescript": "^5.5.0"

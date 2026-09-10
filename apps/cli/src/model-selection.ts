@@ -43,12 +43,34 @@ export class ModelSelector {
   }
 
   async listModels(provider: string, query: string): Promise<readonly ModelInfo[]> {
+    if (!await this.#providerAuth.ensureConfigured(provider, { promptIfMissing: false })) {
+      return [];
+    }
     await this.#catalog.refresh(provider);
     return filterModels(
       await this.#catalog.listAvailableModels(provider),
       query,
-      20,
     );
+  }
+
+  async listConfiguredModels(): Promise<{
+    readonly models: readonly ModelInfo[];
+    readonly errors: readonly { readonly provider: string; readonly error: unknown }[];
+  }> {
+    const providers = this.#catalog.listProviders();
+    const results = await Promise.allSettled(
+      providers.map((provider) => this.listModels(provider.id, "")),
+    );
+    const models: ModelInfo[] = [];
+    const errors: { provider: string; error: unknown }[] = [];
+    for (const [index, result] of results.entries()) {
+      if (result.status === "fulfilled") {
+        models.push(...result.value);
+      } else {
+        errors.push({ provider: providers[index]!.id, error: result.reason });
+      }
+    }
+    return { models: filterModels(models, ""), errors };
   }
 
   async selectExact(options: {
@@ -91,7 +113,6 @@ export class ModelSelector {
 export function filterModels(
   models: readonly ModelInfo[],
   query: string,
-  limit = 20,
 ): readonly ModelInfo[] {
   const normalized = query.toLowerCase().trim();
   const terms = normalized.split(/\s+/).filter((term) => term.length > 0);
@@ -116,7 +137,7 @@ export function filterModels(
     if (leftPrefix !== rightPrefix) {
       return leftPrefix ? -1 : 1;
     }
-    return left.id.localeCompare(right.id);
+    return left.provider.localeCompare(right.provider) || left.id.localeCompare(right.id);
   });
-  return matched.slice(0, limit);
+  return matched;
 }

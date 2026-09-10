@@ -133,6 +133,7 @@ function modelMessageForEntry(
   currentProvider: string,
   currentModel: string,
 ): ModelMessage | null {
+  if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog") return entry.payload.message;
   if (entry.entryType === "user_message" || entry.entryType === "reminder") {
     return entry.payload.message;
   }

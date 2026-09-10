@@ -33,7 +33,8 @@ import {
   FakeCatalog,
   FakeProviderAuth,
 } from "./helpers/session-command-fixture.ts";
-import { AgentSession } from "@laohuang/session-runtime";
+import { AgentSession, SessionRecorder } from "@laohuang/session-runtime";
+import { SessionController } from "../apps/cli/src/session-controller.ts";
 import {
   MemoryTerminalDriver,
   PlainEventSink,
@@ -42,6 +43,7 @@ import {
   TerminalUI,
 } from "../packages/terminal/tui/src/index.ts";
 import { RecordingPresenter } from "./helpers/command-presentation-fixture.ts";
+import { StdTerminalDriver, TerminalUI as ComposedTerminalUI } from "@laohuang/tui";
 
 const textEncoder = new TextEncoder();
 
@@ -261,6 +263,71 @@ test("persistent repl returns false for terminal write failure", async () => {
     presenter: new RecordingPresenter(),
     suggestCommand: () => null,
   }), false);
+});
+
+test("main propagates terminal render failures after terminal and session cleanup", async (t) => {
+  const failure = new Error("injected terminal render failure");
+  const cleanup: string[] = [];
+  let failed = false;
+  t.mock.method(ComposedTerminalUI.prototype, "buildFrame", () => {
+    failed = true;
+    throw failure;
+  });
+  t.mock.method(StdTerminalDriver.prototype, "write", () => {});
+  t.mock.method(StdTerminalDriver.prototype, "enterRawMode", () => {});
+  t.mock.method(StdTerminalDriver.prototype, "restore", () => { cleanup.push("terminal"); });
+  t.mock.method(StdTerminalDriver.prototype, "onResize", (callback: () => void) => {
+    const timer = setTimeout(callback, 0);
+    return () => clearTimeout(timer);
+  });
+  const closeRuntime = AgentSession.prototype.close;
+  t.mock.method(AgentSession.prototype, "close", async function (
+    this: AgentSession,
+    ...args: Parameters<AgentSession["close"]>
+  ) {
+    const result = await closeRuntime.apply(this, args);
+    cleanup.push("runtime");
+    return result;
+  });
+  const closeRecorder = SessionRecorder.prototype.close;
+  t.mock.method(SessionRecorder.prototype, "close", async function (this: SessionRecorder) {
+    await closeRecorder.call(this);
+    cleanup.push("recorder");
+  });
+  const closeController = SessionController.prototype.close;
+  t.mock.method(SessionController.prototype, "close", async function (this: SessionController) {
+    const result = await closeController.call(this);
+    if (failed) cleanup.push("controller");
+    return result;
+  });
+
+  await withTempDir(async (directory) => {
+    const configPath = join(directory, "config.json");
+    const credentialsPath = join(directory, "credentials.json");
+    new ConfigManager(configPath).configure({
+      name: "offline",
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+    });
+    await new CredentialStore(credentialsPath).modify("deepseek", async () => ({
+      type: "api_key",
+      key: "offline-test-key",
+    }));
+
+    await assert.rejects(cliMain([], {
+      environ: { HOME: directory, USERPROFILE: directory },
+      configPath,
+      credentialsPath,
+      stdin: { isTTY: true },
+      stdout: { isTTY: true },
+    }), (error: unknown) => {
+      assert.deepEqual(cleanup, ["terminal", "runtime", "recorder", "controller"]);
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /terminal.*injected terminal render failure/i);
+      assert.equal(error.cause, failure);
+      return true;
+    });
+  });
 });
 
 test("persistent exit reports slow prior routing failures through presenter", async () => {
@@ -671,10 +738,11 @@ test("startup model selection uses the plain presenter and shared selector servi
 
   assert.equal(selection?.config.provider, "deepseek");
   assert.equal(selection?.config.model, "deepseek-v4-flash");
-  assert.deepEqual(auth.ensureConfiguredCalls, [
+  assert.deepEqual(auth.ensureConfiguredCalls.filter((call) => call.promptIfMissing), [
     { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
     { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
   ]);
+  assert.deepEqual(auth.loginCalls, []);
   assert.ok(output.includes("Select model provider"));
 });
 

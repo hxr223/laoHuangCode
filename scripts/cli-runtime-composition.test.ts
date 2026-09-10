@@ -12,7 +12,7 @@ import type {
   ModelRequest,
   ModelResult,
 } from "@laohuang/llm";
-import { ToolRegistry } from "@laohuang/tools";
+import { ToolRegistry, type ToolAdapterDefinition } from "@laohuang/tools";
 
 import { createSessionRuntime } from "../apps/cli/src/create-session-runtime.ts";
 import { SessionController } from "../apps/cli/src/session-controller.ts";
@@ -226,4 +226,80 @@ test("switchModel updates all model and context routes", async (t) => {
 
   await composed.session.close({ timeoutMs: 1_000 });
   await composed.close();
+});
+
+test("shared runtime prepares deferred tools, persists search and restores only current definitions", async (t) => {
+  const { root, controller } = await fixture(t);
+  const registry = new ToolRegistry([]);
+  let prepared = false;
+  let executions = 0;
+  const definitions: ToolAdapterDefinition[] = Array.from({ length: 20 }, (_, index) => ({
+    spec: {
+      name: `remote_${index}`,
+      description: `remote_${index}`,
+      parameters: { type: "object" },
+      promptGuidelines: [],
+      catalog: { source: "mcp:fixture", originalName: `remote_${index}`, binding: "stable", exposure: "deferred" },
+    },
+    execute: () => { executions++; return { ok: true, content: "executed" }; },
+  }));
+  const requests: ModelRequest[] = [];
+  const adapter: ModelAdapter = {
+    name: "dynamic-fixture",
+    runAttempt: async (request) => {
+      assert.equal(prepared, true);
+      requests.push(request);
+      const name = requests.length === 1 ? "tool_search" : requests.length === 2 ? "remote_0" : undefined;
+      return {
+        requestId: request.requestId,
+        finishReason: name ? "tool-calls" : "stop",
+        usage: { inputTokens: 10, outputTokens: 2 },
+        message: {
+          role: "assistant", provider: request.provider, model: request.model,
+          content: name
+            ? [{ type: "tool-call", call: { id: request.requestId!, name, arguments: name === "tool_search" ? '{"query":"remote_0","limit":1}' : "{}" } }]
+            : [{ type: "text", text: "done" }],
+        },
+      };
+    },
+  };
+  const composed = createSessionRuntime({
+    modelAdapter: adapter,
+    catalog: new FakeCatalog(),
+    route: { provider: "test", model: "model-a", baseUrl: null },
+    tools: registry,
+    prepareTools: async () => {
+      if (!prepared) { registry.replaceOwner("mcp:fixture", definitions); prepared = true; }
+    },
+    sessionController: controller,
+    projectRoot: root,
+    startupCwd: root,
+    version: "9.8.7",
+  });
+  try {
+    assert.equal(await composed.agent.run("use remote_0"), "done");
+    assert.deepEqual(requests.map((request) => request.tools.map((tool) => tool.name)), [
+      ["tool_search"], ["remote_0", "tool_search"], ["remote_0", "tool_search"],
+    ]);
+    assert.equal(executions, 1);
+    assert.equal(controller.history?.entries().filter((entry) => entry.entryType === "tool_catalog").length, 1);
+    assert.equal(controller.history?.entries().filter((entry) => entry.entryType === "tool_definitions").length, 1);
+
+    const sessionId = controller.currentSessionId!;
+    await controller.createNew();
+    composed.refreshSession();
+    await controller.resume(sessionId);
+    composed.refreshSession();
+    await composed.agent.run("continue after resume");
+    assert.ok(requests.at(-1)?.tools.some((tool) => tool.name === "remote_0"));
+
+    registry.replaceOwner("mcp:fixture", definitions.map((definition) => ({
+      ...definition, spec: { ...definition.spec, description: `${definition.spec.description} updated` },
+    })));
+    await composed.agent.run("check updated catalog");
+    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), ["tool_search"]);
+  } finally {
+    await composed.session.close({ timeoutMs: 1_000 });
+    await composed.close();
+  }
 });

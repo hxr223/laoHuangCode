@@ -1,3 +1,4 @@
+import { supportsTerminalHyperlinks } from "./terminal-session.ts";
 /**
  * Convert Markdown into semantic styled logical lines without terminal I/O.
  *
@@ -18,18 +19,19 @@
 import { compileStyledLines } from "./ansi-renderer.ts";
 import {
   line,
+  styledClusters,
+  truncateStyledLine,
   span,
   type SpanStyle,
   type StyledLine,
-  type StyledSpan,
   type StyleToken,
 } from "./render-model.ts";
 import type { TerminalTheme } from "./theme.ts";
 import {
   clusterWidth,
-  charCellWidth,
   graphemeClusters,
   stripTerminalControls,
+  visibleWidth,
 } from "./screen.ts";
 
 // The visible-width/escape-sequence helpers are owned by terminal/screen.ts;
@@ -51,12 +53,10 @@ export function renderMarkdownStyledLines(text: string, width: number): StyledLi
   if (!clean.trim()) {
     return [];
   }
-  // Rich lays out at max(12, width) and each line is then truncated to the
-  // requested width; keep the same two-step behavior.
-  const layoutWidth = Math.max(12, width);
+  const layoutWidth = Math.max(1, width);
   const lines: StyledLine[] = [];
   let previous: BlockKind | null = null;
-  for (const block of renderBlocks(clean, layoutWidth)) {
+  for (const block of renderBlocks(clean, layoutWidth, Math.max(1, width))) {
     // Rich yields one blank line before each block-level element whose
     // predecessor sets new_line (every element except a horizontal rule).
     // Container blocks nest paragraph children, so the flag is already set
@@ -114,6 +114,7 @@ function styleKey(style: InlineStyle): string {
     style.underline ? "u" : "",
     style.foreground ?? "",
     style.background ?? "",
+    style.hyperlink ?? "",
   ].join("|");
 }
 
@@ -121,6 +122,7 @@ function styleKey(style: InlineStyle): string {
 function renderBlocks(
   text: string,
   layoutWidth: number,
+  tableWidth: number,
 ): Block[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const blocks: Block[] = [];
@@ -156,6 +158,11 @@ function renderBlocks(
           index += 1;
           break;
         }
+        // A streamed trailing closing fence is syntax, not an extra code row.
+        if (index === lines.length - 1 && body.trim().length > 0 && body.trim().length < 3 && body.trim() === fence[0]!.repeat(body.trim().length)) {
+          index += 1;
+          break;
+        }
         codeLines.push(
           ...(body
             ? wrapSegments([{ style: codeStyle, text: body }], layoutWidth)
@@ -184,6 +191,7 @@ function renderBlocks(
         delimiter.every((cell) => /^:?-+:?$/.test(cell))
       ) {
         flushParagraph();
+        const tableStart = index;
         index += 2;
         const rows: string[][] = [];
         while (index < lines.length) {
@@ -200,7 +208,7 @@ function renderBlocks(
         }
         blocks.push({
           kind: "table",
-          lines: renderTable(header, rows, layoutWidth),
+          lines: renderTable(header, rows, tableWidth, lines.slice(tableStart, index)),
         });
         continue;
       }
@@ -329,7 +337,7 @@ function renderListItems(
   const marker: InlineStyle = { foreground: "accent" };
   const lines: Segment[][] = [];
   for (let index = 0; index < items.length; index += 1) {
-    const prefix = prefixFor(index);
+    const prefix = prefixFor(index).slice(0, Math.max(0, layoutWidth - 1));
     const wrapped = wrapSegments(
       items[index] as Segment[],
       Math.max(1, layoutWidth - prefix.length),
@@ -372,13 +380,7 @@ function splitTableRow(line: string): string[] | null {
 
 /** Visible width of a segment list. */
 function segmentsWidth(segments: Segment[]): number {
-  let width = 0;
-  for (const segment of segments) {
-    for (const cluster of graphemeClusters(segment.text)) {
-      width += clusterWidth(cluster);
-    }
-  }
-  return width;
+  return styledClusters(segments).reduce((width, item) => width + graphemeClusters(item.text).reduce((total, cluster) => total + clusterWidth(cluster), 0), 0);
 }
 
 /** Lay out a table as a grid of styled lines that fits `layoutWidth`. */
@@ -386,6 +388,7 @@ function renderTable(
   header: string[],
   rows: string[][],
   layoutWidth: number,
+  rawLines: string[],
 ): Segment[][] {
   const columnCount = header.length;
   const borderStyle: InlineStyle = {
@@ -404,6 +407,20 @@ function renderTable(
     normalize(row).map((cell) => parseInline(cell, {})),
   );
 
+  const minWidths = Array<number>(columnCount).fill(1);
+  for (const row of [headerCells, ...bodyCells]) {
+    for (let i = 0; i < columnCount; i += 1) {
+      for (const cluster of styledClusters(row[i] as Segment[])) {
+        minWidths[i] = Math.max(minWidths[i] as number, visibleWidth(cluster.text));
+      }
+    }
+  }
+  const spacingWidth = 2 * columnCount;
+  if (minWidths.reduce((total, width) => total + width, spacingWidth) > layoutWidth) {
+    // Keep the source readable when even one character per column will not fit.
+    return rawLines.flatMap((text) => wrapSegments([{ text, style: {} }], layoutWidth));
+  }
+
   const widths = Array.from({ length: columnCount }, (_, i) =>
     Math.max(
       1,
@@ -413,10 +430,13 @@ function renderTable(
   );
   const totalWidth = (): number =>
     widths.reduce((total, w) => total + w, 0) + 2 * (columnCount - 1) + 2;
-  while (totalWidth() > layoutWidth && Math.max(...widths) > 1) {
-    let widest = 0;
-    for (let i = 1; i < widths.length; i += 1) {
-      if ((widths[i] as number) > (widths[widest] as number)) {
+  while (totalWidth() > layoutWidth) {
+    let widest = -1;
+    for (let i = 0; i < widths.length; i += 1) {
+      if (
+        (widths[i] as number) > (minWidths[i] as number) &&
+        (widest === -1 || (widths[i] as number) > (widths[widest] as number))
+      ) {
         widest = i;
       }
     }
@@ -456,7 +476,7 @@ function renderTableRows(
       if (i > 0) {
         line.push({ style: borderStyle, text: " " });
       }
-      const cellLine = (wrappedCells[i] as Segment[][])[row] as Segment[];
+      const cellLine = (wrappedCells[i] as Segment[][])[row] ?? [];
       line.push(...cellLine);
       const pad = (widths[i] as number) - segmentsWidth(cellLine);
       if (pad > 0) {
@@ -518,10 +538,11 @@ const INLINE_PATTERNS: InlinePattern[] = [
   },
   {
     // Links and images: visible text plus the URL in parentheses, matching
-    // Rich's hyperlinks=False output, never OSC-8 controls. Rich renders
-    // the link text as plain (unparsed) content.
+    // Keep the destination readable when terminal hyperlinks are unavailable.
     pattern: /!?\[([^\]]*)\]\(([^)\s]+)\)/,
-    expand: (base, match) => [
+    expand: (base, match) => supportsTerminalHyperlinks() && !/[\x00-\x20\x7f]/u.test(match[2]!) ? [{
+      style: { ...base, underline: true, foreground: "link", hyperlink: match[2]! }, text: match[1]!,
+    }] : [
       {
         style: { ...base, underline: true, foreground: "link" },
         text: match[1] as string,
@@ -638,15 +659,14 @@ interface StyledCluster {
 /** Greedy word wrap over styled segments; long words are hard-broken. */
 function wrapSegments(segments: Segment[], width: number): Segment[][] {
   const clusters: StyledCluster[] = [];
-  for (const segment of segments) {
-    for (const cluster of graphemeClusters(segment.text)) {
-      clusters.push({
-        style: segment.style,
-        text: cluster === "\t" ? "   " : cluster,
-        width: clusterWidth(cluster),
-        space: cluster === " ",
-      });
-    }
+  for (const item of styledClusters(segments)) {
+    const measured = graphemeClusters(item.text).reduce((total, cluster) => total + clusterWidth(cluster), 0);
+    clusters.push({
+      style: item.style ?? {},
+      text: measured > width ? "�" : item.text,
+      width: measured > width ? 1 : measured,
+      space: item.text === " ",
+    });
   }
 
   const words: StyledCluster[][] = [];
@@ -740,20 +760,5 @@ function serializeLine(segments: Segment[]): StyledLine {
 }
 
 function truncateMarkdownLine(value: StyledLine, width: number): StyledLine {
-  const spans: StyledSpan[] = [];
-  let used = 0;
-  for (const source of value.spans) {
-    let text = "";
-    for (const character of source.text) {
-      const characterWidth = charCellWidth(character);
-      if (used + characterWidth > width) {
-        if (text) spans.push(span(text, source.style));
-        return line(...spans);
-      }
-      text += character;
-      used += characterWidth;
-    }
-    if (text) spans.push(span(text, source.style));
-  }
-  return line(...spans);
+  return truncateStyledLine(value, width, "");
 }

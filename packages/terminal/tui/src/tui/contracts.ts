@@ -1,3 +1,4 @@
+import type { PendingInputKind } from "./terminal-session.ts";
 import type {
   EditorEffect,
   InputAction,
@@ -54,6 +55,7 @@ export interface InputDecoderHooks {
 
 /** Bytes-to-actions input pipeline used by the interactive loop. */
 export interface InputDecoderLike {
+  pendingKind?(): PendingInputKind;
   kittyProtocolActive: boolean;
   feed(data: Uint8Array): InputAction[];
   flush(): InputAction[];

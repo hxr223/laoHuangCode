@@ -1,3 +1,5 @@
+import { recordRenderFailure } from "./render-diagnostics.ts";
+import { drainTerminalInput, inputTimeout, refreshTerminalDimensions } from "./terminal-session.ts";
 /**
  * Polished interactive terminal UI for laoHuangCode.
  *
@@ -90,12 +92,11 @@ import type {
 } from "./contracts.ts";
 import { FrameBuilder } from "./frame-builder.ts";
 import { renderMarkdownLines } from "./markdown.ts";
-import { compileStyledLines } from "./ansi-renderer.ts";
+import { StyledLineCompiler } from "./ansi-renderer.ts";
 import { CompletionPopup } from "./components/completion-list.ts";
 import { Composer } from "./components/composer.ts";
 import { StatusLine } from "./components/status-line.ts";
 import { MainScreen } from "./main-screen.ts";
-import { truncateStyledLine } from "./render-model.ts";
 import { resolveTerminalTheme, type TerminalTheme } from "./theme.ts";
 import {
   MainScreenRenderer,
@@ -266,6 +267,10 @@ export interface LoopInputSource {
   on(event: "data", listener: (data: Uint8Array) => void): unknown;
   on(event: "end", listener: () => void): unknown;
   off?(event: "data" | "end", listener: (...args: never[]) => void): unknown;
+  /** Take over a stream paused by a startup prompt or previous input owner. */
+  resume?(): unknown;
+  addListener?(event: "error", listener: (error: Error) => void): unknown;
+  removeListener?(event: "error", listener: (error: Error) => void): unknown;
   /** Stop flowing mode so the handle no longer keeps the event loop alive. */
   pause?(): unknown;
 }
@@ -290,7 +295,6 @@ function editorActionForKey(key: KeyInput): InputAction | null {
 
 /** Serialize stdin, UI events, and all terminal writes in one loop. */
 export class InteractiveTerminalLoop {
-  static readonly ESCAPE_TIMEOUT_MS = 50;
   static readonly WORK_QUEUE_LIMIT = 4_096;
 
   #ui: TerminalUI;
@@ -314,6 +318,8 @@ export class InteractiveTerminalLoop {
   #escapeTimer: ReturnType<typeof setTimeout> | null = null;
   #wakeupEnabled = false;
   #wakeupScheduled = false;
+  #renderTimer: ReturnType<typeof setTimeout> | null = null;
+  #lastRenderAt = 0;
   #disposeResize: (() => void) | null = null;
   writeError: unknown = null;
 
@@ -392,10 +398,16 @@ export class InteractiveTerminalLoop {
 
   /** Synchronously consume queued work; this is also the test hook. */
   drain(): void {
-    const changed = this.#drainWork();
-    const dropped = this.#ui.flushDisplayDropMarker();
-    if (changed || dropped || this.#needsRender) {
-      this.#render();
+    if (this.#renderTimer !== null) { clearTimeout(this.#renderTimer); this.#renderTimer = null; }
+    try {
+      const changed = this.#drainWork();
+      const dropped = this.#ui.flushDisplayDropMarker();
+      if (changed || dropped || this.#needsRender) {
+        this.#render();
+      }
+    } catch (error) {
+      this.writeError = recordRenderFailure(error);
+      this.requestExit();
     }
   }
 
@@ -424,6 +436,11 @@ export class InteractiveTerminalLoop {
     return this.#focus.current();
   }
 
+  setOverlayHidden(id: string, hidden: boolean): void {
+    this.#overlays.setHidden(id, hidden);
+    this.requestRender();
+  }
+
   renderActiveView(context: { width: number; theme: TerminalTheme }) {
     return this.#viewHost.render(context);
   }
@@ -438,6 +455,7 @@ export class InteractiveTerminalLoop {
       return;
     }
     this.#closed = true;
+    if (this.#renderTimer !== null) { clearTimeout(this.#renderTimer); this.#renderTimer = null; }
     this.#running = false;
     this.#cancelPendingViews();
     this.#viewHost.closeAll();
@@ -446,7 +464,11 @@ export class InteractiveTerminalLoop {
       this.#escapeTimer = null;
     }
     this.#stopResizeWatcher();
-    this.#stopTerminalModes();
+    try {
+      this.#stopTerminalModes();
+    } catch (error) {
+      if (this.writeError === null) this.writeError = error;
+    }
     try {
       this.#renderer.close();
     } catch (error) {
@@ -462,23 +484,27 @@ export class InteractiveTerminalLoop {
       this.#driver.enterRawMode?.();
       this.startTerminalModes();
       const onData = (data: Uint8Array): void => {
-        this.feedInputBytes(data);
-        this.drain();
-        this.#armEscapeTimer();
+        try {
+          this.feedInputBytes(data);
+          this.drain();
+          this.#armEscapeTimer();
+        } catch (error) { this.writeError = error; this.requestExit(); }
       };
       const onEnd = (): void => {
-        this.#applyActions(this.#decoder.flush());
-        // Port of terminal_ui.py: EOF applies the editor's exit effect —
-        // exit only when the editor is idle and empty; otherwise the editor
-        // notice ("Clear the editor before exiting.") is shown and the loop
-        // keeps running.
-        this.#applyEof();
-        this.drain();
+        try {
+          this.#applyActions(this.#decoder.flush());
+          // EOF exits only when the editor is idle and empty.
+          this.#applyEof();
+          this.drain();
+        } catch (error) { this.writeError = error; this.requestExit(); }
       };
+      const onError = (error: Error): void => { this.writeError = error; this.requestExit(); };
       input?.on("data", onData);
       input?.on("end", onEnd);
+      input?.addListener?.("error", onError);
       this.#wakeupEnabled = true;
       try {
+        input?.resume?.();
         if (!this.#exitRequested) {
           await new Promise<void>((resolve) => {
             this.#exitResolve = resolve;
@@ -491,7 +517,10 @@ export class InteractiveTerminalLoop {
         // Pause stdin: a still-flowing stdin keeps the event loop alive and
         // the process would never exit after the UI closed. Raw mode is
         // restored by the renderer close path.
-        input?.pause?.();
+        try {
+          this.#stopTerminalModes();
+          await drainTerminalInput(input);
+        } finally { input?.pause?.(); input?.removeListener?.("error", onError); }
       }
     } catch (error) {
       this.writeError = error;
@@ -570,11 +599,15 @@ export class InteractiveTerminalLoop {
     if (this.#escapeTimer !== null) {
       clearTimeout(this.#escapeTimer);
     }
+    const timeout = inputTimeout(this.#decoder.pendingKind?.() ?? "sequence");
+    if (timeout === null) { this.#escapeTimer = null; return; }
     this.#escapeTimer = setTimeout(() => {
       this.#escapeTimer = null;
-      this.#applyActions(this.#decoder.flush());
-      this.drain();
-    }, InteractiveTerminalLoop.ESCAPE_TIMEOUT_MS);
+      try {
+        this.#applyActions(this.#decoder.flush());
+        this.drain();
+      } catch (error) { this.writeError = error; this.requestExit(); }
+    }, timeout);
   }
 
   /**
@@ -590,12 +623,24 @@ export class InteractiveTerminalLoop {
     this.#wakeupScheduled = true;
     setImmediate(() => {
       this.#wakeupScheduled = false;
-      this.drain();
+      if (this.#closed || this.#renderTimer !== null) return;
+      const delay = Math.max(0, 16 - (performance.now() - this.#lastRenderAt));
+      this.#renderTimer = setTimeout(() => {
+        this.#renderTimer = null;
+        if (!this.#closed) this.drain();
+      }, delay);
     });
   }
 
   #drainWork(): boolean {
     let changed = false;
+    // Reach already queued input in this turn, preserving the lifecycle events
+    // before it (for example task.started before Ctrl+C).
+    let budget = 128;
+    for (let index = this.#work.length - 1; index >= budget; index--) {
+      if (this.#work[index]?.type === "input") { budget = index + 1; break; }
+    }
+    let processed = 0;
     let item = this.#work.shift();
     while (item !== undefined) {
       if (item.type === "input") {
@@ -622,6 +667,11 @@ export class InteractiveTerminalLoop {
         this.#ui.applyProjectedEvent(item.event as UIEventLike);
         changed = true;
       }
+      processed++;
+      if (this.#wakeupEnabled && processed >= budget && this.#work.length > 0) {
+        this.#scheduleWakeup();
+        break;
+      }
       item = this.#work.shift();
     }
     return changed;
@@ -629,15 +679,17 @@ export class InteractiveTerminalLoop {
 
   #render(): void {
     this.#needsRender = false;
+    this.#lastRenderAt = performance.now();
     try {
-      this.#renderer.render(
+      const size = this.#driver.getSize();
+      this.#overlays.setViewport(Math.max(1, size.columns - 1), Math.max(1, size.rows));
+      this.#renderer.render(this.#overlays.composite(
         this.#ui.buildFrame({
-          width: Math.max(1, this.#driver.getSize().columns),
+          width: Math.max(1, size.columns),
           editor: this.#editor,
-        }),
-      );
+        }), this.#ui.theme));
     } catch (error) {
-      this.writeError = error;
+      this.writeError = recordRenderFailure(error);
       this.requestExit();
     }
   }
@@ -979,6 +1031,7 @@ export class TerminalUI {
   #loop: InteractiveTerminalLoop | null = null;
   readonly #transcript: TranscriptStore;
   readonly #transcriptView: Transcript;
+  readonly #lineCompiler = new StyledLineCompiler();
   #showReasoning = true;
   #displayPolicy = new DisplayPolicy({
     audience: "terminal",
@@ -1159,6 +1212,7 @@ export class TerminalUI {
   replaceTranscript(items: readonly RestoredTranscriptItemLike[]): void {
     this.#transcript.replace(items);
     this.#transcriptView.invalidate();
+    this.#lineCompiler.invalidate();
     this.#loop?.requestRender();
   }
 
@@ -1307,7 +1361,7 @@ export class TerminalUI {
   #buildHistoryFrameParts(width: number): { lines: string[]; activeStart: number | null } {
     const rendered = this.#transcriptView.renderWithMetadata({ width, theme: this.theme });
     return {
-      lines: compileStyledLines(rendered.lines, Math.max(12, width), this.theme),
+      lines: this.#lineCompiler.compile(rendered.lines, Math.max(1, width), this.theme),
       activeStart: rendered.activeStart,
     };
   }
@@ -1346,8 +1400,8 @@ export class TerminalUI {
         effort: this.effort,
       }),
     }).renderWithMetadata({ width: contentWidth, theme: this.theme });
-    const lines = compileStyledLines(
-      rendered.lines.map((line) => truncateStyledLine(line, contentWidth, "")),
+    const lines = this.#lineCompiler.compile(
+      rendered.lines,
       contentWidth,
       this.theme,
     );
@@ -1668,6 +1722,7 @@ export class StdTerminalDriver implements RawTerminalDriver {
       return;
     }
     this.#restoreRawMode ??= enterTerminalRawMode(process.stdin);
+    refreshTerminalDimensions();
   }
 
   write(data: string): void {

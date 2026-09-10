@@ -21,6 +21,7 @@ export interface TranscriptRenderResult {
 }
 
 interface CachedBlockRender {
+  readonly block: TranscriptBlock;
   readonly component: TuiComponent;
   readonly width: number;
   readonly signature: string;
@@ -41,7 +42,7 @@ export class Transcript implements TuiComponent {
   }
 
   renderWithMetadata(context: RenderContext): TranscriptRenderResult {
-    const usableWidth = Math.max(12, context.width);
+    const usableWidth = Math.max(1, context.width);
     const lines: StyledLine[] = [];
     let activeStart: number | null = null;
     const seenKeys = new Set<string>();
@@ -69,12 +70,13 @@ export class Transcript implements TuiComponent {
     const cached = this.#cache.get(key);
     if (
       cached !== undefined &&
+      cached.block === block &&
       cached.width === context.width &&
       cached.signature === signature
     ) {
       return cached.lines;
     }
-    if (cached !== undefined && cached.signature === signature) {
+    if (cached !== undefined && cached.block === block && cached.signature === signature) {
       const lines = cached.component.render(context).lines;
       this.#cache.set(key, {
         ...cached,
@@ -86,6 +88,7 @@ export class Transcript implements TuiComponent {
     const component = this.#createBlockComponent(block);
     const lines = component.render(context).lines;
     this.#cache.set(key, {
+      block,
       component,
       width: context.width,
       signature,

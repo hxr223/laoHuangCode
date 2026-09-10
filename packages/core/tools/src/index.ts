@@ -10,6 +10,13 @@ export interface ToolSpec {
   readonly description: string;
   readonly parameters: Record<string, unknown>;
   readonly promptGuidelines: readonly string[];
+  /** Local discovery metadata, never serialized as a provider tool definition. */
+  readonly catalog?: {
+    readonly source: string;
+    readonly originalName: string;
+    readonly binding: string;
+    readonly exposure: "direct" | "deferred";
+  };
 }
 
 export type ToolExecutionMode = "parallel" | "sequential";
@@ -49,6 +56,7 @@ export function withTouchedPath(result: ToolResult, target: string): ToolResult 
 
 export interface ToolExecutionContextLike {
   isCancelled(): boolean;
+  readonly signal?: AbortSignal;
   readonly cancellationReason: string;
   publish?(kind: string, payload: Record<string, unknown>): unknown;
 }
@@ -98,6 +106,10 @@ export class ToolExecutionContext implements ToolExecutionContextLike {
     return this.cancelToken?.isCancelled() ?? false;
   }
 
+  get signal(): AbortSignal | undefined {
+    return this.cancelToken?.signal;
+  }
+
   get cancellationReason(): string {
     return this.cancelToken?.reason || "cancelled";
   }
@@ -144,6 +156,7 @@ export interface ToolAdapterDefinition {
 
 /** Structural tool surface consumed by the agent and ToolRuntime. */
 export interface ToolRegistryLike {
+  snapshot?(): ToolRegistryLike;
   readonly definitions: readonly ToolSpec[];
   readonly orderedSpecs: readonly ToolSpec[];
   executionMode(name: string): ToolExecutionMode | undefined;
@@ -160,7 +173,12 @@ export interface ToolRegistryOptions {
 
 /** Executes tool definitions and exposes their model payload in stable order. */
 export class ToolRegistry implements ToolRegistryLike {
-  private readonly tools = new Map<string, ToolAdapterDefinition>();
+  private tools = new Map<string, ToolAdapterDefinition>();
+  private readonly builtins: readonly ToolAdapterDefinition[];
+  private readonly owners = new Map<string, {
+    active: boolean;
+    definitions: readonly ToolAdapterDefinition[];
+  }>();
   private readonly modeOverrides: Record<string, ToolExecutionMode>;
 
   constructor(
@@ -171,9 +189,58 @@ export class ToolRegistry implements ToolRegistryLike {
       if (this.tools.has(definition.spec.name)) {
         throw new Error(`Duplicate tool: ${definition.spec.name}`);
       }
-      this.tools.set(definition.spec.name, definition);
+      this.tools.set(definition.spec.name, copyDefinition(definition));
     }
+    this.builtins = [...this.tools.values()];
     this.modeOverrides = { ...(options.executionModes ?? {}) };
+  }
+
+  /** Publish an entire owner's catalog only after validating every entry. */
+  replaceOwner(owner: string, definitions: readonly ToolAdapterDefinition[]): void {
+    if (!owner || owner === "builtin") throw new Error("Invalid dynamic tool owner");
+    const previous = this.owners.get(owner);
+    const previousNames = new Set(previous?.definitions.map(d => d.spec.name));
+    const names = new Set<string>();
+    for (const definition of definitions) {
+      const name = definition.spec.name;
+      if (!name || names.has(name) || (this.tools.has(name) && !previousNames.has(name))) {
+        throw new Error(`Duplicate or invalid tool: ${name}`);
+      }
+      if (typeof definition.spec.parameters !== "object" || definition.spec.parameters === null || Array.isArray(definition.spec.parameters)) {
+        throw new Error(`Invalid tool parameters: ${name}`);
+      }
+      names.add(name);
+    }
+    const generation = { active: true, definitions: [] as ToolAdapterDefinition[] };
+    generation.definitions = definitions.map((definition): ToolAdapterDefinition => {
+      const copy = copyDefinition(definition);
+      return { ...copy, execute: (args, context) => generation.active
+        ? copy.execute(args, context)
+        : { ok: false, status: "tool_unavailable", error: "Tool catalog changed; use the current tools." } };
+    }).sort((a, b) => a.spec.name.localeCompare(b.spec.name));
+    if (previous !== undefined) previous.active = false;
+    if (definitions.length === 0) this.owners.delete(owner);
+    else this.owners.set(owner, generation);
+    this.tools = new Map(this.builtins.map(d => [d.spec.name, d]));
+    for (const [, entry] of [...this.owners].sort(([a], [b]) => a.localeCompare(b))) {
+      for (const definition of entry.definitions) this.tools.set(definition.spec.name, definition);
+    }
+  }
+
+  removeOwner(owner: string): void {
+    this.replaceOwner(owner, []);
+  }
+
+  snapshot(): ToolRegistryLike {
+    const captured = new ToolRegistry([...this.tools.values()], { executionModes: this.modeOverrides });
+    const definitions = freezeDeep(captured.definitions);
+    const view: ToolRegistryLike = {
+      definitions, orderedSpecs: definitions,
+      executionMode: name => captured.executionMode(name),
+      execute: (name, args, context) => captured.execute(name, args, context),
+      snapshot: () => view,
+    };
+    return Object.freeze(view);
   }
 
   get definitions(): ToolSpec[] {
@@ -182,6 +249,7 @@ export class ToolRegistry implements ToolRegistryLike {
       description: spec.description,
       parameters: spec.parameters,
       promptGuidelines: [...spec.promptGuidelines],
+      ...(spec.catalog ? { catalog: spec.catalog } : {}),
     }));
   }
 
@@ -212,6 +280,18 @@ export class ToolRegistry implements ToolRegistryLike {
       return { ok: false, error: errorMessage(error) };
     }
   }
+}
+
+function copyDefinition(definition: ToolAdapterDefinition): ToolAdapterDefinition {
+  return { ...definition, spec: freezeDeep(structuredClone(definition.spec)) };
+}
+
+function freezeDeep<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) freezeDeep(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 export function cancelledResult(context: ToolExecutionContextLike): ToolResult {
@@ -258,3 +338,5 @@ function errorMessage(error: unknown): string {
 }
 
 export * from "./tool-runtime.ts";
+export * from "./search/catalog.ts";
+export * from "./search/selection-state.ts";

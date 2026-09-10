@@ -128,6 +128,9 @@ test("session lifecycle commands delegate to the session controller", async () =
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [{
         sessionId: "session-1",
         updatedAt: "2026-08-31T23:57:00.000Z",
@@ -161,7 +164,7 @@ test("session lifecycle commands delegate to the session controller", async () =
   ]);
   assert.deepEqual(composerTexts, ["edit me"]);
   assert.deepEqual(noticeTexts(presenter), [
-    "Current session: session-1\nPath: /tmp/session.jsonl",
+    "Current session: session-1\nName: Untitled session\nPath: /tmp/session.jsonl",
     "Untitled session\n3 minutes ago  ~/data/code/laoHuangCode",
     "Started a new session.",
     "Resumed session.",
@@ -179,6 +182,9 @@ test("compact reports an error when there is no summarizable context", async () 
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [],
       createNew: async () => {},
       resume: async () => {},
@@ -210,6 +216,9 @@ test("resume without an id selects a recent session and restores it", async () =
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session-1.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [
         {
           sessionId: "session-1",
@@ -267,6 +276,9 @@ test("resume completes session ids with recent conversation details", () => {
     sessionController: {
       currentSessionId: "session-1",
       currentPath: "/tmp/session-1.jsonl",
+      currentTitle: null,
+      setName: () => {},
+      latestAssistantText: () => null,
       list: () => [
         {
           sessionId: "session-1",
@@ -478,21 +490,123 @@ test("/model current reports the active provider and model", async () => {
 });
 
 test("model command opens searchable component requests", async () => {
-  const presenter = new RecordingPresenter({ selections: ["deepseek", "deepseek-v4-pro"] });
+  const presenter = new RecordingPresenter({ selections: ["deepseek/deepseek-v4-pro"] });
   const { commands, agent } = createSessionCommandFixture({ presenter });
 
   const handled = await commands.execute("/model");
 
   assert.equal(handled.status, "handled");
-  assert.equal(presenter.selections[0]?.id, "model-provider");
-  assert.equal(presenter.selections[1]?.id, "model-name");
-  assert.equal(presenter.selections[1]?.searchable, true);
-  assert.deepEqual(presenter.selections[1]?.items[1], {
+  assert.equal(presenter.selections.length, 1);
+  assert.equal(presenter.selections[0]?.id, "model-name");
+  assert.equal(presenter.selections[0]?.searchable, true);
+  assert.equal(presenter.selections[0]?.currentValue, "deepseek/deepseek-v4-flash");
+  assert.deepEqual(presenter.selections[0]?.items.map((item) => item.value), [
+    "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro",
+  ]);
+  assert.deepEqual(presenter.selections[0]?.items[1], {
     value: "deepseek/deepseek-v4-pro",
     label: "deepseek-v4-pro",
     description: "deepseek",
   });
   assert.equal(agent.model, "deepseek-v4-pro");
+});
+
+test("/model reflects login and logout without restarting or changing the active route", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands, agent } = createSessionCommandFixture({ presenter });
+
+  await commands.execute("/login anthropic");
+  await commands.execute("/model");
+  assert.deepEqual(presenter.selections[0]?.items.map((item) => item.value), [
+    "anthropic/claude-sonnet-4-5",
+    "deepseek/deepseek-v4-flash",
+    "deepseek/deepseek-v4-pro",
+  ]);
+
+  await commands.execute("/logout anthropic");
+  await commands.execute("/model");
+  assert.deepEqual(presenter.selections[1]?.items.map((item) => item.value), [
+    "deepseek/deepseek-v4-flash", "deepseek/deepseek-v4-pro",
+  ]);
+  assert.deepEqual(agent.modelSwitches, []);
+});
+
+test("/model selects the correct provider when model ids collide", async () => {
+  const presenter = new RecordingPresenter({ selections: ["anthropic/shared/model"] });
+  const { commands, catalog, agent } = createSessionCommandFixture({
+    presenter, configured: new Set(["deepseek", "anthropic"]),
+  });
+  const template = catalog.listModels("deepseek")[0]!;
+  catalog.models.set("deepseek", [{ ...template, id: "shared/model" }]);
+  catalog.models.set("anthropic", [{ ...template, provider: "anthropic", id: "shared/model" }]);
+
+  await commands.execute("/model");
+
+  assert.deepEqual(presenter.selections[0]?.items.map((item) => item.value), [
+    "anthropic/shared/model", "deepseek/shared/model",
+  ]);
+  assert.deepEqual(agent.modelSwitches, [{ provider: "anthropic", model: "shared/model" }]);
+});
+
+test("/model includes every model beyond the first twenty", async () => {
+  const presenter = new RecordingPresenter({ selections: ["deepseek/model-29"] });
+  const { commands, catalog, agent } = createSessionCommandFixture({ presenter });
+  const template = catalog.listModels("deepseek")[0]!;
+  catalog.models.set("deepseek", Array.from({ length: 30 }, (_, index) => ({
+    ...template, id: `model-${String(index).padStart(2, "0")}`,
+  })));
+
+  await commands.execute("/model");
+
+  assert.equal(presenter.selections[0]?.items.length, 30);
+  assert.equal(agent.model, "model-29");
+});
+
+test("/model with no configured providers guides login without opening a selector", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands, auth, agent } = createSessionCommandFixture({ presenter, configured: new Set() });
+
+  await commands.execute("/model");
+
+  assert.deepEqual(presenter.selections, []);
+  assert.ok(noticeTexts(presenter).some((text) => text.includes("/login")));
+  assert.deepEqual(auth.loginCalls, []);
+  assert.deepEqual(agent.modelSwitches, []);
+});
+
+test("/model keeps healthy providers selectable when another catalog fails", async () => {
+  const presenter = new RecordingPresenter({ selections: ["deepseek/deepseek-v4-pro"] });
+  const { commands, catalog, agent } = createSessionCommandFixture({
+    presenter, configured: new Set(["deepseek", "anthropic"]),
+  });
+  catalog.refresh = async (provider) => {
+    if (provider === "anthropic") throw new Error("catalog unavailable");
+  };
+
+  await commands.execute("/model");
+
+  assert.equal(agent.model, "deepseek-v4-pro");
+  assert.ok(noticeTexts(presenter).some((text) => text.includes("anthropic") && text.includes("catalog unavailable")));
+});
+
+test("/model rejects a selection outside the available list", async () => {
+  const presenter = new RecordingPresenter({ selections: ["anthropic/claude-sonnet-4-5"] });
+  const { commands, agent } = createSessionCommandFixture({ presenter });
+
+  await commands.execute("/model");
+
+  assert.deepEqual(agent.modelSwitches, []);
+  assert.ok(presenter.notices.some((notice) => notice.tone === "error"));
+});
+
+test("explicit provider selection guides login when credentials are missing", async () => {
+  const presenter = new RecordingPresenter();
+  const { commands } = createSessionCommandFixture({ presenter });
+
+  await commands.execute("/model anthropic");
+
+  assert.deepEqual(presenter.selections, []);
+  assert.ok(noticeTexts(presenter).some((text) => text.includes("/login anthropic")));
 });
 
 test("/model with one non-provider argument selects a model on the current provider", async () => {
@@ -704,6 +818,7 @@ test("login cancellation and service failures use warning and error notices", as
     ensureConfigured: async () => false,
   };
   const commands = new SessionCommands({
+    copyText: async () => ({ status: "unavailable", reason: "Test clipboard is disabled." }),
     agent: new FakeAgent({ model: "claude-sonnet-4-5", provider: "anthropic" }),
     selector: new ModelSelector({ catalog, providerAuth }),
     catalog,
