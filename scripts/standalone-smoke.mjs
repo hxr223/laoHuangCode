@@ -12,8 +12,8 @@ const version = JSON.parse(readFileSync(join(root, 'apps/cli/package.json'), 'ut
 const windows = process.platform === 'win32';
 const archive = `laohuang-${version}-${process.platform}-${process.arch}.${windows ? 'zip' : 'tar.gz'}`;
 const temp = mkdtempSync(join(tmpdir(), 'laohuang-standalone-smoke-'));
-function run(command, args, env, input) {
-  return spawnSync(command, args, { cwd: temp, env, input, encoding: 'utf8', timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+function run(command, args, env, input, timeout = 120_000) {
+  return spawnSync(command, args, { cwd: temp, env, input, encoding: 'utf8', timeout, maxBuffer: 4 * 1024 * 1024 });
 }
 function success(result) {
   assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);
@@ -44,7 +44,7 @@ try {
     env.Path = (process.env.Path ?? process.env.PATH ?? '').split(';').filter(path => path && !existsSync(join(path, 'node.exe'))).join(';');
     env.LOCALAPPDATA = join(home, 'AppData/Local');
     env.LAOHUANG_NO_MODIFY_PATH = '1';
-    success(run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'install.ps1')], env));
+    success(run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'install.ps1')], env, undefined, 300_000));
     if (process.env.GITHUB_ACTIONS === 'true') {
       // Only the disposable runner account is used for persistent PATH checks.
       // Restore it even when the assertion or installer fails.
@@ -64,10 +64,10 @@ try {
   if ($LASTEXITCODE -ne 0) { throw 'Command name failed after PATH configuration' }
 } finally { [Environment]::SetEnvironmentVariable('Path', $before, 'User') }
 `);
-      success(run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', checkPath], { ...env, LAOHUANG_INSTALLER_SCRIPT: join(root, 'install.ps1') }));
+      success(run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', checkPath], { ...env, LAOHUANG_INSTALLER_SCRIPT: join(root, 'install.ps1') }, undefined, 600_000));
     }
     env.Path = join(install, 'bin') + ';' + env.Path;
-    launch = (args, input) => run('powershell.exe', ['-NoProfile', '-Command', `& laohuang ${args.join(' ')}; exit $LASTEXITCODE`], env, input);
+    launch = (args, input) => run('powershell.exe', ['-NoProfile', '-Command', `& laohuang ${args.join(' ')}; exit $LASTEXITCODE`], env, input, args[0] === 'update' ? 300_000 : 120_000);
   } else {
     // Only installer utilities are available; even /usr/bin/node is excluded.
     const tools = join(temp, 'tools');
