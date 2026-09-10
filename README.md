@@ -9,7 +9,27 @@
 
 ## 安装
 
-需要 Node.js >=22.19.0 和 Bash。
+推荐使用独立安装器，无需预装 Node.js 或 npm。支持 macOS、Linux glibc、Windows
+的 x64 / ARM64；需要 Bash，Windows 请先安装 Git for Windows。
+
+macOS / Linux：
+
+```bash
+curl -fsSL https://github.com/hxr223/laoHuangCode/releases/latest/download/install.sh | sh
+```
+
+Windows PowerShell：
+
+```powershell
+irm https://github.com/hxr223/laoHuangCode/releases/latest/download/install.ps1 | iex
+```
+
+安装器会校验下载、验证启动，并自动配置用户 `PATH`。安装后打开新终端，
+或执行安装器显示的环境刷新命令，即可运行 `laohuang`。
+安装路径、指定版本、升级恢复及卸载见 [安装说明](INSTALLING.md)。
+
+也可以通过 npm 全局安装，需要 Node.js >=22.19.0、Bash，并确保 npm 全局命令目录
+已经在 `PATH` 中：
 
 ```bash
 npm install -g laohuang
@@ -24,15 +44,16 @@ laohuang
 
 首次启动会引导你选择供应商、隐藏输入 API key 并选择模型，无需手动设置环境变量。
 
-更新当前 npm 安装：
+更新当前安装：
 
 ```bash
 laohuang update
 ```
 
-命令定位当前运行的安装，更新到 npm `latest` 稳定版本，并验证安装结果。
-更新完成后重新启动 `laohuang`。已是最新版本时不重复安装，也不会自动降级。
-支持 npm 全局安装、项目直接依赖和 workspace 直接依赖；局部更新会修改对应的
+独立安装会下载 GitHub Releases 的最新安装包，校验和试运行成功后切换入口，保留旧版。
+npm 安装则定位当前运行的安装，更新到 npm `latest` 稳定版本，并验证安装结果。
+更新完成后重新启动 `laohuang`。npm 更新在已是最新版本时不重复安装，也不会自动降级。
+npm 更新支持全局安装、项目直接依赖和 workspace 直接依赖；局部更新会修改对应的
 `package.json` 与 lockfile。源码、link、npx 临时安装及其他包管理器管理的安装
 需要通过各自的更新方式处理，命令会给出提示。
 

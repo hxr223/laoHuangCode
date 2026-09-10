@@ -2,12 +2,16 @@ name: CI
 
 on:
   push:
+    branches: [develop, main]
   pull_request:
 
 permissions:
   contents: read
 
 jobs:
+  standalone:
+    uses: ./.github/workflows/standalone.yml
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -42,6 +46,12 @@ jobs:
           node-version: ${{ matrix.node-version }}
       - run: npm ci
       - run: npm run build
+      - name: Install tmux for stdin regression tests (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y tmux
+      - name: Install tmux for stdin regression tests (macOS)
+        if: runner.os == 'macOS'
+        run: brew list tmux || brew install tmux
       - run: npm test
       - run: npm run smoke:package
 
@@ -58,7 +68,7 @@ jobs:
       - run: npm run build
       - run: node apps/cli/dist/bin.js --version
       - name: Windows paths, console adapter, and process lifecycle
-        run: node --test scripts/local-paths.test.ts scripts/windows-terminal.test.ts scripts/bash-process-windows.test.ts scripts/tui-input.test.ts
+        run: node --test scripts/local-paths.test.ts scripts/windows-terminal.test.ts scripts/bash-process-windows.test.ts scripts/tui-input.test.ts scripts/stdin-prompts.test.ts scripts/startup-stdin.test.ts
 
   version:
     # Every merged pull request is an npm publish: the version must be a stable

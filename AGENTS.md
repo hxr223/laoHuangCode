@@ -113,8 +113,8 @@ Build first with `npm run build` before running `node apps/cli/dist/bin.js`.
 
 ## Publishing
 
-- This project publishes only an npm package; there is no PyPI or wheel release path.
-- Follow `docs/publishing.md` for version and release work.
+- This project publishes the `laohuang` npm package and self-contained archives on GitHub Releases; there is no PyPI or wheel release path.
+- Follow `INSTALLING.md` for standalone build/release checks and `docs/publishing.md` for npm version and release work.
 - Before release-related changes, run the full local check from that document:
 
   ```bash
