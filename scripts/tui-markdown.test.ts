@@ -40,10 +40,10 @@ test("markdown code spans use foreground color without terminal background", () 
   assert.ok(!rendered.includes("\x1b[48;2;"));
 });
 
-test("markdown truncation preserves the semantic span through the compiler", () => {
+test("narrow markdown wrapping preserves all text and semantic style", () => {
   const lines = renderMarkdownLines("**你好abcdef**", 5, DEFAULT_DARK_THEME);
 
-  assert.deepEqual(lines, ["\x1b[1m你好a\x1b[0m"]);
+  assert.deepEqual(lines, ["\x1b[1m你好a\x1b[0m", "\x1b[1mbcdef\x1b[0m"]);
 });
 
 test("markdown osc8 controls do not count as visible width", () => {
