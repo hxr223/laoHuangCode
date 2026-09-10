@@ -258,7 +258,7 @@ export function projectInput(text: string, cursor: number, width: number, prompt
   let row = "";
   let column = 0;
   let cursorRow = 0;
-  let cursorColumn = 0;
+  let cursorColumn = promptWidth;
   const placeCursor = (): void => {
     cursorRow = rows.length + (column === contentWidth ? 1 : 0);
     cursorColumn = promptWidth + (column === contentWidth ? 0 : column);
