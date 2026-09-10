@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+release=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+# Child tools (including MCP servers) can use the bundled Node too.
+PATH="$release/runtime/bin:$PATH"
+export PATH
+if [ "${1:-}" = update ] && [ "$#" -eq 1 ]; then
+  LAOHUANG_INSTALL_DIR=$(CDPATH= cd -- "$release/../.." && pwd)
+  export LAOHUANG_INSTALL_DIR
+  exec /bin/sh "$release/install.sh"
+fi
+if [ "${1:-}" = update ] && [ "$#" -eq 2 ]; then
+  case "$2" in --help|-h)
+    printf '%s\n' 'laohuang update: install the latest standalone release into this installation.'
+    exit 0 ;;
+  esac
+fi
+exec "$release/runtime/bin/node" "$release/app/node_modules/laohuang/dist/bin.js" "$@"

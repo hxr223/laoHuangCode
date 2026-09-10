@@ -8,6 +8,9 @@ permissions:
   contents: read
 
 jobs:
+  standalone:
+    uses: ./.github/workflows/standalone.yml
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
