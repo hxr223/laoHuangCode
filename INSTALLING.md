@@ -98,12 +98,21 @@ Node 版本固定在 `scripts/build-standalone.mjs` 和 standalone workflow 中�
 `smoke:standalone` 使用临时 HOME、隔离 PATH 和本地下载源，验证通过命令名启动、
 首次配置入口、更新和损坏下载后的恢复；不调用模型 API，不修改开发者 shell 配置。
 本地 Windows smoke 跳过真实用户 Path 修改；GitHub Actions 中会对临时 runner 账户
-验证 Path 持久化及重复安装，并在 finally 中恢复。平台安装脚本测试与原生包验证在 CI 的六个平台执行。
+验证 Path 持久化及重复安装，并在 finally 中恢复。PR CI 仅在 Ubuntu x64 执行安装验收；
+Windows 和 macOS 的安装、更新行为需要在对应平台单独运行上述检查。
 `LAOHUANG_DOWNLOAD_BASE` 用于本地验收或显式配置镜像；只接受 HTTPS 或本地 file URL，
 其布局必须与 GitHub Releases 一致。
 
-CI 和 Release 共用 `.github/workflows/standalone.yml`。合并到 main 后，六个平台
-原生安装验收全部通过，才允许发布 npm；npm 版本验证完成后，再创建 GitHub Release，
+面向 main 的 PR CI 统一使用 Ubuntu 和 Node 24：构建任务检查 CLI 与 npm 包，上传
+CLI 和内部包的构建产物；五个测试任务下载同一份产物，使用 Node 的 `--test-shard`
+按测试文件分片并行执行，不重复构建。另有独立包安装验收和发布版本检查，共八个任务。
+这不覆盖 macOS、Windows 或 Node 22 上的全量测试行为。
+
+CI 和 Release 共用 `.github/workflows/standalone.yml`。PR CI 通过 `platforms` 选择
+Ubuntu x64，使用 Node 24 执行构建工具，安装包仍携带固定的 Node 22.23.2。
+Release 使用默认六平台矩阵，设置 `validate-installation: false`，跳过安装器测试和安装、更新验收，
+仍从合并后的 main 构建六个平台归档，并执行构建内的运行时和原生依赖检查。
+六个平台构建成功后，执行 npm 构建、测试和发布；npm 版本验证完成后，再创建 GitHub Release，
 上传归档、校验和、版本文件和两个安装脚本。Release 草稿上传完成后才设为 latest，
 避免安装器读到缺少文件的版本。npm 和 GitHub 发布不具有跨服务事务性；后者失败时
 重跑失败的 GitHub 发布任务，不要重复发布已经存在的 npm 版本。
