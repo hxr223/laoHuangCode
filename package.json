@@ -21,12 +21,21 @@
     "verify:published": "node scripts/verify-published-version.mjs",
     "stats:test": "node scripts/test-stats.mjs",
     "profile:cli": "node scripts/profile-cli.mjs",
-    "prepack": "npm run build"
+    "eval:prepare": "npm run build && node scripts/evals/cli.ts prepare",
+    "eval:check": "tsc -p scripts/evals/tsconfig.json && node --test scripts/eval-*.test.ts",
+    "eval:offline": "LAOHUANG_EVAL_DOCKER_TESTS=1 node --test scripts/eval-sandbox.test.ts",
+    "eval:all": "node scripts/evals/cli.ts run",
+    "eval:config": "node scripts/evals/cli.ts config",
+    "eval:web": "promptfoo view -p 15500",
+    "prepack": "npm run build",
+    "eval:generate": "node scripts/evals/cli.ts generate",
+    "eval:tui": "npm run smoke:tui"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@xterm/headless": "5.5.0",
     "esbuild": "^0.28.2",
+    "promptfoo": "0.122.2",
     "typescript": "^5.5.0"
   }
 }
