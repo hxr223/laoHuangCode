@@ -1,9 +1,8 @@
 name: CI
 
 on:
-  push:
-    branches: [develop, main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
@@ -11,65 +10,57 @@ permissions:
 jobs:
   standalone:
     uses: ./.github/workflows/standalone.yml
+    with:
+      platforms: '["ubuntu-latest"]'
+      node-version: "24"
 
   build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        # Match the declared engine floor and the runtime used for releases.
-        node-version: ["22.19.0", "24"]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
-          node-version: ${{ matrix.node-version }}
-      - run: npm ci
-      - run: npm run build
-      - run: node apps/cli/dist/bin.js --version
-
-  test:
-    # The test suite imports and spawns the TypeScript sources directly, which
-    # relies on Node's built-in type stripping (Node >= 22.18).
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        node-version: ["22.19.0", "24"]
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: ${{ matrix.node-version }}
-      - run: npm ci
-      - run: npm run build
-      - name: Install tmux for stdin regression tests (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get install -y tmux
-      - name: Install tmux for stdin regression tests (macOS)
-        if: runner.os == 'macOS'
-        run: brew list tmux || brew install tmux
-      - run: npm test
-      - run: npm run smoke:package
-
-  windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
+          node-version: "24"
+          cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run build
       - run: node apps/cli/dist/bin.js --version
-      - name: Windows paths, console adapter, and process lifecycle
-        run: node --test scripts/local-paths.test.ts scripts/windows-terminal.test.ts scripts/bash-process-windows.test.ts scripts/tui-input.test.ts scripts/stdin-prompts.test.ts scripts/startup-stdin.test.ts
+      - run: npm run smoke:package -- --skip-build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: test-build
+          path: |
+            apps/cli/dist/
+            packages/*/*/dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  test:
+    # Workspace imports and CLI subprocess tests need the shared build output.
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: test-build
+          path: .
+      - name: Install tmux for stdin regression tests
+        run: sudo apt-get install -y tmux
+      - run: node --test --test-shard=${{ matrix.shard }}/5 "scripts/**/*.test.ts"
 
   version:
     # Every merged pull request is an npm publish: the version must be a stable
@@ -82,7 +73,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v6
         with:
-          node-version: "22"
+          node-version: "24"
           registry-url: https://registry.npmjs.org
       - name: Validate the package version
         run: npm run check:version

@@ -63,6 +63,48 @@ test("narrow layouts keep content and replace only glyphs that cannot fit", () =
   }
 });
 
+test("empty editor places its caret after the visible prompt at every width", () => {
+  const editor = new EditorState();
+  for (const [width, expectedColumn] of [[1, 0], [2, 1], [3, 2], [80, 2]] as const) {
+    for (const mask of [false, true]) {
+      const frame = editor.renderLines(width, { prompt: "> ", mask });
+      assert.equal(frame.cursorRow, 0);
+      assert.equal(frame.cursorColumn, expectedColumn, `width=${width}, mask=${mask}`);
+    }
+  }
+});
+
+test("terminal caret stays after the prompt on startup, deletion and submission", async (t) => {
+  const terminal = new xterm.Terminal({ cols: 40, rows: 12, allowProposedApi: true });
+  const driver = new MemoryTerminalDriver({ columns: 40, rows: 12 });
+  const ui = new TerminalUI({ driver, theme: "dark" });
+  const submitted: string[] = [];
+  t.after(() => { ui.close(); terminal.dispose(); });
+  ui.startLoop(text => { submitted.push(text); });
+  const paint = async (input = "") => {
+    if (input) ui.feedInputBytes(Buffer.from(input));
+    ui.drainLoop();
+    const output = driver.writes();
+    driver.clearWrites();
+    await new Promise<void>(resolve => terminal.write(output, resolve));
+  };
+  const assertEmptyCaret = () => {
+    const buffer = terminal.buffer.active;
+    assert.ok(buffer.getLine(buffer.baseY + buffer.cursorY)!.translateToString(true).startsWith("│> "));
+    assert.equal(buffer.cursorX, 3, "caret must follow the border and two-cell prompt");
+  };
+
+  await paint();
+  assertEmptyCaret();
+  await paint("a");
+  assert.equal(terminal.buffer.active.cursorX, 4);
+  await paint("\x7f");
+  assertEmptyCaret();
+  await paint("hello\r");
+  assert.deepEqual(submitted, ["hello"]);
+  assertEmptyCaret();
+});
+
 test("editor movement, deletion, masking and caret share grapheme boundaries", () => {
   const editor = new EditorState();
   editor.text = "a👩🏽‍💻e\u0301中";
