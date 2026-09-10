@@ -58,7 +58,8 @@ try {
   Remove-Item Env:LAOHUANG_NO_MODIFY_PATH
   & $env:LAOHUANG_INSTALLER_SCRIPT
   $first = [Environment]::GetEnvironmentVariable('Path', 'User')
-  $bin = Join-Path $env:LAOHUANG_INSTALL_DIR 'bin'
+  # The installer expands Windows 8.3 paths (for example RUNNER~1).
+  $bin = Join-Path ([IO.Path]::GetFullPath($env:LAOHUANG_INSTALL_DIR)) 'bin'
   if (($first -split ';')[0] -ine $bin) { throw "Installer did not persist its bin directory first in User PATH. Expected: <$bin>; actual: <$first>" }
   & $env:LAOHUANG_INSTALLER_SCRIPT
   if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $first) { throw 'Reinstallation duplicated PATH entries' }
