@@ -4,15 +4,11 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CodingAgent } from "@laohuang/agent-runtime";
-import { ModelRuntime, type ModelCatalog, type ModelMessage } from "@laohuang/llm";
+import type { ModelCatalog, ModelMessage } from "@laohuang/llm";
 import {
-  COMPACTION_SYSTEM_PROMPT,
   ContextBuilder,
-  ContextGovernor,
   DefaultTokenEstimator,
   type BuildContextInput,
-  type ConversationHistory,
 } from "@laohuang/session-context";
 import { projectTranscript } from "@laohuang/session-store";
 import { createPiAiPlatform } from "@laohuang/llm-pi-ai";
@@ -28,9 +24,9 @@ import {
   makeCancelIntent,
 } from "@laohuang/runtime-protocol";
 import { findProjectRoot } from "@laohuang/project-instructions";
-import { AgentSession, SessionRecorder, SessionState, routeHumanIntent } from "@laohuang/session-runtime";
+import { type AgentSession, SessionState, routeHumanIntent } from "@laohuang/session-runtime";
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
-import { ToolRegistry, ToolSelection, type ToolSpec } from "@laohuang/tools";
+import { ToolRegistry, type ToolSpec } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
 import { getHomeDirectory } from "@laohuang/local-paths";
 import { createBashToolDefinition, resolveBashPath } from "@laohuang/tool-bash";
@@ -58,7 +54,6 @@ import {
   EXCLUDED_PROVIDER_IDS,
   VERIFIED_PROVIDER_IDS,
 } from "./provider-policy.ts";
-import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
 import { TerminalCommandPresenter } from "./terminal-command-presenter.ts";
 import {
   CliUsageError,
@@ -69,6 +64,7 @@ import {
   type ParseResult,
 } from "./args.ts";
 import { SessionController } from "./session-controller.ts";
+import { createSessionRuntime, type SessionRuntime } from "./create-session-runtime.ts";
 import { createMcpRuntime, type McpRuntime } from "./create-mcp-runtime.ts";
 import { createMcpCommand } from "./mcp-commands.ts";
 import {
@@ -247,7 +243,6 @@ export async function main(
     excludedProviderIds: EXCLUDED_PROVIDER_IDS,
     verifiedProviderIds: VERIFIED_PROVIDER_IDS,
   });
-  const modelRuntime = new ModelRuntime(modelPlatform.adapter);
   let presenterInput: PromptFn = async (prompt) => inputFn(prompt);
   let presenterSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
   const providerAuth = new ProviderAuthController({ auth: modelPlatform.auth });
@@ -433,7 +428,7 @@ export async function main(
   });
   let mcpRuntime: McpRuntime | undefined;
   let runtimeForCleanup: AgentSession | undefined;
-  let recorderForCleanup: SessionRecorder | undefined;
+  let composedForCleanup: SessionRuntime | undefined;
   const unsubscribers: Array<() => void> = [];
   try {
     try {
@@ -471,191 +466,38 @@ export async function main(
       } }),
       createBashToolDefinition({ projectRoot, shellPath, env: environ }),
     ]);
-    const activeConversationHistory = {
-      appendToolDefinitions: (input: Parameters<ConversationHistory["appendToolDefinitions"]>[0]) => {
-        if (!sessionController.history) throw new Error("no active session");
-        return sessionController.history.appendToolDefinitions(input);
-      },
-      appendToolCatalog: (input: Parameters<ConversationHistory["appendToolCatalog"]>[0]) => {
-        if (!sessionController.history) throw new Error("no active session");
-        return sessionController.history.appendToolCatalog(input);
-      },
-      appendUser: (input: Parameters<ConversationHistory["appendUser"]>[0]) => {
-        const activeHistory = sessionController.history;
-        if (activeHistory === null) throw new Error("no active session");
-        return activeHistory.appendUser(input);
-      },
-      appendAssistant: (input: Parameters<ConversationHistory["appendAssistant"]>[0]) => {
-        const activeHistory = sessionController.history;
-        if (activeHistory === null) throw new Error("no active session");
-        return activeHistory.appendAssistant(input);
-      },
-      appendToolResults: (input: Parameters<ConversationHistory["appendToolResults"]>[0]) => {
-        const activeHistory = sessionController.history;
-        if (activeHistory === null) throw new Error("no active session");
-        return activeHistory.appendToolResults(input);
-      },
-      appendReminder: (input: Parameters<ConversationHistory["appendReminder"]>[0]) => {
-        const activeHistory = sessionController.history;
-        if (activeHistory === null) throw new Error("no active session");
-        return activeHistory.appendReminder(input);
-      },
-    };
-    const createContextGovernor = (history: ConversationHistory): ContextGovernor => {
-      const modelInfo = selectedModel;
-      if (modelInfo === undefined) {
-        throw new Error("selected model metadata is unavailable");
-      }
-      return new ContextGovernor({
-        appendCompaction: (payload) => history.appendCompaction(payload),
-        summarize: async ({ serialized, maxSummaryTokens }) => {
-          const summary = await modelRuntime.complete({
-            provider: config.provider,
-            model: config.model,
-            ...(config.baseUrl === null ? {} : { baseUrl: config.baseUrl }),
-            messages: [
-              { role: "system", content: COMPACTION_SYSTEM_PROMPT },
-              { role: "user", content: serialized },
-            ],
-            tools: [],
-            reasoningEffort: "off",
-            temperature: 0,
-            maxOutputTokens: Math.min(maxSummaryTokens, modelInfo.maxTokens),
-            maxAttempts: 1,
-          });
-          return {
-            summary: summary.message.content
-              .filter((block) => block.type === "text")
-              .map((block) => block.text)
-              .join(""),
-            inputTokens: summary.usage.inputTokens,
-            outputTokens: summary.usage.outputTokens,
-          };
-        },
-      });
-    };
-    const agent = new CodingAgent({
+    let commandDispatcher: CommandHandler | undefined;
+    let runtimeInitialized = false;
+    const composedRuntime = createSessionRuntime({
       modelAdapter: modelPlatform.adapter,
-      model: config.model,
+      catalog: modelPlatform.catalog,
+      route: { provider: config.provider, model: config.model, baseUrl: config.baseUrl },
       tools: toolRegistry,
-      prepareTools: signal => mcpRuntime?.prepareTools(signal) ?? Promise.resolve(),
-      cliName: "laohuang",
-      cliVersion: VERSION,
-      provider: config.provider,
-      baseUrl: config.baseUrl,
+      prepareTools: (signal) => mcpRuntime?.prepareTools(signal) ?? Promise.resolve(),
+      sessionController,
       projectRoot: instructionRoot,
       startupCwd: process.cwd(),
-      conversationHistory: activeConversationHistory,
-      contextGovernor: selectedModel === undefined || sessionController.history === null
-        ? null
-        : {
-            prepare: async ({ tools, projectTools, reserveTokens, pendingToolCall }): Promise<{
-              readonly messages: readonly ModelMessage[];
-              readonly contextTokens: number;
-              readonly contextWindow: number;
-              readonly hardInputLimit: number;
-            }> => {
-              const history = sessionController.history;
-              if (history === null || selectedModel === undefined) {
-                return { messages: [], contextTokens: 0, contextWindow: 0, hardInputLimit: 0 };
-              }
-              const governor = createContextGovernor(history);
-              const entries = history.entries();
-              const pendingAssistant = pendingToolCall ? [...entries].reverse().find(entry => entry.entryType === "assistant_message") : undefined;
-              const prepared = await governor.prepare({
-                entries: entries.filter(entry => entry !== pendingAssistant),
-                currentProvider: config.provider,
-                currentModel: config.model,
-                tools,
-                projectTools,
-                reserveTokens,
-                budget: {
-                  contextWindow: selectedModel.contextWindow,
-                  maxOutputTokens: selectedModel.maxTokens,
-                },
-                policy: defaultContextPolicy(),
-              });
-              return {
-                messages: prepared.messages,
-                contextTokens: prepared.tokens,
-                contextWindow: selectedModel.contextWindow,
-                hardInputLimit: selectedModel.contextWindow - selectedModel.maxTokens,
-              };
-            },
-          },
-    });
-    const history = sessionController.history;
-    if (history !== null) {
-      if (history.entries().length === 0) {
-        const system = agent.messages.find((message: ModelMessage) => message.role === "system");
-        if (system !== undefined) {
-          history.appendSystemContext({
-            message: system,
-            cwd: process.cwd(),
-          });
-        }
-      } else {
-        agent.messages = [...new ContextBuilder().build({
-          entries: history.entries(),
-          currentProvider: config.provider,
-          currentModel: config.model,
-        }).messages];
-        terminalUi?.replaceTranscript(projectTranscript(history.entries()));
-      }
-    }
-    sessionController.setCompactor(async () => {
-      const activeHistory = sessionController.history;
-      if (activeHistory === null) {
-        throw new Error("no active session");
-      }
-      if (selectedModel === undefined) {
-        throw new Error("selected model metadata is unavailable");
-      }
-      const result = await createContextGovernor(activeHistory).compact({
-        entries: activeHistory.entries(),
-        currentProvider: config.provider,
-        currentModel: config.model,
-        tools: toolRegistry.definitions,
-        projectTools: messages => new ToolSelection().prepare(toolRegistry, messages.map(message => message.role === "system" || message.role === "user" ? message : {})).view.definitions,
-        budget: {
-          contextWindow: selectedModel.contextWindow,
-          maxOutputTokens: selectedModel.maxTokens,
+      version: VERSION,
+      presentation: terminalUi === null ? undefined : {
+        sessionChanged: (sessionId) => terminalUi?.setSessionId(sessionId),
+        historyChanged: (entries) => {
+          const transcript = projectTranscript(entries);
+          if (transcript.length > 0) {
+            terminalUi?.replaceTranscript(transcript);
+          } else if (runtimeInitialized) {
+            resetEmptySessionTranscript(terminalUi);
+          }
         },
-        policy: defaultContextPolicy(),
-        trigger: "manual",
-      });
-      agent.messages = [...new ContextBuilder().build({
-        entries: activeHistory.entries(),
-        currentProvider: config.provider,
-        currentModel: config.model,
-      }).messages];
-      terminalUi?.replaceTranscript(projectTranscript(activeHistory.entries()));
-      return result;
-    });
-    const semanticClassifier = new SmallModelSemanticClassifier({
-      modelRuntime,
-      route: {
-        provider: config.provider,
-        model: config.model,
-        baseUrl: config.baseUrl,
+        contextUsageChanged: ({ contextTokens, contextWindow }) =>
+          terminalUi?.setContextUsage(contextTokens, contextWindow),
       },
-    });
-    // agent-runtime satisfies session-runtime's AgentRunnerLike contract, so
-    // the app can hand the worker to the session directly.
-    let commandDispatcher: CommandHandler | undefined;
-    const runtime = new AgentSession(agent, {
-      sessionId: sessionController.currentSessionId ?? undefined,
-      semanticClassifier,
       commandDispatcher: (command) =>
         commandDispatcher?.(command) ?? { status: "not_found", command },
     });
+    runtimeInitialized = true;
+    composedForCleanup = composedRuntime;
+    const { agent, session: runtime } = composedRuntime;
     runtimeForCleanup = runtime;
-    const sessionRecorder = new SessionRecorder({
-      eventBus: runtime.eventBus,
-      journal: () => sessionController.currentJournal,
-    });
-    recorderForCleanup = sessionRecorder;
-    terminalUi?.setSessionId(runtime.sessionId);
     const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
     const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
 
@@ -691,53 +533,13 @@ export async function main(
         })
       : new TerminalCommandPresenter(terminalUi);
 
-    const refreshContextUsage = (): void => {
-      refreshSessionContextUsage(terminalUi, {
-        entries: sessionController.history?.entries() ?? [],
-        currentProvider: config.provider,
-        currentModel: config.model,
-        tools: toolRegistry.definitions,
-        projectTools: messages => new ToolSelection().prepare(toolRegistry, messages.map(message => message.role === "system" || message.role === "user" ? message : {})).view.definitions,
-        contextWindow: selectedModel?.contextWindow ?? 0,
-      });
-    };
+    const refreshContextUsage = (): void => composedRuntime.refreshContextUsage();
     refreshContextUsage();
 
     mcpRuntime = await createMcpRuntime({ configPath, projectRoot, version: VERSION, registry: toolRegistry,
       presenter: commandPresenter, env: environ, toolsChanged: refreshContextUsage });
 
-    const refreshSessionView = (): void => {
-      const currentSessionId = sessionController.currentSessionId;
-      if (currentSessionId !== null) {
-        runtime.setSessionId(currentSessionId);
-        terminalUi?.setSessionId(currentSessionId);
-      }
-      const activeHistory = sessionController.history;
-      if (activeHistory === null) {
-        return;
-      }
-      const entries = activeHistory.entries();
-      if (entries.length === 0) {
-        const system = agent.messages.find((message: ModelMessage) => message.role === "system");
-        if (system !== undefined) {
-          activeHistory.appendSystemContext({
-            message: system,
-            cwd: process.cwd(),
-          });
-          agent.messages = [system];
-        }
-        resetEmptySessionTranscript(terminalUi);
-        refreshContextUsage();
-        return;
-      }
-      agent.messages = [...new ContextBuilder().build({
-        entries,
-        currentProvider: config.provider,
-        currentModel: config.model,
-      }).messages];
-      terminalUi?.replaceTranscript(projectTranscript(entries));
-      refreshContextUsage();
-    };
+    const refreshSessionView = (): void => composedRuntime.refreshSession();
 
     const clipboardRunner = createClipboardRunner(environ);
     const commands = new SessionCommands({
@@ -770,7 +572,7 @@ export async function main(
       onSessionChanged: refreshSessionView,
       homeDirectory: getHomeDirectory({ env: environ }),
       onModelSelected: (selection) => {
-        semanticClassifier.configure({
+        composedRuntime.switchModel({
           provider: selection.config.provider,
           model: selection.config.model,
           baseUrl: selection.config.baseUrl,
@@ -880,8 +682,8 @@ export async function main(
       for (const unsubscribe of unsubscribers) unsubscribe();
       try { await mcpRuntime?.close(); }
       finally {
-        try { await recorderForCleanup?.close(); }
-        finally { await sessionController.close(); }
+        if (composedForCleanup) await composedForCleanup.close();
+        else await sessionController.close();
       }
     }
   }
@@ -889,16 +691,6 @@ export async function main(
 
 function defaultSessionsRoot(environ: Record<string, string | undefined>): string {
   return join(getHomeDirectory({ env: environ }), ".laohuang", "sessions");
-}
-
-function defaultContextPolicy() {
-  return {
-    auto: true,
-    thresholdRatio: 0.8,
-    retainRatio: 0.16,
-    maxSummaryTokens: 8192,
-    safetyRatio: 0.05,
-  } as const;
 }
 
 export async function runInitialModelSelection(options: {
