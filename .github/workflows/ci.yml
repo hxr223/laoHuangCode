@@ -17,7 +17,8 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: ["18", "20", "22"]
+        # Match the declared engine floor and the runtime used for releases.
+        node-version: ["22.19.0", "24"]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -36,7 +37,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest]
-        node-version: ["22"]
+        node-version: ["22.19.0", "24"]
     steps:
       - uses: actions/checkout@v6
         with:

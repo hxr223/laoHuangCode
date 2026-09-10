@@ -7,7 +7,7 @@ import {
   ProviderSelectorView,
 } from "./components/views/effort-selector.ts";
 import { ModelSelectorView } from "./components/views/model-selector.ts";
-import { OverlayManager } from "./overlay-manager.ts";
+import { OverlayManager, type FloatingOverlayOptions } from "./overlay-manager.ts";
 import type { RenderContext, ComponentRenderResult } from "./render-model.ts";
 import type { TuiInputEvent } from "../keybindings/key-id.ts";
 
@@ -29,7 +29,7 @@ export class ViewHost {
   openSelection(request: SelectionRequest): Promise<string | null> {
     return new Promise((resolve) => {
       const component = this.#selectionComponent(request);
-      this.#open({ id: request.id, component, resolve }, "selector");
+      this.#open({ id: request.id, component, resolve }, "selector", request.floating);
     });
   }
 
@@ -40,7 +40,7 @@ export class ViewHost {
         onSubmit: (value) => this.#close(request.id, value),
         onCancel: () => this.#close(request.id, null),
       });
-      this.#open({ id: request.id, component, resolve }, "modal");
+      this.#open({ id: request.id, component, resolve }, "modal", request.floating);
     });
   }
 
@@ -49,6 +49,7 @@ export class ViewHost {
   }
 
   render(context: RenderContext): ComponentRenderResult {
+    if (this.#overlays.top()?.placement === "floating") return { lines: [] };
     return this.#topView()?.component.render(context) ?? { lines: [] };
   }
 
@@ -69,10 +70,12 @@ export class ViewHost {
     return this.#topView()?.id ?? null;
   }
 
-  #open(view: ActiveView<string>, priority: "selector" | "modal"): void {
+  #open(view: ActiveView<string>, priority: "selector" | "modal", floating?: FloatingOverlayOptions): void {
     this.#close(view.id, null);
     this.#views.push(view);
-    if (priority === "selector") {
+    if (floating !== undefined) {
+      this.#overlays.open({ id: view.id, component: view.component, priority, placement: "floating", options: floating });
+    } else if (priority === "selector") {
       this.#overlays.open(createSelectorOverlay(view.id, view.component));
     } else {
       this.#overlays.open(createModalOverlay(view.id, view.component));

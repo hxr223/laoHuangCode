@@ -9,7 +9,7 @@ import {
   type StyledLine,
   type StyledSpan,
 } from "../render-model.ts";
-import { charCellWidth } from "../screen.ts";
+import { visibleWidth } from "../screen.ts";
 import type { UIState } from "../state.ts";
 
 export interface StatusLineOptions {
@@ -128,7 +128,5 @@ function fits(leftItems: readonly string[], right: StyledLine, width: number): b
 }
 
 function displayWidth(value: string): number {
-  let width = 0;
-  for (const character of value) width += charCellWidth(character);
-  return width;
+  return visibleWidth(value);
 }

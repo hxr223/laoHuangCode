@@ -1,4 +1,4 @@
-import { charCellWidth } from "./screen.ts";
+import { clusterWidth, graphemeClusters, stripTerminalControls, normalizeDisplayCluster, visibleWidth } from "./terminal-text.ts";
 import type { TerminalTheme } from "./theme.ts";
 
 export type StyleToken =
@@ -21,6 +21,7 @@ export type StyleToken =
   | "bash";
 
 export interface SpanStyle {
+  readonly hyperlink?: string;
   readonly foreground?: StyleToken;
   readonly background?: StyleToken;
   readonly bold?: boolean;
@@ -64,106 +65,69 @@ export function lineText(value: StyledLine): string {
   return value.spans.map((item) => item.text).join("");
 }
 
-export function wrapStyledSpans(
-  spans: readonly StyledSpan[],
-  width: number,
-): StyledLine[] {
-  const targetWidth = Math.max(1, width);
-  const lines: StyledLine[] = [];
-  let current: StyledSpan[] = [];
-  let currentWidth = 0;
-  let skipLineFeed = false;
-
-  const append = (text: string, style: SpanStyle | undefined): void => {
-    const previous = current.at(-1);
-    if (previous !== undefined && previous.style === style) {
-      current[current.length - 1] = span(previous.text + text, style);
-      return;
+/** Whole graphemes across span boundaries; the starting span owns the grapheme style. */
+export function styledClusters(spans: readonly StyledSpan[]): StyledSpan[] {
+  const sources = spans.map(source => ({ ...source, text: stripTerminalControls(source.text) }));
+  const text = sources.map(source => source.text).join("");
+  let sourceIndex = 0;
+  let sourceEnd = sources[0]?.text.length ?? 0;
+  let offset = 0;
+  const result: StyledSpan[] = [];
+  for (const cluster of graphemeClusters(text)) {
+    while (sourceIndex + 1 < sources.length && sourceEnd <= offset) {
+      sourceEnd += sources[++sourceIndex]!.text.length;
     }
-    current.push(span(text, style));
-  };
-  const finish = (): void => {
-    lines.push(line(...current));
-    current = [];
-    currentWidth = 0;
-  };
-
-  for (const source of spans) {
-    for (const character of source.text) {
-      if (character === "\r") {
-        finish();
-        skipLineFeed = true;
-        continue;
-      }
-      if (character === "\n") {
-        if (skipLineFeed) {
-          skipLineFeed = false;
-          continue;
-        }
-        finish();
-        continue;
-      }
-      skipLineFeed = false;
-      const characterWidth = charCellWidth(character);
-      if (characterWidth > targetWidth) {
-        throw new Error(
-          `code point exceeds wrap width: ${characterWidth} > ${targetWidth}`,
-        );
-      }
-      if (currentWidth > 0 && currentWidth + characterWidth > targetWidth) {
-        finish();
-      }
-      append(character, source.style);
-      currentWidth += characterWidth;
-    }
+    result.push(span(normalizeDisplayCluster(cluster), sources[sourceIndex]?.style));
+    offset += cluster.length;
   }
-  finish();
+  return result;
+}
+
+export function wrapStyledSpans(spans: readonly StyledSpan[], width: number): StyledLine[] {
+  const target = Math.max(1, width);
+  const lines: StyledLine[] = [];
+  let row: StyledSpan[] = [];
+  let used = 0;
+  for (const source of styledClusters(spans)) {
+    if (/^[\r\n]+$/u.test(source.text)) {
+      lines.push(line(...mergeAdjacent(row))); row = []; used = 0;
+      continue;
+    }
+    const measured = visibleWidth(source.text);
+    const cell = measured > target ? span("�", source.style) : source;
+    const cellWidth = measured > target ? 1 : measured;
+    if (used > 0 && used + cellWidth > target) {
+      lines.push(line(...mergeAdjacent(row))); row = []; used = 0;
+    }
+    row.push(cell); used += cellWidth;
+  }
+  lines.push(line(...mergeAdjacent(row)));
   return lines;
 }
 
-export function truncateStyledLine(
-  value: StyledLine,
-  width: number,
-  ellipsis = "…",
-): StyledLine {
-  if (width <= 0) {
-    return plainLine("");
-  }
-
+export function truncateStyledLine(value: StyledLine, width: number, ellipsis = "…"): StyledLine {
+  if (width <= 0) return plainLine("");
   const result: StyledSpan[] = [];
   let used = 0;
   let truncated = false;
-  let trailingStyle: SpanStyle | undefined;
-  for (const source of value.spans) {
-    for (const character of source.text) {
-      const characterWidth = charCellWidth(character);
-      if (used + characterWidth > width) {
-        truncated = true;
-        trailingStyle = source.style;
-        break;
-      }
-      result.push(span(character, source.style));
-      used += characterWidth;
-      trailingStyle = source.style;
-    }
-    if (truncated) {
-      break;
-    }
+  for (const source of styledClusters(value.spans)) {
+    const measured = textWidth(source.text);
+    if (used + measured > width) { truncated = true; break; }
+    result.push(source); used += measured;
   }
-  if (!truncated) {
-    return line(...mergeAdjacent(result));
-  }
-
-  const ellipsisWidth = ellipsis === "" ? 0 : charCellWidth(ellipsis);
-  while (result.length > 0 && used + ellipsisWidth > width) {
-    const removed = result.pop() as StyledSpan;
-    used -= charCellWidth(removed.text);
-    trailingStyle = removed.style;
-  }
-  if (ellipsisWidth <= width) {
-    result.push(span(ellipsis, trailingStyle));
+  if (truncated && ellipsis) {
+    const suffix = truncateStyledLine(plainLine(ellipsis), width, "");
+    const suffixWidth = styledLineWidth(suffix);
+    while (result.length && used + suffixWidth > width) used -= textWidth(result.pop()!.text);
+    result.push(...suffix.spans.map(part => span(part.text, result.at(-1)?.style)));
   }
   return line(...mergeAdjacent(result));
+}
+
+function textWidth(text: string): number {
+  let width = 0;
+  for (const cluster of graphemeClusters(text)) width += clusterWidth(cluster);
+  return width;
 }
 
 export function padStyledLine(
@@ -181,12 +145,8 @@ export function padStyledLine(
   );
 }
 
-function styledLineWidth(value: StyledLine): number {
-  let width = 0;
-  for (const character of lineText(value)) {
-    width += charCellWidth(character);
-  }
-  return width;
+export function styledLineWidth(value: StyledLine): number {
+  return textWidth(lineText(value));
 }
 
 function mergeAdjacent(spans: readonly StyledSpan[]): StyledSpan[] {

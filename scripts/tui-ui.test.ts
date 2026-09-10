@@ -2337,6 +2337,14 @@ class FakeInputSource implements LoopInputSource {
   }
 }
 
+async function waitForTerminalOutput(terminal: MemoryTerminalDriver, text: string): Promise<void> {
+  const deadline = performance.now() + 1_000;
+  while (!terminal.writes().includes(text) && performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(terminal.writes().includes(text), `Terminal did not render ${JSON.stringify(text)}`);
+}
+
 test("run renders command presenter blocks appended while stdin is idle", async () => {
   const terminal = new MemoryTerminalDriver({ columns: 80, rows: 24 });
   const ui = new TerminalUI({ driver: terminal });
@@ -2356,9 +2364,7 @@ test("run renders command presenter blocks appended while stdin is idle", async 
   try {
     terminal.clearWrites();
     await commands.execute("/help");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    assert.ok(terminal.writes().includes("/model [provider|model] [model]"));
+    await waitForTerminalOutput(terminal, "/model [provider|model] [model]");
   } finally {
     loop.requestExit();
     await done;
@@ -2449,8 +2455,7 @@ test("run renders published events without waiting for stdin", async () => {
     ui.publishEvent(event("model.text_delta", "r1", { text: "streaming answer" }));
     // No drain() and no stdin bytes: the production wakeup (the Python
     // selector loop's wakeup-pipe role) must render the delta anyway.
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.ok(terminal.writes().includes("streaming answer"));
+    await waitForTerminalOutput(terminal, "streaming answer");
   } finally {
     loop.requestExit();
     await done;
