@@ -13,7 +13,11 @@ permissions:
   contents: read
 
 jobs:
+  standalone:
+    uses: ./.github/workflows/standalone.yml
+
   publish-npm:
+    needs: standalone
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -57,3 +61,39 @@ jobs:
         env:
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: npm run verify:published -- "$EXPECTED_VERSION"
+
+  publish-standalone:
+    needs: publish-npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: standalone-*
+          path: .build/standalone
+          merge-multiple: true
+      - name: Publish verified standalone assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(cat .build/standalone/version.txt)"
+          test "$version" = "$(node --print 'require("./apps/cli/package.json").version')"
+          for target in darwin-x64 darwin-arm64 linux-x64 linux-arm64 win32-x64 win32-arm64; do
+            extension=tar.gz
+            if [[ "$target" == win32-* ]]; then extension=zip; fi
+            archive="laohuang-$version-$target.$extension"
+            (cd .build/standalone && sha256sum -c "$archive.sha256")
+          done
+          cp install.sh install.ps1 .build/standalone/
+          if gh release view "v$version" --json isDraft,targetCommitish > .build/release.json; then
+            node --input-type=module -e 'import fs from "node:fs"; const r=JSON.parse(fs.readFileSync(".build/release.json")); if (!r.isDraft || r.targetCommitish !== process.env.GITHUB_SHA) throw new Error("Refusing to replace a published release or another commit");'
+          else
+            gh release create "v$version" --target "$GITHUB_SHA" --title "laohuang $version" --generate-notes --draft
+          fi
+          gh release upload "v$version" .build/standalone/* --clobber
+          gh release edit "v$version" --draft=false --latest

@@ -6,6 +6,8 @@ import {
 import {
   SessionManager,
   canonicalProjectRoot,
+  normalizeSessionTitle,
+  sessionTitleAt,
   type ForkResult,
   type OpenedSession,
   type SessionSummary,
@@ -36,6 +38,8 @@ export class SessionController {
   #compactor: SessionCompactor | null = null;
   #opened: OpenedSession | null = null;
   #history: ConversationHistory | null = null;
+  #currentTitle: string | null = null;
+  #titlePersistenceUncertain = false;
   readonly presentationEventBus = new EventBus();
 
   constructor(options: SessionControllerOptions) {
@@ -71,6 +75,24 @@ export class SessionController {
     return this.#opened?.journal ?? null;
   }
 
+  get currentTitle(): string | null {
+    return this.#currentTitle;
+  }
+
+  latestAssistantText(): string | null {
+    const entries = this.#history?.entries() ?? [];
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]!;
+      if (entry.entryType !== "assistant_message") continue;
+      const text = entry.payload.message.content
+        .filter((block) => block.type === "text")
+        .map((block) => block.text)
+        .join("");
+      if (text.length > 0) return text;
+    }
+    return null;
+  }
+
   async createNew(): Promise<void> {
     await this.close();
     this.#opened = this.#manager.create({
@@ -84,6 +106,8 @@ export class SessionController {
       this.#opened.replay,
       this.#opened.journal,
     );
+    this.#currentTitle = null;
+    this.#titlePersistenceUncertain = false;
   }
 
   async resume(sessionId: string): Promise<void> {
@@ -95,6 +119,8 @@ export class SessionController {
     }
     this.#opened = opened;
     this.#history = ConversationHistory.fromReplay(opened.replay, opened.journal);
+    this.#currentTitle = sessionTitleAt(opened.replay.items);
+    this.#titlePersistenceUncertain = false;
   }
 
   async continueLatest(): Promise<void> {
@@ -106,6 +132,8 @@ export class SessionController {
     }
     this.#opened = opened;
     this.#history = ConversationHistory.fromReplay(opened.replay, opened.journal);
+    this.#currentTitle = sessionTitleAt(opened.replay.items);
+    this.#titlePersistenceUncertain = false;
   }
 
   list(): readonly SessionSummary[] {
@@ -138,6 +166,29 @@ export class SessionController {
     this.#compactor = compactor;
   }
 
+  setName(input: string): void {
+    const title = normalizeSessionTitle(input);
+    const journal = this.currentJournal;
+    if (journal === null) {
+      throw new Error("No active session.");
+    }
+    if (!this.#titlePersistenceUncertain && title === this.#currentTitle) {
+      return;
+    }
+    journal.appendRecord({
+      recordType: "session_name_changed",
+      payload: { title },
+    });
+    try {
+      journal.flush();
+    } catch (error) {
+      this.#titlePersistenceUncertain = true;
+      throw error;
+    }
+    this.#currentTitle = title;
+    this.#titlePersistenceUncertain = false;
+  }
+
   async compact(): Promise<CompactionResult> {
     if (this.#history === null) {
       throw new Error("no active session");
@@ -159,6 +210,8 @@ export class SessionController {
     this.#opened.journal.close();
     this.#opened = null;
     this.#history = null;
+    this.#currentTitle = null;
+    this.#titlePersistenceUncertain = false;
     return true;
   }
 }

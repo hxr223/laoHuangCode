@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ModelCatalog } from "@laohuang/llm";
+import type { ModelCatalog, ModelMessage } from "@laohuang/llm";
 import {
   ContextBuilder,
   DefaultTokenEstimator,
@@ -24,7 +24,7 @@ import {
   makeCancelIntent,
 } from "@laohuang/runtime-protocol";
 import { findProjectRoot } from "@laohuang/project-instructions";
-import { routeHumanIntent } from "@laohuang/session-runtime";
+import { type AgentSession, SessionState, routeHumanIntent } from "@laohuang/session-runtime";
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
 import { ToolRegistry, type ToolSpec } from "@laohuang/tools";
 import { createFileToolDefinitions } from "@laohuang/tool-fs";
@@ -58,12 +58,15 @@ import { TerminalCommandPresenter } from "./terminal-command-presenter.ts";
 import {
   CliUsageError,
   HELP,
+  UPDATE_HELP,
   USAGE,
   parseArgs,
   type ParseResult,
 } from "./args.ts";
 import { SessionController } from "./session-controller.ts";
-import { createSessionRuntime } from "./create-session-runtime.ts";
+import { createSessionRuntime, type SessionRuntime } from "./create-session-runtime.ts";
+import { createMcpRuntime, type McpRuntime } from "./create-mcp-runtime.ts";
+import { createMcpCommand } from "./mcp-commands.ts";
 import {
   defaultInputFn,
   defaultSecretInputFn,
@@ -76,6 +79,9 @@ import {
   type InputFn,
   type OutputFn,
 } from "./repl.ts";
+import { resolveNpmInstallation } from "./update-installation.ts";
+import { runUpdate, updateDiagnostic } from "./update.ts";
+import { copyText, createClipboardRunner } from "./clipboard.ts";
 
 export const VERSION = readPackageVersion();
 
@@ -112,6 +118,7 @@ export interface MainOptions {
   outputFn?: OutputFn | undefined;
   stdin?: { isTTY?: boolean | undefined } | undefined;
   stdout?: { isTTY?: boolean | undefined } | undefined;
+  updateFn?: ((signal?: AbortSignal) => Promise<number>) | undefined;
 }
 
 export function resetEmptySessionTranscript(
@@ -126,6 +133,7 @@ export function refreshSessionContextUsage(
   terminalUi: Pick<TerminalUI, "setContextUsage"> | null,
   input: BuildContextInput & {
     readonly tools: readonly ToolSpec[];
+    readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
     readonly contextWindow: number;
   },
 ): void {
@@ -133,7 +141,7 @@ export function refreshSessionContextUsage(
   const context = new ContextBuilder().build(input);
   const estimator = new DefaultTokenEstimator();
   terminalUi.setContextUsage(
-    estimator.estimateMessages(context.messages) + estimator.estimateTools(input.tools),
+    estimator.estimateMessages(context.messages) + estimator.estimateTools(input.projectTools?.(context.messages) ?? input.tools),
     input.contextWindow,
   );
 }
@@ -161,8 +169,53 @@ export async function main(
     process.stdout.write(`${HELP}\n`);
     return 0;
   }
-  const args = parsed.args;
   const environ = options.environ ?? process.env;
+  const outputFn = options.outputFn ?? ((message: string) => console.log(message));
+  if (parsed.kind === "update-help") {
+    outputFn(UPDATE_HELP);
+    return 0;
+  }
+  if (parsed.kind === "update") {
+    const controller = new AbortController();
+    let signalExitCode: 130 | 143 | null = null;
+    const handleSigint = (): void => {
+      signalExitCode ??= 130;
+      controller.abort();
+    };
+    const handleSigterm = (): void => {
+      signalExitCode ??= 143;
+      controller.abort();
+    };
+    process.once("SIGINT", handleSigint);
+    process.once("SIGTERM", handleSigterm);
+    try {
+      let result: number;
+      if (options.updateFn !== undefined) {
+        result = await options.updateFn(controller.signal);
+      } else {
+        const entryPath = process.argv[1];
+        if (entryPath === undefined) {
+          throw new Error("CLI entry path is unavailable");
+        }
+        const installation = await resolveNpmInstallation(entryPath, environ, {
+          signal: controller.signal,
+        });
+        result = await runUpdate({
+          installation,
+          output: outputFn,
+          signal: controller.signal,
+        });
+      }
+      return signalExitCode ?? result;
+    } catch (error) {
+      outputFn(`${controller.signal.aborted ? "Update cancelled" : "Update failed"}: ${updateDiagnostic(error)}`);
+      return signalExitCode ?? (controller.signal.aborted ? 130 : 1);
+    } finally {
+      process.removeListener("SIGINT", handleSigint);
+      process.removeListener("SIGTERM", handleSigterm);
+    }
+  }
+  const args = parsed.args;
   const projectRoot = process.cwd();
   // Instruction loading roots at the nearest .git ancestor; the tool
   // registry keeps the plain cwd as its root.
@@ -174,7 +227,6 @@ export async function main(
     stdout: options.stdout,
   });
   const inputFn = options.inputFn ?? defaultInputFn;
-  const outputFn = options.outputFn ?? ((message) => console.log(message));
   const secretInputFn = options.secretInputFn ?? defaultSecretInputFn;
 
   const configPath = options.configPath ?? defaultConfigPath(environ);
@@ -374,205 +426,225 @@ export async function main(
     model: config.model,
     reasoningEffort: "high",
   });
-  try {
-    if (args.resumeSessionId !== null) {
-      await sessionController.resume(args.resumeSessionId);
-    } else if (args.continueSession) {
-      await sessionController.continueLatest();
-    } else {
-      await sessionController.createNew();
-    }
-  } catch (error) {
-    writeStderr(`Session error: ${errorMessage(error)}`);
-    return 2;
-  }
-  if (interactive) {
-    terminalDriver = new StdTerminalDriver();
-    terminalUi = new TerminalUI({
-      projectRoot,
-      provider: config.provider,
-      model: config.model,
-      version: VERSION,
-      theme: args.theme,
-      driver: terminalDriver,
-      capabilities: { reasoning: selectedModel?.reasoning ?? false },
-      contextWindow: selectedModel?.contextWindow,
-    });
-    terminalUi.state.provider = config.provider;
-    terminalUi.state.model = config.model;
-  }
-
-  const toolRegistry = new ToolRegistry([
-    ...createFileToolDefinitions({ projectRoot, pathOptions: {
-      env: environ,
-      shellPath: () => resolveBashPath({ shellPath, env: environ }),
-    } }),
-    createBashToolDefinition({ projectRoot, shellPath, env: environ }),
-  ]);
-  let commandDispatcher: CommandHandler | undefined;
-  let runtimeInitialized = false;
-  const composedRuntime = createSessionRuntime({
-    modelAdapter: modelPlatform.adapter,
-    catalog: modelPlatform.catalog,
-    route: {
-      provider: config.provider,
-      model: config.model,
-      baseUrl: config.baseUrl,
-    },
-    tools: toolRegistry,
-    sessionController,
-    projectRoot: instructionRoot,
-    startupCwd: process.cwd(),
-    version: VERSION,
-    presentation: terminalUi === null
-      ? undefined
-      : {
-          sessionChanged: (sessionId) => terminalUi?.setSessionId(sessionId),
-          historyChanged: (entries) => {
-            const transcript = projectTranscript(entries);
-            if (transcript.length > 0) {
-              terminalUi?.replaceTranscript(transcript);
-            } else if (runtimeInitialized) {
-              resetEmptySessionTranscript(terminalUi);
-            }
-          },
-          contextUsageChanged: ({ contextTokens, contextWindow }) =>
-            terminalUi?.setContextUsage(contextTokens, contextWindow),
-        },
-    commandDispatcher: (command) =>
-      commandDispatcher?.(command) ?? { status: "not_found", command },
-  });
-  runtimeInitialized = true;
-  const { agent, session: runtime } = composedRuntime;
-  const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
-  const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
-
-  let replInputFn: InputFn = inputFn;
-  if (plainSink !== null) {
-    const underlyingInput = inputFn;
-    const underlyingSecretInput = secretInputFn;
-    // Setup/command prompts go through the event pipeline in plain mode so
-    // they interleave with task output. The Python original also flushed the
-    // bus here; TS delivery is microtask-driven and catches up at the next
-    // await.
-    const plainInput = async (prompt: string): Promise<string> => {
-      if (prompt) {
-        runtime.publishNotice(prompt);
-      }
-      return underlyingInput("");
-    };
-    const plainSecretInput = async (prompt: string): Promise<string> => {
-      if (prompt) {
-        runtime.publishNotice(prompt);
-      }
-      return underlyingSecretInput("");
-    };
-    replInputFn = plainInput;
-    presenterInput = plainInput;
-    presenterSecretInput = plainSecretInput;
-  }
-  const commandPresenter: CommandPresenter = terminalUi === null
-    ? new PlainCommandPresenter({
-        output: outputFn,
-        input: presenterInput,
-        secretInput: presenterSecretInput,
-      })
-    : new TerminalCommandPresenter(terminalUi);
-
-  const refreshContextUsage = (): void => composedRuntime.refreshContextUsage();
-  refreshContextUsage();
-
-  const refreshSessionView = (): void => composedRuntime.refreshSession();
-
-  const commands = new SessionCommands({
-    agent,
-    selector,
-    currentConfig: {
-      model: config.model,
-      baseUrl: config.baseUrl,
-      provider: config.provider,
-    },
-    catalog: modelPlatform.catalog,
-    providerAuth,
-    presenter: commandPresenter,
-    session: runtime,
-    sessionController,
-    onComposerText: (text) => terminalUi?.setComposerText(text),
-    onSessionChanged: refreshSessionView,
-    homeDirectory: getHomeDirectory({ env: environ }),
-    onModelSelected: (selection) => {
-      composedRuntime.switchModel({
-        provider: selection.config.provider,
-        model: selection.config.model,
-        baseUrl: selection.config.baseUrl,
-      });
-      config = {
-        ...config,
-        provider: selection.config.provider,
-        model: selection.config.model,
-        baseUrl: selection.config.baseUrl,
-      };
-      selectedModel = modelPlatform.catalog.getModel(
-        selection.config.provider,
-        selection.config.model,
-      );
-      if (terminalUi !== null) {
-        const model = selectedModel;
-        terminalUi.state.provider = selection.config.provider;
-        terminalUi.state.model = selection.config.model;
-        terminalUi.setRuntimeCapabilities({ reasoning: model?.reasoning ?? false });
-      }
-      refreshContextUsage();
-    },
-  });
-
+  let mcpRuntime: McpRuntime | undefined;
+  let runtimeForCleanup: AgentSession | undefined;
+  let composedForCleanup: SessionRuntime | undefined;
   const unsubscribers: Array<() => void> = [];
-  const projector = new EventProjector();
-  unsubscribers.push(
-    runtime.eventBus.subscribe((event) => {
-      sessionSink.publishEvent(projector.project(event, "terminal"));
-      if (
-        event.session_id === runtime.sessionId &&
-        (event.kind === "task.completed" || event.kind === "task.cancelled" || event.kind === "task.failed")
-      ) {
-        refreshContextUsage();
-      }
-    }),
-  );
-  if (terminalUi !== null) {
-    terminalUi.setCommandRegistry(commands.registry);
-    terminalUi.setCancelCallback(() => {
-      const action = routeHumanIntent(
-        makeCancelIntent("keyboard", "editor"),
-        runtime.state,
-      );
-      void runtime.submitAction(action);
-    });
-    terminalUi.setKeyActionCallback((action) => {
-      if (action === "select_model") {
-        void commandDispatcher?.("/model");
-        return;
-      }
-      if (action === "toggle_thinking") {
-        terminalUi.toggleReasoningFromKeybinding();
-        return;
-      }
-      commandPresenter.notice({
-        text: `Key action is unavailable: ${action}.`,
-        tone: "warning",
-      });
-    });
-    terminalUi.setRuntimeRunningCallback(() => runtime.activeTask !== null);
-  }
-
-  const handleCommand: CommandHandler = async (command) => {
-    const result = await commands.execute(command);
-    return result;
-  };
-  commandDispatcher = handleCommand;
-
-  let cleanShutdown = false;
   try {
+    try {
+      if (args.resumeSessionId !== null) {
+        await sessionController.resume(args.resumeSessionId);
+      } else if (args.continueSession) {
+        await sessionController.continueLatest();
+      } else {
+        await sessionController.createNew();
+      }
+    } catch (error) {
+      writeStderr(`Session error: ${errorMessage(error)}`);
+      return 2;
+    }
+    if (interactive) {
+      terminalDriver = new StdTerminalDriver();
+      terminalUi = new TerminalUI({
+        projectRoot,
+        provider: config.provider,
+        model: config.model,
+        version: VERSION,
+        theme: args.theme,
+        driver: terminalDriver,
+        capabilities: { reasoning: selectedModel?.reasoning ?? false },
+        contextWindow: selectedModel?.contextWindow,
+      });
+      terminalUi.state.provider = config.provider;
+      terminalUi.state.model = config.model;
+    }
+
+    const toolRegistry = new ToolRegistry([
+      ...createFileToolDefinitions({ projectRoot, pathOptions: {
+        env: environ,
+        shellPath: () => resolveBashPath({ shellPath, env: environ }),
+      } }),
+      createBashToolDefinition({ projectRoot, shellPath, env: environ }),
+    ]);
+    let commandDispatcher: CommandHandler | undefined;
+    let runtimeInitialized = false;
+    const composedRuntime = createSessionRuntime({
+      modelAdapter: modelPlatform.adapter,
+      catalog: modelPlatform.catalog,
+      route: { provider: config.provider, model: config.model, baseUrl: config.baseUrl },
+      tools: toolRegistry,
+      prepareTools: (signal) => mcpRuntime?.prepareTools(signal) ?? Promise.resolve(),
+      sessionController,
+      projectRoot: instructionRoot,
+      startupCwd: process.cwd(),
+      version: VERSION,
+      presentation: terminalUi === null ? undefined : {
+        sessionChanged: (sessionId) => terminalUi?.setSessionId(sessionId),
+        historyChanged: (entries) => {
+          const transcript = projectTranscript(entries);
+          if (transcript.length > 0) {
+            terminalUi?.replaceTranscript(transcript);
+          } else if (runtimeInitialized) {
+            resetEmptySessionTranscript(terminalUi);
+          }
+        },
+        contextUsageChanged: ({ contextTokens, contextWindow }) =>
+          terminalUi?.setContextUsage(contextTokens, contextWindow),
+      },
+      commandDispatcher: (command) =>
+        commandDispatcher?.(command) ?? { status: "not_found", command },
+    });
+    runtimeInitialized = true;
+    composedForCleanup = composedRuntime;
+    const { agent, session: runtime } = composedRuntime;
+    runtimeForCleanup = runtime;
+    const plainSink = terminalUi === null ? new PlainEventSink(outputFn) : null;
+    const sessionSink: TerminalUI | PlainEventSink = terminalUi ?? plainSink!;
+
+    let replInputFn: InputFn = inputFn;
+    if (plainSink !== null) {
+      const underlyingInput = inputFn;
+      const underlyingSecretInput = secretInputFn;
+      // Setup/command prompts go through the event pipeline in plain mode so
+      // they interleave with task output. The Python original also flushed the
+      // bus here; TS delivery is microtask-driven and catches up at the next
+      // await.
+      const plainInput = async (prompt: string): Promise<string> => {
+        if (prompt) {
+          runtime.publishNotice(prompt);
+        }
+        return underlyingInput("");
+      };
+      const plainSecretInput = async (prompt: string): Promise<string> => {
+        if (prompt) {
+          runtime.publishNotice(prompt);
+        }
+        return underlyingSecretInput("");
+      };
+      replInputFn = plainInput;
+      presenterInput = plainInput;
+      presenterSecretInput = plainSecretInput;
+    }
+    const commandPresenter: CommandPresenter = terminalUi === null
+      ? new PlainCommandPresenter({
+          output: outputFn,
+          input: presenterInput,
+          secretInput: presenterSecretInput,
+        })
+      : new TerminalCommandPresenter(terminalUi);
+
+    const refreshContextUsage = (): void => composedRuntime.refreshContextUsage();
+    refreshContextUsage();
+
+    mcpRuntime = await createMcpRuntime({ configPath, projectRoot, version: VERSION, registry: toolRegistry,
+      presenter: commandPresenter, env: environ, toolsChanged: refreshContextUsage });
+
+    const refreshSessionView = (): void => composedRuntime.refreshSession();
+
+    const clipboardRunner = createClipboardRunner(environ);
+    const commands = new SessionCommands({
+      agent,
+      selector,
+      currentConfig: {
+        model: config.model,
+        baseUrl: config.baseUrl,
+        provider: config.provider,
+      },
+      catalog: modelPlatform.catalog,
+      providerAuth,
+      presenter: commandPresenter,
+      copyText: (text) => copyText(text, {
+        platform: process.platform,
+        environ,
+        isTTY: (options.stdout ?? process.stdout).isTTY === true,
+        writeTerminal: (sequence) => {
+          if (terminalDriver !== null) {
+            terminalDriver.write(sequence);
+          } else {
+            process.stdout.write(sequence);
+          }
+        },
+        run: clipboardRunner,
+      }),
+      session: runtime,
+      sessionController,
+      onComposerText: (text) => terminalUi?.setComposerText(text),
+      onSessionChanged: refreshSessionView,
+      homeDirectory: getHomeDirectory({ env: environ }),
+      onModelSelected: (selection) => {
+        composedRuntime.switchModel({
+          provider: selection.config.provider,
+          model: selection.config.model,
+          baseUrl: selection.config.baseUrl,
+        });
+        config = {
+          ...config,
+          provider: selection.config.provider,
+          model: selection.config.model,
+          baseUrl: selection.config.baseUrl,
+        };
+        selectedModel = modelPlatform.catalog.getModel(
+          selection.config.provider,
+          selection.config.model,
+        );
+        if (terminalUi !== null) {
+          const model = selectedModel;
+          terminalUi.state.provider = selection.config.provider;
+          terminalUi.state.model = selection.config.model;
+          terminalUi.setRuntimeCapabilities({ reasoning: model?.reasoning ?? false });
+        }
+        refreshContextUsage();
+      },
+    });
+
+    commands.registry.register(createMcpCommand(mcpRuntime, commandPresenter));
+    const projector = new EventProjector();
+    unsubscribers.push(
+      runtime.eventBus.subscribe((event) => {
+        sessionSink.publishEvent(projector.project(event, "terminal"));
+        if (
+          event.session_id === runtime.sessionId &&
+          (event.kind === "task.completed" || event.kind === "task.cancelled" || event.kind === "task.failed")
+        ) {
+          refreshContextUsage();
+        }
+      }),
+    );
+    if (terminalUi !== null) {
+      terminalUi.setCommandRegistry(commands.registry);
+      terminalUi.setCancelCallback(() => {
+        if (mcpRuntime?.cancelAuthorization()) return;
+        const action = routeHumanIntent(
+          makeCancelIntent("keyboard", "editor"),
+          runtime.state,
+        );
+        void runtime.submitAction(action);
+      });
+      terminalUi.setKeyActionCallback((action) => {
+        if (action === "select_model") {
+          void commandDispatcher?.("/model");
+          return;
+        }
+        if (action === "toggle_thinking") {
+          terminalUi?.toggleReasoningFromKeybinding();
+          return;
+        }
+        commandPresenter.notice({
+          text: `Key action is unavailable: ${action}.`,
+          tone: "warning",
+        });
+      });
+      terminalUi.setRuntimeRunningCallback(() => runtime.activeTask !== null);
+    }
+
+    const handleCommand: CommandHandler = async (command) => {
+      const result = await commands.execute(command);
+      return result;
+    };
+    commandDispatcher = handleCommand;
+
+    let cleanShutdown = false;
+    const startMcp = () => { void mcpRuntime?.start().catch(() => commandPresenter.notice({ text: "MCP startup failed", tone: "error" })); };
     if (terminalUi !== null && terminalDriver !== null) {
       const ui = terminalUi;
       const driver = terminalDriver;
@@ -581,24 +653,40 @@ export async function main(
         presenter: commandPresenter,
         suggestCommand: (command) => commands.registry.suggest(command),
         ui,
-        runUi: (enqueue) => runTerminalUi(ui, driver, enqueue),
+        runUi: async (enqueue) => {
+          const running = runTerminalUi(ui, driver, enqueue);
+          startMcp();
+          try { await running; } finally { mcpRuntime?.cancelAuthorization(); }
+        },
       });
     } else {
-      cleanShutdown = await runPlainSessionRepl(runtime, {
+      const running = runPlainSessionRepl(runtime, {
         commandHandler: handleCommand,
         inputFn: replInputFn,
         presenter: commandPresenter,
         suggestCommand: (command) => commands.registry.suggest(command),
         sink: plainSink!,
       });
+      startMcp();
+      cleanShutdown = await running;
     }
+    const renderError = terminalUi?.renderError ?? null;
+    if (renderError !== null) {
+      throw new Error(`Terminal rendering failed: ${errorMessage(renderError)}`, { cause: renderError });
+    }
+    return cleanShutdown ? 0 : 1;
   } finally {
-    for (const unsubscribe of unsubscribers) {
-      unsubscribe();
+    mcpRuntime?.cancelAuthorization();
+    try { if (runtimeForCleanup && runtimeForCleanup.state !== SessionState.Stopped) await runtimeForCleanup.close({ wait: true, timeoutMs: 10_000 }); }
+    finally {
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      try { await mcpRuntime?.close(); }
+      finally {
+        if (composedForCleanup) await composedForCleanup.close();
+        else await sessionController.close();
+      }
     }
-    await composedRuntime.close();
   }
-  return cleanShutdown ? 0 : 1;
 }
 
 function defaultSessionsRoot(environ: Record<string, string | undefined>): string {

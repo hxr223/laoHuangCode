@@ -76,6 +76,7 @@ function makeCommands(options: { session?: SessionLike | null } = {}): {
 } {
   const presenter = new RecordingPresenter();
   const commands = new SessionCommands({
+    copyText: async () => ({ status: "unavailable", reason: "Test clipboard is disabled." }),
     agent: new FakeAgent(),
     selector: new ModelSelector({
       catalog,

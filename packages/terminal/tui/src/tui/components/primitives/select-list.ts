@@ -1,6 +1,6 @@
 import type { FocusableComponent } from "../../component.ts";
 import type { TuiInputEvent } from "../../../keybindings/key-id.ts";
-import { charCellWidth } from "../../screen.ts";
+import { visibleWidth } from "../../screen.ts";
 import {
   line,
   lineText,
@@ -195,9 +195,5 @@ function truncateText(value: string, width: number): string {
 }
 
 function displayWidth(value: string): number {
-  let width = 0;
-  for (const character of value) {
-    width += charCellWidth(character);
-  }
-  return width;
+  return visibleWidth(value);
 }

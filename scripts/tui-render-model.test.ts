@@ -41,9 +41,6 @@ test("wrapping treats CRLF as one line break", () => {
   assert.deepEqual(wrapped.map(lineText), ["a", "b"]);
 });
 
-test("wrapping rejects a code point wider than the supplied width", () => {
-  assert.throws(
-    () => wrapStyledSpans([span("中")], 1),
-    /code point exceeds wrap width/u,
-  );
+test("wrapping uses a single-cell replacement when a grapheme cannot fit", () => {
+  assert.deepEqual(wrapStyledSpans([span("中")], 1).map(lineText), ["�"]);
 });

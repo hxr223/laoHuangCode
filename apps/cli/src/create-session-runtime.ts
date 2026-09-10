@@ -17,7 +17,7 @@ import {
 } from "@laohuang/session-context";
 import { AgentSession, SessionRecorder } from "@laohuang/session-runtime";
 import type { SessionEntry } from "@laohuang/session-store";
-import type { ToolRegistryLike } from "@laohuang/tools";
+import { ToolSelection, type ToolRegistryLike } from "@laohuang/tools";
 
 import { SessionController } from "./session-controller.ts";
 import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
@@ -42,6 +42,7 @@ export interface CreateSessionRuntimeOptions {
   readonly catalog: ModelCatalog;
   readonly route: SessionRoute;
   readonly tools: ToolRegistryLike;
+  readonly prepareTools?: (signal?: AbortSignal) => Promise<void>;
   readonly sessionController: SessionController;
   readonly projectRoot: string;
   readonly startupCwd: string;
@@ -72,6 +73,10 @@ export function createSessionRuntime(
   let selectedModel = modelInfo(options.catalog, route);
   const modelRuntime = new ModelRuntime(options.modelAdapter);
   const activeConversationHistory = {
+    appendToolDefinitions: (input: Parameters<ConversationHistory["appendToolDefinitions"]>[0]) =>
+      activeHistory(options.sessionController).appendToolDefinitions(input),
+    appendToolCatalog: (input: Parameters<ConversationHistory["appendToolCatalog"]>[0]) =>
+      activeHistory(options.sessionController).appendToolCatalog(input),
     appendUser: (input: Parameters<ConversationHistory["appendUser"]>[0]) =>
       activeHistory(options.sessionController).appendUser(input),
     appendAssistant: (
@@ -118,6 +123,7 @@ export function createSessionRuntime(
     modelAdapter: options.modelAdapter,
     model: route.model,
     tools: options.tools,
+    prepareTools: options.prepareTools,
     cliName: "laohuang",
     cliVersion: options.version,
     provider: route.provider,
@@ -126,16 +132,22 @@ export function createSessionRuntime(
     startupCwd: options.startupCwd,
     conversationHistory: activeConversationHistory,
     contextGovernor: {
-      prepare: async ({ tools }) => {
+      prepare: async ({ tools, projectTools, reserveTokens, pendingToolCall }) => {
         const history = options.sessionController.history;
         if (history === null) {
-          return { messages: [], contextTokens: 0, contextWindow: 0 };
+          return { messages: [], contextTokens: 0, contextWindow: 0, hardInputLimit: 0 };
         }
+        const entries = history.entries();
+        const pendingAssistant = pendingToolCall
+          ? [...entries].reverse().find((entry) => entry.entryType === "assistant_message")
+          : undefined;
         const prepared = await createGovernor(history).prepare({
-          entries: history.entries(),
+          entries: entries.filter((entry) => entry !== pendingAssistant),
           currentProvider: route.provider,
           currentModel: route.model,
           tools,
+          projectTools,
+          reserveTokens,
           budget: modelBudget(selectedModel),
           policy: defaultContextPolicy(),
         });
@@ -143,6 +155,7 @@ export function createSessionRuntime(
           messages: prepared.messages,
           contextTokens: prepared.tokens,
           contextWindow: selectedModel.contextWindow,
+          hardInputLimit: selectedModel.contextWindow - selectedModel.maxTokens,
         };
       },
     },
@@ -161,6 +174,11 @@ export function createSessionRuntime(
     journal: () => options.sessionController.currentJournal,
   });
 
+  const projectTools = (messages: readonly ModelMessage[]) => new ToolSelection().prepare(
+    options.tools,
+    messages.map((message) => message.role === "system" || message.role === "user" ? message : {}),
+  ).view.definitions;
+
   const refreshContextUsage = (): void => {
     const notify = options.presentation?.contextUsageChanged;
     if (notify === undefined) {
@@ -176,7 +194,7 @@ export function createSessionRuntime(
     notify({
       contextTokens:
         estimator.estimateMessages(context.messages) +
-        estimator.estimateTools(options.tools.definitions),
+        estimator.estimateTools(projectTools(context.messages)),
       contextWindow: selectedModel.contextWindow,
     });
   };
@@ -219,6 +237,7 @@ export function createSessionRuntime(
       currentProvider: route.provider,
       currentModel: route.model,
       tools: options.tools.definitions,
+      projectTools,
       budget: modelBudget(selectedModel),
       policy: defaultContextPolicy(),
       trigger: "manual",
@@ -259,9 +278,12 @@ export function createSessionRuntime(
     compact: () => options.sessionController.compact(),
     refreshContextUsage,
     async close() {
-      await recorder.close();
-      options.sessionController.setCompactor(null);
-      await options.sessionController.close();
+      try {
+        await recorder.close();
+      } finally {
+        options.sessionController.setCompactor(null);
+        await options.sessionController.close();
+      }
     },
   };
   refreshSession();

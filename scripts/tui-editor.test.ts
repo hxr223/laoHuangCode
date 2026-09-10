@@ -303,10 +303,11 @@ test("unmodified kitty printable suppresses batched raw duplicate", () => {
   ]);
 });
 
-test("high-bit meta byte is converted before buffering", () => {
-  const actions = decodeBuffered([Buffer.from([0xe1])]);
-
-  assert.deepEqual(actions, [inputAction(InputActionKind.Insert, "a")]);
+test("high-bit meta byte is resolved after the UTF-8 reassembly timeout", () => {
+  const buffer = new StdinBuffer();
+  assert.deepEqual(buffer.feed(Buffer.from([0xe1])), []);
+  const decoder = new RawInputDecoder();
+  assert.deepEqual(buffer.flush().flatMap(event => decoder.feed(event.data)), [inputAction(InputActionKind.Insert, "a")]);
 });
 
 test("editor keeps slash candidates and tab accepts first", () => {

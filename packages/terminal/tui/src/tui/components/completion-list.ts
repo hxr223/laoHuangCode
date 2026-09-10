@@ -1,6 +1,6 @@
 import type { FocusableComponent } from "../component.ts";
 import type { CompletionItemLike } from "../contracts.ts";
-import { charCellWidth } from "../screen.ts";
+import { visibleWidth } from "../screen.ts";
 import {
   line,
   lineText,
@@ -51,7 +51,7 @@ export class CompletionPopup implements FocusableComponent {
     const boundedWidth = Math.max(1, width);
     return displayWidth(lineText(value)) <= boundedWidth
       ? value
-      : truncateStyledLine(value, boundedWidth + 1, "");
+      : truncateStyledLine(value, boundedWidth, "");
   }
 }
 
@@ -59,7 +59,5 @@ export { CompletionPopup as CompletionList };
 export type CompletionListOptions = CompletionPopupOptions;
 
 function displayWidth(value: string): number {
-  let width = 0;
-  for (const character of value) width += charCellWidth(character);
-  return width;
+  return visibleWidth(value);
 }

@@ -2,6 +2,8 @@
 
 import { EventKind, EventSource } from "@laohuang/runtime-protocol";
 import { displayLocalPath } from "@laohuang/local-paths";
+import { normalizeSessionTitle } from "@laohuang/session-store";
+import type { CopyResult } from "./clipboard.ts";
 import { makeCancelAction } from "@laohuang/runtime-protocol";
 import type { SessionAction } from "@laohuang/runtime-protocol";
 import type { CommandResult, QueueStatus } from "@laohuang/runtime-protocol";
@@ -13,6 +15,7 @@ import type {
 import type { CommandPresenter } from "./command-presentation.ts";
 import type {
   ModelCatalog,
+  ModelInfo,
   ModelProviderInfo,
   ModelAuthStatus,
   ReasoningEffort,
@@ -34,7 +37,7 @@ export interface CompletionItem {
   readonly start: number;
 }
 
-export type CommandHandler = (args: string[]) => boolean | Promise<boolean>;
+export type CommandHandler = (args: string[], rawCommand: string) => boolean | Promise<boolean>;
 
 export type ArgumentCompleter = (
   args: readonly string[],
@@ -320,7 +323,7 @@ export class CommandRegistry {
       return { status: "not_found", command: first };
     }
     try {
-      return (await spec.handler(parts.slice(1)))
+      return (await spec.handler(parts.slice(1), command))
         ? { status: "handled" }
         : { status: "not_found", command: first };
     } catch (error) {
@@ -398,6 +401,9 @@ export interface SessionLike {
 export interface SessionControllerLike {
   readonly currentSessionId: string | null;
   readonly currentPath: string | null;
+  readonly currentTitle: string | null;
+  setName(input: string): void;
+  latestAssistantText(): string | null;
   list(): ReadonlyArray<{
     readonly sessionId: string;
     readonly updatedAt: string;
@@ -427,6 +433,7 @@ export interface SessionCommandsOptions {
   >;
   readonly currentConfig: SelectionConfig;
   readonly presenter: CommandPresenter;
+  readonly copyText: (text: string) => Promise<CopyResult>;
   readonly session?: SessionLike | null | undefined;
   readonly sessionController?: SessionControllerLike | null | undefined;
   readonly onModelSelected?: ((selection: ModelSelection) => void) | undefined;
@@ -533,6 +540,7 @@ export class SessionCommands {
     "status" | "login" | "logout" | "ensureConfigured"
   >;
   readonly #presenter: CommandPresenter;
+  readonly #copyText: (text: string) => Promise<CopyResult>;
   readonly #session: SessionLike | null;
   readonly #sessionController: SessionControllerLike | null;
   readonly #onModelSelected: ((selection: ModelSelection) => void) | null;
@@ -549,6 +557,7 @@ export class SessionCommands {
     this.#providerAuth = options.providerAuth;
     this.#currentConfig = options.currentConfig;
     this.#presenter = options.presenter;
+    this.#copyText = options.copyText;
     this.#session = options.session ?? null;
     this.#sessionController = options.sessionController ?? null;
     this.#onModelSelected = options.onModelSelected ?? null;
@@ -559,7 +568,7 @@ export class SessionCommands {
     this.registry = new CommandRegistry([
       {
         name: "/model",
-        description: "选择当前供应商的模型或切换供应商",
+        description: "搜索并选择已配置供应商的模型",
         usage: "/model [provider|model] [model]",
         handler: (args) => this.handleModel(args),
         allowedStates: IDLE_ONLY,
@@ -625,6 +634,20 @@ export class SessionCommands {
         usage: "/new",
         handler: (args) => this.handleNew(args),
         allowedStates: IDLE_ONLY,
+      },
+      {
+        name: "/name",
+        description: "查看或设置当前会话名称",
+        usage: "/name [name]",
+        handler: (args, rawCommand) => this.handleName(args, rawCommand),
+        allowedStates: ALL_STATES,
+      },
+      {
+        name: "/copy",
+        description: "复制最近一条已记录的助手正文",
+        usage: "/copy",
+        handler: (args) => this.handleCopy(args),
+        allowedStates: ALL_STATES,
       },
       {
         name: "/session",
@@ -816,9 +839,47 @@ export class SessionCommands {
       return true;
     }
     this.notice(
-      `Current session: ${controller.currentSessionId}\nPath: ${controller.currentPath ?? ""}`,
+      `Current session: ${controller.currentSessionId}\nName: ${controller.currentTitle ?? "Untitled session"}\nPath: ${controller.currentPath ?? ""}`,
       "info",
     );
+    return true;
+  }
+
+  private handleName(args: string[], rawCommand: string): boolean {
+    // Reject controls in the original input, before tokenization can hide them
+    // by treating tabs and newlines as argument separators.
+    normalizeSessionTitle(rawCommand);
+    const controller = this.#sessionController;
+    if (controller === null || controller.currentSessionId === null) {
+      this.notice("No active session.", "warning");
+      return true;
+    }
+    if (args.length === 0) {
+      this.notice(`Session name: ${controller.currentTitle ?? "Untitled session"}`, "info");
+      return true;
+    }
+    controller.setName(args.join(" "));
+    this.notice(`Session named: ${controller.currentTitle}`, "success");
+    return true;
+  }
+
+  private async handleCopy(args: string[]): Promise<boolean> {
+    if (args.length > 0) {
+      throw new Error("Usage: /copy");
+    }
+    const text = this.#sessionController?.latestAssistantText() ?? null;
+    if (text === null || text.length === 0) {
+      this.notice("No recorded assistant text to copy.", "info");
+      return true;
+    }
+    const result = await this.#copyText(text);
+    if (result.status === "copied") {
+      this.notice("Copied assistant text to clipboard.", "success");
+    } else if (result.status === "sent-to-terminal") {
+      this.notice("Copy request sent to terminal; clipboard access depends on terminal settings.", "info");
+    } else {
+      this.notice(`Clipboard unavailable: ${result.reason}`, "warning");
+    }
     return true;
   }
 
@@ -973,18 +1034,12 @@ export class SessionCommands {
       return true;
     }
 
-    let provider: string;
+    let provider: string | undefined;
     let modelName: string | undefined;
-    if (args.length === 0) {
-      const selectedProvider = await this.selectModelProvider();
-      if (selectedProvider === null) {
-        return true;
-      }
-      provider = selectedProvider;
-    } else if (args.length === 2) {
+    if (args.length === 2) {
       provider = args[0]!;
       modelName = args[1];
-    } else {
+    } else if (args.length === 1) {
       const argument = args[0]!;
       if (this.#catalog.getProvider(argument) !== undefined) {
         provider = argument;
@@ -996,9 +1051,26 @@ export class SessionCommands {
 
     if (modelName === undefined) {
       try {
-        const models = await this.#selector.listModels(provider, "");
+        let models: readonly ModelInfo[];
+        if (provider === undefined) {
+          const available = await this.#selector.listConfiguredModels();
+          models = available.models;
+          for (const failure of available.errors) {
+            this.notice(
+              `Could not list models for ${failure.provider}: ${errorMessage(failure.error)}`,
+              "warning",
+            );
+          }
+        } else {
+          models = await this.#selector.listModels(provider, "");
+        }
         if (models.length === 0) {
-          this.notice(`No models available for provider: ${provider}`, "error");
+          this.notice(
+            provider === undefined
+              ? "No models available from configured providers. Use /login to configure a provider."
+              : `No models available for provider: ${provider}. Use /login ${provider} to configure credentials.`,
+            "warning",
+          );
           return true;
         }
         if (this.#presenter === null) {
@@ -1007,29 +1079,37 @@ export class SessionCommands {
         }
         const selected = await this.#presenter.select({
           id: "model-name",
-          title: `Select model for ${provider}`,
+          title: provider === undefined
+            ? "Select model from configured providers"
+            : `Select model for ${provider}`,
           items: models.map((model) => ({
-            value: `${provider}/${model.id}`,
+            value: `${model.provider}/${model.id}`,
             label: model.name,
-            description: provider,
+            description: model.provider,
           })),
-          currentValue: this.#currentConfig.provider === provider
-            ? `${provider}/${this.#currentConfig.model}`
-            : undefined,
+          currentValue: `${this.#currentConfig.provider}/${this.#currentConfig.model}`,
           searchable: true,
-          maxVisible: 20,
+          maxVisible: 10,
         });
         if (selected === null) {
           return true;
         }
-        const prefix = `${provider}/`;
-        modelName = selected.startsWith(prefix) ? selected.slice(prefix.length) : selected;
+        const model = models.find((candidate) => `${candidate.provider}/${candidate.id}` === selected);
+        if (model === undefined) {
+          this.notice("Selected model is no longer available. Run /model to refresh the list.", "error");
+          return true;
+        }
+        provider = model.provider;
+        modelName = model.id;
       } catch (error) {
         this.notice(`Could not list models: ${errorMessage(error)}`, "error");
         return true;
       }
     }
 
+    if (provider === undefined) {
+      return true;
+    }
     let selection: ModelSelection | null;
     try {
       selection = await this.#selector.selectExact({
@@ -1042,6 +1122,7 @@ export class SessionCommands {
       return true;
     }
     if (selection === null) {
+      this.notice(`Use /login ${provider} to configure credentials before switching models.`, "warning");
       return true;
     }
     const previousProvider = this.#currentConfig.provider;
@@ -1321,24 +1402,6 @@ export class SessionCommands {
             },
       ),
     };
-  }
-
-  private async selectModelProvider(): Promise<string | null> {
-    if (this.#presenter === null) {
-      this.notice("Model provider selection is unavailable.", "error");
-      return null;
-    }
-    const selected = await this.#presenter.select({
-      id: "model-provider",
-      title: "Select model provider",
-      items: this.#selector.listProviders().map((provider) => ({
-        value: provider.id,
-        label: provider.name,
-        description: provider.id,
-      })),
-      currentValue: this.#currentConfig.provider,
-    });
-    return selected;
   }
 
   private *modelCompletions(
