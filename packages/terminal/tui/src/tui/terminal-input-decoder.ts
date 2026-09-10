@@ -1,3 +1,4 @@
+import type { PendingInputKind } from "./terminal-session.ts";
 import {
   BufferedInputKind,
   InputActionKind,
@@ -40,6 +41,10 @@ export class TerminalInputDecoder implements InputDecoderLike {
 
   set kittyProtocolActive(value: boolean) {
     this.#filter.kittyProtocolActive = value;
+  }
+
+  pendingKind(): PendingInputKind {
+    return this.#filter.negotiationPending ? "negotiation" : this.#stdinBuffer.pendingKind();
   }
 
   feed(data: Uint8Array): InputAction[] {

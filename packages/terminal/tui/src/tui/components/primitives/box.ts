@@ -32,14 +32,15 @@ export class Box implements TuiComponent {
 
   render(context: RenderContext): ComponentRenderResult {
     const width = Math.max(0, context.width);
-    const child = this.#child.render({ ...context, width: Math.max(1, width - this.#paddingX * 2) });
+    const paddingX = Math.min(this.#paddingX, Math.max(0, Math.floor((width - 1) / 2)));
+    const child = this.#child.render({ ...context, width: Math.max(1, width - paddingX * 2) });
     const blank = (): StyledLine => line(span(" ".repeat(width), backgroundStyle(this.#background)));
-    const lines = child.lines.map((value) => this.#renderLine(value, width));
+    const lines = child.lines.map((value) => this.#renderLine(value, width, paddingX));
     const cursor = child.cursor === undefined
       ? undefined
       : {
         row: child.cursor.row + this.#paddingY,
-        column: child.cursor.column + this.#paddingX,
+        column: Math.max(0, Math.min(width - 1, child.cursor.column + paddingX)),
       };
     return {
       lines: [
@@ -55,8 +56,8 @@ export class Box implements TuiComponent {
     this.#child.invalidate();
   }
 
-  #renderLine(value: StyledLine, width: number): StyledLine {
-    const left = span(" ".repeat(this.#paddingX), backgroundStyle(this.#background));
+  #renderLine(value: StyledLine, width: number, paddingX: number): StyledLine {
+    const left = span(" ".repeat(paddingX), backgroundStyle(this.#background));
     const content = value.spans.map((item) =>
       span(item.text, this.#background === undefined ? item.style : { ...item.style, background: this.#background }),
     );

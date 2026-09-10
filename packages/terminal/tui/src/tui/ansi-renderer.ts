@@ -1,5 +1,6 @@
+import { RenderWidthError } from "./render-diagnostics.ts";
 import { visibleWidth } from "./screen.ts";
-import { truncateStyledLine, type StyledLine, type StyledSpan } from "./render-model.ts";
+import { styledClusters, truncateStyledLine, type StyledLine, type StyledSpan } from "./render-model.ts";
 import type { TerminalTheme } from "./theme.ts";
 
 /** Cache final terminal strings for immutable styled lines retained by components. */
@@ -7,12 +8,12 @@ export class StyledLineCompiler {
   #cache = new WeakMap<StyledLine, { width: number; theme: TerminalTheme; text: string }>();
 
   compile(values: readonly StyledLine[], width: number, theme: TerminalTheme): string[] {
-    return values.map((value) => {
+    return values.map((value, index) => {
       const cached = this.#cache.get(value);
       if (cached !== undefined && cached.width === width && cached.theme === theme) {
         return cached.text;
       }
-      const text = compileStyledLine(truncateStyledLine(value, width, ""), width, theme);
+      const text = compileStyledLine(truncateStyledLine(value, width, ""), width, theme, `styled frame row ${index + 1}`);
       this.#cache.set(value, { width, theme, text });
       return text;
     });
@@ -38,13 +39,12 @@ export function compileStyledLine(
   value: StyledLine,
   width: number,
   theme: TerminalTheme,
+  source = "styled line",
 ): string {
-  const text = value.spans.map((item) => compileSpan(item, theme)).join("");
+  const text = compileSpans(value.spans, theme);
   const renderedWidth = visibleWidth(text);
   if (renderedWidth > width) {
-    throw new Error(
-      `rendered line exceeds terminal width: ${renderedWidth} > ${width}`,
-    );
+    throw new RenderWidthError(width, renderedWidth, text, source);
   }
   return text;
 }
@@ -54,7 +54,7 @@ export function compileStyledLines(
   width: number,
   theme: TerminalTheme,
 ): string[] {
-  return values.map((value) => compileStyledLine(value, width, theme));
+  return values.map((value, index) => compileStyledLine(value, width, theme, `styled frame row ${index + 1}`));
 }
 
 /** Preserve legacy string rendering until its components are migrated. */
@@ -64,6 +64,16 @@ export function compileLegacyStyledText(style: string, text: string): string {
   }
   const codes = legacyAnsiCodes(style);
   return codes.length === 0 ? text : `\x1b[${codes.join(";")}m${text}\x1b[0m`;
+}
+
+function compileSpans(values: readonly StyledSpan[], theme: TerminalTheme): string {
+  const normalized: StyledSpan[] = [];
+  for (const value of styledClusters(values)) {
+    const previous = normalized.at(-1);
+    if (previous && previous.style === value.style) normalized[normalized.length - 1] = { text: previous.text + value.text, style: value.style };
+    else normalized.push(value);
+  }
+  return normalized.map(value => compileSpan(value, theme)).join("");
 }
 
 function compileSpan(value: StyledSpan, theme: TerminalTheme): string {
@@ -89,7 +99,9 @@ function compileSpan(value: StyledSpan, theme: TerminalTheme): string {
   if (value.style.background !== undefined) {
     codes.push(theme.sgr(value.style.background, { background: true }).slice(2, -1));
   }
-  return codes.length === 0 ? value.text : `\x1b[${codes.join(";")}m${value.text}\x1b[0m`;
+  const text = codes.length === 0 ? value.text : `\x1b[${codes.join(";")}m${value.text}\x1b[0m`;
+  const url = value.style.hyperlink;
+  return url && !/[\x00-\x20\x7f]/u.test(url) ? `\x1b]8;;${url}\x07${text}\x1b]8;;\x07` : text;
 }
 
 function legacyAnsiCodes(style: string): string[] {

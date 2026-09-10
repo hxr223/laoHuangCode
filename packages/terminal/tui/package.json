@@ -11,7 +11,8 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "koffi": "3.2.1",
-    "@laohuang/runtime-protocol": "0.0.0"
+    "@laohuang/runtime-protocol": "0.0.0",
+    "get-east-asian-width": "1.6.0",
+    "koffi": "3.2.1"
   }
 }
