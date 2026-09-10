@@ -4,7 +4,25 @@ A minimal coding-agent CLI for local software work.
 
 ## Install
 
-Requires Node.js >=22.19.0.
+Recommended standalone install (bundled Node.js; Bash required):
+
+```bash
+curl -fsSL https://github.com/hxr223/laoHuangCode/releases/latest/download/install.sh | sh
+```
+
+On Windows, install Git for Windows first, then run in PowerShell:
+
+```powershell
+irm https://github.com/hxr223/laoHuangCode/releases/latest/download/install.ps1 | iex
+```
+
+The installer verifies the download and startup, then configures the user PATH.
+Open a new terminal or apply the PATH command printed by the installer.
+Standalone packages target macOS, glibc Linux and Windows on x64 and ARM64.
+See [installation details](https://github.com/hxr223/laoHuangCode/blob/main/INSTALLING.md).
+
+Alternatively, install with npm (Node.js >=22.19.0 and Bash required; npm's
+global executable directory must already be on PATH):
 
 ```bash
 npm install -g laohuang
@@ -38,7 +56,11 @@ If no models are available, the CLI points to `/login`.
 directly, and `/apikey` remains a compatibility alias. Switching models affects
 only the current session, not the default profile.
 
-`laohuang update` updates the running npm installation to the latest stable
+For standalone installations, `laohuang update` reruns the bundled installer
+against the latest GitHub release, verifies it before switching the launcher,
+and retains the previous version. Restart laohuang after updating.
+
+For npm installations, `laohuang update` updates the running installation to the latest stable
 release and verifies its installed version. Restart the CLI after updating.
 It supports global npm installations and direct project or workspace npm
 dependencies; local updates change the owning manifest and lockfile while
