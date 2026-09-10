@@ -50,9 +50,10 @@ export class Text implements TuiComponent {
     if (this.#cache?.width === context.width && this.#cache.source === source) {
       return this.#cache.result;
     }
-    const contentWidth = Math.max(1, context.width - this.#options.paddingX * 2);
+    const paddingX = Math.min(this.#options.paddingX, Math.max(0, Math.floor((context.width - 1) / 2)));
+    const contentWidth = Math.max(1, context.width - paddingX * 2);
     const wrapped = wrapStyledSpans(spans, contentWidth);
-    const result = { lines: applyTextPadding(wrapped, context.width, this.#options) };
+    const result = { lines: applyTextPadding(wrapped, context.width, { ...this.#options, paddingX }) };
     this.#cache = { width: context.width, source, result };
     return result;
   }

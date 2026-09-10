@@ -1,6 +1,8 @@
 import type { SelectItem } from "../primitives/select-list.ts";
+import type { FloatingOverlayOptions } from "../../overlay-manager.ts";
 
 export interface SelectionRequest {
+  readonly floating?: FloatingOverlayOptions;
   readonly id: string;
   readonly title: string;
   readonly items: readonly SelectItem[];
@@ -10,10 +12,10 @@ export interface SelectionRequest {
   readonly maxVisible?: number;
 }
 
-export type PromptRequest =
+export type PromptRequest = { readonly floating?: FloatingOverlayOptions } & (
   | { readonly id: string; readonly kind: "text"; readonly message: string; readonly placeholder?: string }
   | { readonly id: string; readonly kind: "secret"; readonly message: string; readonly placeholder?: string }
-  | { readonly id: string; readonly kind: "select"; readonly message: string; readonly items: readonly SelectItem[] };
+  | { readonly id: string; readonly kind: "select"; readonly message: string; readonly items: readonly SelectItem[] });
 
 export interface HelpCommandViewModel {
   readonly name: string;
