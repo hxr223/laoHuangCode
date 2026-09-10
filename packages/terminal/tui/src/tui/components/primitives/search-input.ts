@@ -1,15 +1,12 @@
 import type { FocusableComponent } from "../../component.ts";
 import { EditorState, InputActionKind, inputAction } from "../../editor.ts";
 import type { TuiInputEvent } from "../../../keybindings/key-id.ts";
-import { charCellWidth } from "../../screen.ts";
+import { projectInput } from "../../terminal-text.ts";
 import {
   line,
   span,
-  truncateStyledLine,
-  wrapStyledSpans,
   type ComponentRenderResult,
   type RenderContext,
-  type StyledLine,
 } from "../../render-model.ts";
 
 const PROMPT = "❯ ";
@@ -44,31 +41,16 @@ export class SearchInput implements FocusableComponent {
 
   render(context: RenderContext): ComponentRenderResult {
     const width = Math.max(1, context.width);
-    const contentWidth = Math.max(1, width - displayWidth(PROMPT));
-    const displayText = this.#secret ? "•".repeat(this.#editor.text.length) : this.#editor.text;
-    const lines = renderLines(displayText || this.#placeholder, contentWidth, displayText.length === 0 && this.#placeholder.length > 0);
-    const structuredLines = lines.map((value, index) =>
-      truncateStyledLine(
-        line(
-          span(index === 0 ? PROMPT : " ".repeat(displayWidth(PROMPT)), index === 0 ? { foreground: "accent" } : undefined),
-          span(value, displayText.length === 0 && this.#placeholder.length > 0 ? { foreground: "muted" } : undefined),
-        ),
-        width,
-        "",
-      ),
-    );
-    const cursor = this.focused
-      ? cursorMetadata(displayText.slice(0, this.#editor.cursor), contentWidth)
-      : undefined;
-    return cursor === undefined
-      ? { lines: structuredLines }
-      : {
-        lines: structuredLines,
-        cursor: {
-          row: Math.min(cursor.row, structuredLines.length - 1),
-          column: Math.min(displayWidth(PROMPT) + cursor.column, width - 1),
-        },
-      };
+    const empty = this.#editor.text.length === 0;
+    const projection = projectInput(empty ? this.#placeholder : this.#editor.text, this.#editor.cursor, width, PROMPT, this.#secret && !empty);
+    const lines = projection.rows.map((value, index) => line(
+      span(index === 0 ? projection.prompt : " ".repeat(projection.promptWidth), index === 0 ? { foreground: "accent" } : undefined),
+      span(this.#secret && !empty ? value.replace(/\*/g, "•") : value, empty ? { foreground: "muted" } : undefined),
+    ));
+    return {
+      lines,
+      ...(this.focused ? { cursor: { row: empty ? 0 : projection.cursorRow, column: empty ? projection.promptWidth : projection.cursorColumn } } : {}),
+    };
   }
 
   handleInput(event: TuiInputEvent): boolean {
@@ -127,54 +109,4 @@ function actionFor(event: TuiInputEvent) {
     default:
       return null;
   }
-}
-
-function renderLines(value: string, width: number, placeholder: boolean): readonly string[] {
-  if (placeholder) {
-    return [value];
-  }
-  const lines: string[] = [];
-  for (const source of value.split("\n")) {
-    lines.push(...wrapStyledSpans([span(source)], width).map((item) => item.spans.map((part) => part.text).join("")));
-  }
-  const last = value.split("\n").at(-1) ?? "";
-  if (value && !value.endsWith("\n") && displayWidth(last) % width === 0) {
-    lines.push("");
-  }
-  return lines;
-}
-
-function cursorMetadata(before: string, width: number): { row: number; column: number } {
-  const segments = before.split("\n");
-  let row = 0;
-  for (const segment of segments.slice(0, -1)) {
-    row += wrappedRowCount(segment, width);
-  }
-  const current = segments.at(-1) ?? "";
-  let column = 0;
-  for (const character of current) {
-    const characterWidth = Math.max(1, charCellWidth(character));
-    if (column > 0 && column + characterWidth > width) {
-      row += 1;
-      column = 0;
-    }
-    column += characterWidth;
-    if (column === width) {
-      row += 1;
-      column = 0;
-    }
-  }
-  return { row, column };
-}
-
-function wrappedRowCount(value: string, width: number): number {
-  return wrapStyledSpans([span(value)], width).length;
-}
-
-function displayWidth(value: string): number {
-  let width = 0;
-  for (const character of value) {
-    width += charCellWidth(character);
-  }
-  return width;
 }

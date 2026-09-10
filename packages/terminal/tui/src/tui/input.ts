@@ -1,3 +1,7 @@
+import { inputTimeout, drainTerminalInput } from "./terminal-session.ts";
+import { truncateToWidth } from "./terminal-text.ts";
+import { TerminalInputDecoder } from "./terminal-input-decoder.ts";
+import { MainScreenRenderer, type ScreenFrame } from "./screen.ts";
 /**
  * One-shot raw-mode prompt used before a raw session starts (setup questions).
  *
@@ -11,13 +15,8 @@ import type { Readable, Writable } from "node:stream";
 import { enterTerminalRawMode, type RawModeInput } from "./native-console.ts";
 
 import {
-  BufferedInputKind,
   EditorState,
   InputActionKind,
-  RawInputDecoder,
-  StdinBuffer,
-  TerminalInputFilter,
-  charCellWidth,
   inputAction,
   toTuiInputEvent,
   type CompletionItem,
@@ -46,7 +45,7 @@ export class PromptEofError extends Error {
 }
 
 export type PromptInput = Readable & RawModeInput;
-export type PromptOutput = Writable & { readonly columns?: number };
+export type PromptOutput = Writable & { readonly columns?: number; readonly rows?: number };
 
 export interface TerminalInputSessionOptions {
   /**
@@ -71,8 +70,6 @@ export interface TerminalInputSessionOptions {
 }
 
 const PROMPT = "❯ ";
-/** Delay before a buffered standalone Escape resolves into a dismissal. */
-const ESCAPE_FLUSH_MS = 25;
 const SETUP_PROMPT_KEYBINDINGS = new KeybindingsManager(DEFAULT_KEYBINDINGS);
 
 function resolveSetupPromptAction(action: InputAction): InputAction {
@@ -126,14 +123,15 @@ export class TerminalInputSession {
   prompt(): Promise<string> {
     const editor = new EditorState();
     editor.history = [...this.history];
-    const stdinBuffer = new StdinBuffer();
-    const inputFilter = new TerminalInputFilter();
-    const decoder = new RawInputDecoder();
     const input = this.input;
     const output = this.output;
+    let modifyOtherKeys = false;
+    const decoder = new TerminalInputDecoder({
+      enableModifyOtherKeys: () => { output.write("\x1b[>4;2m"); modifyOtherKeys = true; },
+      disableModifyOtherKeys: () => { if (modifyOtherKeys) output.write("\x1b[>4;0m"); modifyOtherKeys = false; },
+    });
 
-    let frameHeight = 0;
-    let frameCursorRow = 0;
+    let lastFrame: ScreenFrame = { lines: [], activeStart: 0, cursorRow: 0, cursorCol: 0 };
     let lastCompletedText: string | null = null;
     let settled = false;
     let flushTimer: NodeJS.Timeout | null = null;
@@ -144,6 +142,12 @@ export class TerminalInputSession {
       typeof output.columns === "number" && output.columns > 0
         ? output.columns
         : 80;
+    const renderer = new MainScreenRenderer({
+      write: text => { output.write(text); },
+      flush() {},
+      getSize: () => ({ columns: termWidth(), rows: Math.max(1, output.rows ?? 24) }),
+      restore() {}, // This prompt owns raw mode and restores it after input drain.
+    });
 
     const refreshCompletions = (): void => {
       if (this.completer === null || editor.text === lastCompletedText) {
@@ -184,25 +188,8 @@ export class TerminalInputSession {
 
     const redraw = (): void => {
       const frame = buildFrame();
-      let chunk = "";
-      if (frameHeight > 0) {
-        if (frameHeight > 1) {
-          chunk += `\x1b[${frameHeight - 1}A`;
-        }
-        chunk += "\r\x1b[0J";
-      }
-      chunk += frame.lines.join("\r\n");
-      const up = frame.lines.length - 1 - frame.cursorRow;
-      if (up > 0) {
-        chunk += `\x1b[${up}A`;
-      }
-      chunk += "\r";
-      if (frame.cursorColumn > 0) {
-        chunk += `\x1b[${frame.cursorColumn}C`;
-      }
-      output.write(chunk);
-      frameHeight = frame.lines.length;
-      frameCursorRow = frame.cursorRow;
+      lastFrame = { lines: frame.lines, activeStart: 0, cursorRow: frame.cursorRow, cursorCol: frame.cursorColumn };
+      renderer.render(lastFrame);
     };
 
     return new Promise<string>((resolve, reject) => {
@@ -221,42 +208,37 @@ export class TerminalInputSession {
         }
         input.removeListener("data", onData);
         input.removeListener("end", onEnd);
-        input.removeListener("error", onError);
-        try {
-          if (pasteEnabled) output.write("\x1b[?2004l");
-        } finally {
+        output.removeListener("resize", onResize);
+        void (async () => {
           try {
-            restoreRawMode?.();
-          } catch (restoreError) {
-            error = new AggregateError([error, restoreError].filter(Boolean), "Terminal mode restoration failed");
+            try {
+              if (pasteEnabled) output.write("\x1b[?2004l\x1b[<u" + (modifyOtherKeys ? "\x1b[>4;0m" : ""));
+            } finally {
+              await drainTerminalInput(input);
+            }
+            renderer.render(this.eraseWhenDone
+              ? { lines: [], activeStart: 0, cursorRow: 0, cursorCol: 0 }
+              : { ...lastFrame, cursorRow: Math.max(0, lastFrame.lines.length - 1), cursorCol: 0 });
+          } catch (cleanupError) {
+            error = error ?? (cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)));
+          } finally {
+            try { renderer.close(); }
+            finally {
+              input.removeListener("error", onError);
+              restoreRawMode?.();
+              decoder.clear();
+            }
           }
-        }
-        if (this.eraseWhenDone) {
-          let chunk = "";
-          if (frameHeight > 1) {
-            chunk += `\x1b[${frameHeight - 1}A`;
+          output.write(this.eraseWhenDone ? "\r\x1b[0J" : "\r\n");
+          if (error !== null) {
+            this.persistHistory(editor);
+            reject(error);
+            return;
           }
-          chunk += "\r\x1b[0J";
-          output.write(chunk);
-        } else {
-          let chunk = "";
-          const down = frameHeight - 1 - frameCursorRow;
-          if (down > 0) {
-            chunk += `\x1b[${down}B`;
-          }
-          chunk += "\r\n";
-          output.write(chunk);
-        }
-        if (error !== null) {
+          if (result && recordHistory) editor.history = [...editor.history, result];
           this.persistHistory(editor);
-          reject(error);
-          return;
-        }
-        if (result && recordHistory) {
-          editor.history = [...editor.history, result];
-        }
-        this.persistHistory(editor);
-        resolve(result);
+          resolve(result);
+        })().catch(reject);
       };
 
       const handleAction = (action: InputAction): void => {
@@ -300,62 +282,43 @@ export class TerminalInputSession {
         if (flushTimer !== null) {
           clearTimeout(flushTimer);
         }
+        const timeout = inputTimeout(decoder.pendingKind());
+        if (timeout === null) { flushTimer = null; return; }
         flushTimer = setTimeout(() => {
           flushTimer = null;
-          for (const event of stdinBuffer.flush()) {
-            for (const sequence of inputFilter.feed(event.data)) {
-              for (const action of decoder.feed(sequence)) {
-                handleAction(action);
-              }
-            }
-          }
-          for (const sequence of inputFilter.flush()) {
-            for (const action of decoder.feed(sequence)) {
-              handleAction(action);
-            }
-          }
-          for (const action of decoder.flush()) {
-            handleAction(action);
-          }
-          refreshCompletions();
-          if (!settled) {
-            redraw();
-          }
-        }, ESCAPE_FLUSH_MS);
+          try {
+            for (const action of decoder.flush()) handleAction(action);
+            refreshCompletions();
+            if (!settled) redraw();
+          } catch (error) { onError(error instanceof Error ? error : new Error(String(error))); }
+        }, timeout);
         flushTimer.unref();
       };
 
       const onData = (chunk: Buffer): void => {
-        for (const event of stdinBuffer.feed(chunk)) {
-          if (event.kind === BufferedInputKind.Paste) {
-            handleAction(
-              inputAction(InputActionKind.Insert, event.data.toString("utf8")),
-            );
-            continue;
-          }
-          for (const sequence of inputFilter.feed(event.data)) {
-            for (const action of decoder.feed(sequence)) {
-              handleAction(action);
-            }
-          }
-        }
-        if (settled) {
-          return;
-        }
-        refreshCompletions();
-        redraw();
-        scheduleEscapeFlush();
+        try {
+          for (const action of decoder.feed(chunk)) handleAction(action);
+          if (settled) return;
+          refreshCompletions();
+          redraw();
+          scheduleEscapeFlush();
+        } catch (error) { onError(error instanceof Error ? error : new Error(String(error))); }
       };
 
       const onEnd = (): void => finish(new PromptEofError(), "");
       const onError = (error: Error): void => finish(error, "");
+      const onResize = (): void => {
+        if (settled) return;
+        try { redraw(); } catch (error) { onError(error instanceof Error ? error : new Error(String(error))); }
+      };
       try {
         restoreRawMode = enterTerminalRawMode(input);
         pasteEnabled = true;
-        output.write("\x1b[?2004h");
+        output.write("\x1b[?2004h\x1b[>7u\x1b[?u\x1b[c");
         input.on("data", onData);
         input.on("end", onEnd);
         input.on("error", onError);
+        output.on("resize", onResize);
         refreshCompletions();
         redraw();
       } catch (error) {
@@ -371,18 +334,4 @@ export class TerminalInputSession {
       this.sharedHistory.push(...editor.history);
     }
   }
-}
-
-function truncateToWidth(text: string, width: number): string {
-  let result = "";
-  let used = 0;
-  for (const char of text) {
-    const charWidth = Math.max(1, charCellWidth(char));
-    if (used + charWidth > width) {
-      break;
-    }
-    result += char;
-    used += charWidth;
-  }
-  return result;
 }
