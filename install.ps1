@@ -63,11 +63,24 @@ try {
     $checksum = Join-Path $stage 'checksum'
     Download "$base/download/v$Version/$archive.sha256" $checksum
     Download "$base/download/v$Version/$archive" $zip
+    Write-Host 'Verifying download...'
     $expected = ([IO.File]::ReadAllText($checksum) -split '\s+')[0]
     if ($expected -notmatch '\A[a-fA-F0-9]{64}\z') { throw 'Invalid SHA-256 checksum.' }
     if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ine $expected) { throw 'Download checksum mismatch; existing installation was not changed.' }
     $package = Join-Path $stage 'package'
-    Expand-Archive -LiteralPath $zip -DestinationPath $package
+    Write-Host 'Extracting package...'
+    # Expand-Archive in Windows PowerShell 5.1 is slow on dependency trees with
+    # thousands of files. Prefer Windows' native bsdtar; retain a .NET fallback.
+    $tar = Join-Path $env:SystemRoot 'System32\tar.exe'
+    if (Test-Path -LiteralPath $tar -PathType Leaf) {
+        [IO.Directory]::CreateDirectory($package) | Out-Null
+        & $tar -xf $zip -C $package
+        if ($LASTEXITCODE -ne 0) { throw 'Package extraction failed.' }
+    } else {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::ExtractToDirectory($zip, $package)
+    }
+    Write-Host 'Checking packaged runtime...'
     $node = Join-Path $package 'runtime\node.exe'
     $entry = Join-Path $package 'app\node_modules\laohuang\dist\bin.js'
     $actual = & $node $entry --version
