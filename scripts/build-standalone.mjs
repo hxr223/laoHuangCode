@@ -51,8 +51,9 @@ try {
   if (!expected || !/^[a-f0-9]{64}$/.test(expected)) throw new Error('Official Node checksum is missing');
   const bytes = await download(`${nodeBase}/${nodeArchive}`, join(stage, nodeArchive));
   if (createHash('sha256').update(bytes).digest('hex') !== expected) throw new Error('Node download checksum mismatch');
-  run('tar', ['-xf', nodeArchive]);
-  const nodeDir = join(stage, nodeArchive.replace(/\.(zip|tar\.gz)$/, ''));
+  const nodeDirectoryName = nodeArchive.replace(/\.(zip|tar\.gz)$/, '');
+  run('tar', ['-xf', nodeArchive, `${nodeDirectoryName}/${platform === 'win32' ? 'node.exe' : 'bin/node'}`, `${nodeDirectoryName}/LICENSE`]);
+  const nodeDir = join(stage, nodeDirectoryName);
   const node = join(runtime, platform === 'win32' ? 'node.exe' : 'node');
   copyFileSync(join(nodeDir, platform === 'win32' ? 'node.exe' : 'bin/node'), node);
   chmodSync(node, 0o755);

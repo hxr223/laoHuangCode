@@ -19,6 +19,7 @@ function success(result) {
   assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);
   return result.stdout;
 }
+let primaryFailure = false;
 try {
   const home = join(temp, 'new user');
   const install = join(home, 'installation');
@@ -82,6 +83,7 @@ try {
     success(run('/bin/sh', [join(root, 'install.sh')], env));
     launch = (args, input) => run('/bin/sh', ['-c', '. "$HOME/.profile"; exec laohuang "$@"', 'standalone-smoke', ...args], env, input);
   }
+  console.log('Checking installed command and first-run setup...');
   assert.equal(success(launch(['--version'])).trim(), `laohuang ${version}`);
   assert.match(success(launch(['--help'])), /usage: laohuang/);
   // A clean HOME reaches onboarding; blank selection cancels before any API key or model request.
@@ -90,6 +92,7 @@ try {
   assert.match(onboarding.stdout, /Select model provider/);
   const bin = join(install, 'bin', windows ? 'laohuang.cmd' : 'laohuang');
   const before = readFileSync(bin, 'utf8');
+  console.log('Checking standalone update...');
   assert.match(success(launch(['update'])), /Installed laohuang/);
   assert.equal(readFileSync(`${bin}.bak`, 'utf8'), before);
   assert.equal(success(launch(['--version'])).trim(), `laohuang ${version}`);
@@ -102,6 +105,14 @@ try {
   assert.equal(success(launch(['--version'])).trim(), `laohuang ${version}`);
   assert.ok(readdirSync(join(install, 'releases')).every(name => !name.startsWith('.install')));
   console.log(`Standalone install, onboarding, update and failed-update recovery passed: ${process.platform}-${process.arch}`);
+} catch (error) {
+  primaryFailure = true;
+  throw error;
 } finally {
-  rmSync(temp, { recursive: true, force: true });
+  try {
+    rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  } catch (error) {
+    if (!primaryFailure) throw error;
+    console.error('Temporary directory cleanup also failed:', error);
+  }
 }
