@@ -39,11 +39,12 @@ try {
   let launch;
   if (windows) {
     // Retain Windows and Git tools, excluding any directory containing Node.
-    for (const key of ['SystemRoot', 'WINDIR', 'ComSpec', 'OS', 'ProgramFiles', 'ProgramFiles(x86)', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432', 'TEMP', 'TMP']) {
+    for (const key of ['SystemRoot', 'SystemDrive', 'WINDIR', 'ComSpec', 'PATHEXT', 'OS', 'ProgramFiles', 'ProgramFiles(x86)', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_ARCHITEW6432', 'TEMP', 'TMP']) {
       if (process.env[key]) env[key] = process.env[key];
     }
     env.Path = (process.env.Path ?? process.env.PATH ?? '').split(';').filter(path => path && !existsSync(join(path, 'node.exe'))).join(';');
     env.LOCALAPPDATA = join(home, 'AppData/Local');
+    env.APPDATA = join(home, 'AppData/Roaming');
     env.LAOHUANG_NO_MODIFY_PATH = '1';
     success(run('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'install.ps1')], env, undefined, 300_000));
     if (process.env.GITHUB_ACTIONS === 'true') {
