@@ -1197,14 +1197,16 @@ export class TerminalUI {
   }
 
   setSessionId(sessionId: string): void {
+    if (sessionId !== this.#sessionId) this.state.contextTokens = 0;
     this.#sessionId = sessionId;
     this.#loop?.requestRender();
   }
 
-  setContextUsage(tokens: number, contextWindow: number): void {
-    // Preserve ordering with request-start events already waiting to be rendered.
+  setContextUsage(tokens: number | null, contextWindow: number): void {
+    // Tag queued snapshots so a session switch cannot apply stale usage.
     this.publishEvent({
       kind: "ui.context_usage",
+      session_id: this.#sessionId,
       payload: { context_tokens: tokens, context_window: contextWindow },
     });
   }
@@ -1434,6 +1436,7 @@ export class TerminalUI {
 
   /** Reduce a projected event and apply its append-only block change. */
   applyProjectedEvent(event: UIEventLike): void {
+    if (event.kind === "ui.context_usage" && event.session_id !== this.#sessionId) return;
     for (const projected of this.#displayPolicy.project(event)) {
       this.#applyDisplayEvent(projected);
     }

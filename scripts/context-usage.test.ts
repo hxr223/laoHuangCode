@@ -4,7 +4,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DefaultTokenEstimator } from "@laohuang/session-context";
+import { ContextUsage } from "@laohuang/session-context";
+import type { ModelUsage } from "@laohuang/llm";
 import type { ToolSpec } from "@laohuang/tools";
 import { refreshSessionContextUsage } from "../apps/cli/src/main.ts";
 import { SessionController } from "../apps/cli/src/session-controller.ts";
@@ -57,15 +58,14 @@ test("context usage follows new, resumed, cloned and forked session histories", 
   const { controller, ui, root, refresh } = await fixture(t);
   refresh();
   const baseTokens = ui.state.contextTokens;
-  const estimator = new DefaultTokenEstimator();
-  assert.equal(baseTokens, estimator.estimateMessages([system]) + estimator.estimateTools(tools));
+  assert.equal(baseTokens, 0);
   const originalId = controller.currentSessionId!;
   const user = controller.history!.appendUser({
     message: { role: "user", content: "x".repeat(12_000) }, inputEventIds: [], source: "direct",
   });
   refresh();
   const fullTokens = ui.state.contextTokens;
-  assert.equal(fullTokens, baseTokens + 3008);
+  assert.equal(fullTokens, 3000);
 
   await controller.createNew();
   controller.history!.appendSystemContext({ message: system, cwd: root });
@@ -85,29 +85,31 @@ test("context usage follows new, resumed, cloned and forked session histories", 
   assert.equal(ui.state.contextTokens, baseTokens);
 });
 
-test("context usage includes instructions and committed replies, and uses the active compacted tail", async (t) => {
+test("context usage excludes initialization and waits for post-compaction measured usage", async (t) => {
   const { controller, ui, refresh } = await fixture(t);
   const history = controller.history!;
   refresh();
-  const baseTokens = ui.state.contextTokens;
   const instructions = { role: "user", content: "Project rules: use TypeScript." } as const;
   history.appendProjectInstructions({ message: instructions, files: [] });
+  refresh();
+  assert.equal(ui.state.contextTokens, 0);
   const user = history.appendUser({
     message: { role: "user", content: "x".repeat(12_000) }, inputEventIds: [], source: "direct",
   });
   refresh();
   const beforeReply = ui.state.contextTokens;
+  assert.equal(beforeReply, 3000);
   const reply = { role: "assistant", provider: "test", model: "model-a",
     content: [{ type: "text", text: "done" }] } as const;
   const assistant = history.appendAssistant({ message: reply, requestId: "request", finishReason: "stop" });
   refresh();
-  assert.equal(ui.state.contextTokens, beforeReply + 9);
+  assert.equal(ui.state.contextTokens, 3001);
   history.appendCompaction({
     summary: "Previous work is complete.",
     summarizedFromSeq: user.seq,
     summarizedThroughSeq: user.seq,
     retainedFromSeq: assistant.seq,
-    tokensBefore: ui.state.contextTokens,
+    tokensBefore: 3001,
     retainedTokens: 9,
     summaryInputTokens: 3000,
     summaryOutputTokens: 6,
@@ -115,15 +117,16 @@ test("context usage includes instructions and committed replies, and uses the ac
   });
   const beforeRefresh = history.entries();
   refresh(128_000, "model-b");
-  const estimator = new DefaultTokenEstimator();
-  assert.equal(ui.state.contextTokens, baseTokens + estimator.estimateMessages([
-    instructions,
-    { role: "user", content: "<conversation_summary>\nPrevious work is complete.\n</conversation_summary>" },
-    reply,
-  ]));
+  assert.equal(ui.state.contextTokens, null);
   assert.equal(ui.state.contextWindow, 128_000);
-  assert.ok(ui.state.contextTokens < beforeReply);
   assert.deepEqual(history.entries(), beforeRefresh, "refresh must not write or compact history");
+  history.appendAssistant({ message: reply, requestId: "no-usage", finishReason: "stop" });
+  refresh();
+  assert.equal(ui.state.contextTokens, null);
+  history.appendAssistant({ message: reply, requestId: "measured", finishReason: "stop",
+    usage: { inputTokens: 100, outputTokens: 5 } });
+  refresh();
+  assert.equal(ui.state.contextTokens, 105);
 });
 
 test("queued context refresh wins over old request usage and redraws without transcript noise", async (t) => {
@@ -140,7 +143,7 @@ test("queued context refresh wins over old request usage and redraws without tra
   ui.drainLoop();
   assert.equal(ui.state.contextTokens, baseTokens);
   assert.equal(ui.state.contextWindow, 128_000);
-  assert.match(stripTerminalControls(driver.writes()), /context: <0\.1%/);
+  assert.match(stripTerminalControls(driver.writes()), /context: 0%/);
   const transcript = ui.buildHistoryLines(100);
   ui.setContextUsage(512, 8192);
   ui.drainLoop();
@@ -158,4 +161,82 @@ test("context percentages distinguish zero, tiny values and fractional percentag
     const frame = ui.buildFrame({ width: 100, editor: new EditorState() });
     assert.ok(frame.lines.some((line) => stripTerminalControls(line).includes(`context: ${expected} (`)));
   }
+  ui.setContextUsage(null, 1_000_000);
+  assert.ok(ui.buildFrame({ width: 100, editor: new EditorState() }).lines
+    .some((line) => stripTerminalControls(line).includes("context: ? (?/1M)")));
+});
+
+test("measured usage replaces estimates and survives resume, clone and fork", async (t) => {
+  const { controller, refresh, ui } = await fixture(t);
+  const history = controller.history!;
+  const sessionId = controller.currentSessionId!;
+  const user = history.appendUser({ message: { role: "user", content: "hello" }, inputEventIds: [], source: "direct" });
+  const reply = { role: "assistant", provider: "test", model: "model-a",
+    content: [{ type: "text", text: "answer" }] } as const;
+  history.appendAssistant({ message: reply, requestId: "measured", finishReason: "stop",
+    usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 30, cacheWriteTokens: 40, reasoningTokens: 10 } });
+  assert.equal(history.contextTokens, 190);
+  const nextUser = history.appendUser({ message: { role: "user", content: "12345678" }, inputEventIds: [], source: "direct" });
+  assert.equal(history.contextTokens, 192);
+  history.appendAssistant({ message: reply, requestId: "next", finishReason: "stop",
+    usage: { inputTokens: 0, outputTokens: 10, cacheReadTokens: 200 } });
+  assert.equal(history.contextTokens, 210);
+  for (const usage of [undefined, { inputTokens: 0, outputTokens: 0 },
+    { inputTokens: -1, outputTokens: 100 }, { inputTokens: NaN, outputTokens: 100 },
+    { inputTokens: Infinity, outputTokens: 1 }] satisfies Array<ModelUsage | undefined>) {
+    const before = history.contextTokens!;
+    history.appendAssistant({ message: reply, requestId: "invalid", finishReason: "stop", ...(usage ? { usage } : {}) });
+    assert.equal(history.contextTokens, before + 2);
+  }
+  const expected = history.contextTokens;
+  await controller.createNew();
+  assert.equal(controller.history!.contextTokens, 0);
+  await controller.resume(sessionId);
+  assert.equal(controller.history!.contextTokens, expected);
+  await controller.clone();
+  assert.equal(controller.history!.contextTokens, expected);
+  await controller.resume(sessionId);
+  await controller.fork(nextUser.id, "before");
+  assert.equal(controller.history!.contextTokens, 190);
+  refresh();
+  assert.equal(ui.state.contextTokens, 190);
+  await controller.resume(sessionId);
+  await controller.fork(user.id, "before");
+  assert.equal(controller.history!.contextTokens, 0);
+});
+
+test("session switch discards queued usage and drafts do not change it", async (t) => {
+  const { ui } = await fixture(t);
+  ui.setSessionId("old");
+  ui.setContextUsage(9000, 1_000_000);
+  ui.setSessionId("new");
+  ui.feedInputBytes(Buffer.from("draft"));
+  ui.drainLoop();
+  assert.equal(ui.state.contextTokens, 0);
+  ui.publishEvent({ kind: "ui.context_usage", session_id: "old", payload: { context_tokens: 9000 } });
+  ui.setContextUsage(null, 128_000);
+  ui.drainLoop();
+  assert.equal(ui.state.contextTokens, null);
+});
+
+test("live counting accepts incomplete tool batches and only estimates appended content", async (t) => {
+  const { controller } = await fixture(t);
+  const history = controller.history!;
+  history.appendAssistant({ requestId: "tool", finishReason: "tool-calls", usage: { inputTokens: 100, outputTokens: 20 },
+    message: { role: "assistant", provider: "test", model: "model-a", content: [
+      { type: "tool-call", call: { id: "call", name: "read", arguments: {} } },
+    ] } });
+  const tracker = new ContextUsage(history.entries());
+  assert.equal(tracker.tokens, 120);
+  let reads = 0;
+  const result = history.appendToolResults({ requestId: "tool", recovered: false, messages: [
+    { role: "tool-result", toolCallId: "call", toolName: "read", content: "12345678", isError: false },
+  ] })[0]!;
+  const instrumented = { ...result, payload: { ...result.payload, message: { ...result.payload.message,
+    get content() { reads++; return "12345678"; },
+  } } };
+  tracker.append(instrumented);
+  for (let i = 0; i < 1000; i++) assert.equal(tracker.tokens, 122);
+  assert.equal(reads, 1);
+  assert.equal(history.contextTokens, 122);
 });

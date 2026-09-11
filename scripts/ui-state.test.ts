@@ -31,8 +31,9 @@ test("model deltas are provisional until committed", () => {
   assert.equal(reducer.state.activeResponse?.status, "committed");
 });
 
-test("model request started updates context window usage", () => {
+test("request budgets and model switches cannot overwrite display usage", () => {
   const reducer = new UIEventReducer();
+  reducer.apply({ kind: "ui.context_usage", payload: { context_tokens: null, context_window: 128_000 } });
 
   reducer.apply({
     kind: "model.request_started",
@@ -43,8 +44,11 @@ test("model request started updates context window usage", () => {
     },
   });
 
+  reducer.apply({ kind: "model.switched", payload: { context_tokens: 9999, context_window: 1_000_000 } });
+  assert.equal(reducer.state.contextTokens, null);
+  assert.equal(reducer.state.contextWindow, 128_000);
+  reducer.apply({ kind: "ui.context_usage", payload: { context_tokens: 2048, context_window: 1_000_000 } });
   assert.equal(reducer.state.contextTokens, 2048);
-  assert.equal(reducer.state.contextWindow, 1_000_000);
 });
 
 test("parallel tool output is grouped by correlation id", () => {

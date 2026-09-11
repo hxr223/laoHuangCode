@@ -1,4 +1,5 @@
 export * from "./conversation-history.ts";
+export * from "./context-usage.ts";
 export * from "./context-builder.ts";
 export * from "./token-estimator.ts";
 export * from "./summary-prompt.ts";

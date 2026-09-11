@@ -15,7 +15,7 @@ import {
   AgentStepRunner,
   type AgentStepRunnerContext,
 } from "../packages/core/agent-runtime/src/core/agent-step-runner.ts";
-import { HistoryCommitter } from "../packages/core/agent-runtime/src/core/history-committer.ts";
+import { HistoryCommitter, type ConversationHistoryLike } from "../packages/core/agent-runtime/src/core/history-committer.ts";
 import { RepeatToolPolicy } from "../packages/core/agent-runtime/src/core/repeat-tool-policy.ts";
 import { ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
@@ -106,6 +106,7 @@ function createRunner(options: {
   executeTool?: () => Promise<ToolResult>;
   getReasoningEffort?: () => ReasoningEffort;
   emit?: (eventType: string, payload: Record<string, unknown>) => void;
+  conversationHistory?: ConversationHistoryLike;
 }): AgentStepRunner {
   const token = new TestCancelToken() as unknown as CancelToken;
   const context = options.context ?? null;
@@ -114,6 +115,7 @@ function createRunner(options: {
     context,
     cancelToken: token,
     createCancelled: (message) => new AgentCancelled(message),
+    conversationHistory: options.conversationHistory,
   });
   const registry = {
     definitions: [{ name: "read", description: "Read file", parameters: { type: "object" }, promptGuidelines: [] }],
@@ -314,3 +316,28 @@ test("commits pending user input only after the tool-result safe point", async (
 function zeroUsage(): ModelResult["usage"] {
   return { inputTokens: 0, outputTokens: 0 };
 }
+
+test("usage is persisted only after the assistant commit succeeds", async () => {
+  for (const allowCommit of [true, false]) {
+    const saved: Parameters<ConversationHistoryLike["appendAssistant"]>[0][] = [];
+    const response = { ...finalResult("done"), usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 50 } };
+    const events: string[] = [];
+    const runner = createRunner({
+      messages: [], adapter: new StubAdapter([response]),
+      context: { commitIfActive: (commit) => { if (allowCommit) commit(); return allowCommit; } },
+      conversationHistory: {
+        appendUser() {}, appendToolResults() {}, appendReminder() {},
+        appendAssistant(input) { saved.push(input); },
+      },
+      emit: (kind) => events.push(kind),
+    });
+    if (allowCommit) {
+      await runner.run();
+      assert.deepEqual(saved[0]?.usage, response.usage);
+    } else {
+      await assert.rejects(runner.run(), AgentCancelled);
+      assert.equal(saved.length, 0);
+      assert.ok(events.includes("model_response"), "receiving usage alone is not a successful commit");
+    }
+  }
+});

@@ -85,11 +85,12 @@ export class StatusLine implements TuiComponent {
   }
 }
 
-function contextUsageLabel(tokens: number, contextWindow: number): string | null {
+function contextUsageLabel(tokens: number | null, contextWindow: number): string | null {
   const window = normalizedCount(contextWindow);
   if (window <= 0) {
     return null;
   }
+  if (tokens === null) return `context: ? (?/${formatCompactCount(window)})`;
   const used = normalizedCount(tokens);
   const ratio = Math.min(100, (used / window) * 100);
   const percent = ratio > 0 && ratio < 0.1 ? "<0.1" : formatScaled(ratio);
