@@ -6,8 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ModelCatalog, ModelMessage } from "@laohuang/llm";
 import {
-  ContextBuilder,
-  DefaultTokenEstimator,
+  ContextUsage,
   type BuildContextInput,
 } from "@laohuang/session-context";
 import { projectTranscript } from "@laohuang/session-store";
@@ -138,10 +137,8 @@ export function refreshSessionContextUsage(
   },
 ): void {
   if (terminalUi === null) return;
-  const context = new ContextBuilder().build(input);
-  const estimator = new DefaultTokenEstimator();
   terminalUi.setContextUsage(
-    estimator.estimateMessages(context.messages) + estimator.estimateTools(input.projectTools?.(context.messages) ?? input.tools),
+    new ContextUsage(input.entries).tokens,
     input.contextWindow,
   );
 }

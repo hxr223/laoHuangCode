@@ -26,7 +26,7 @@ export interface UIState {
   totalTokens: number;
   inputTokens: number;
   outputTokens: number;
-  contextTokens: number;
+  contextTokens: number | null;
   contextWindow: number;
 }
 
@@ -73,6 +73,7 @@ function createUpdate(
  * is owned by events.ts; anything carrying these fields is accepted.
  */
 export interface UIEventLike {
+  session_id?: unknown;
   kind?: unknown;
   type?: unknown;
   payload?: unknown;
@@ -148,7 +149,6 @@ export class UIEventReducer {
 
     if (kind === "model.request_started") {
       this.state.sessionState = "RUNNING_MODEL";
-      this.#updateContextUsage(payload);
       this.state.activeResponse = {
         requestId: correlationId,
         text: "",
@@ -261,7 +261,6 @@ export class UIEventReducer {
       this.state.model = String(
         "model" in payload ? payload.model : this.state.model,
       );
-      this.#updateContextUsage(payload);
       return createUpdate(kind, { payload });
     }
 
@@ -279,7 +278,7 @@ export class UIEventReducer {
 
   #updateContextUsage(payload: Record<string, unknown>): void {
     if ("context_tokens" in payload) {
-      this.state.contextTokens = toInt(payload.context_tokens);
+      this.state.contextTokens = payload.context_tokens === null ? null : toInt(payload.context_tokens);
     }
     if ("context_window" in payload) {
       this.state.contextWindow = toInt(payload.context_window);
