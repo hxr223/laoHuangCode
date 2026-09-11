@@ -13,13 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  standalone:
-    uses: ./.github/workflows/standalone.yml
-    with:
-      validate-installation: false
-
   publish-npm:
-    needs: standalone
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -64,8 +58,14 @@ jobs:
           EXPECTED_VERSION: ${{ steps.package.outputs.version }}
         run: npm run verify:published -- "$EXPECTED_VERSION"
 
-  publish-standalone:
+  standalone:
     needs: publish-npm
+    uses: ./.github/workflows/standalone.yml
+    with:
+      validate-installation: false
+
+  publish-standalone:
+    needs: standalone
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

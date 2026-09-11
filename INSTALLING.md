@@ -112,7 +112,12 @@ CI 和 Release 共用 `.github/workflows/standalone.yml`。PR CI 通过 `platfor
 Ubuntu x64，使用 Node 24 执行构建工具，安装包仍携带固定的 Node 22.23.2。
 Release 使用默认六平台矩阵，设置 `validate-installation: false`，跳过安装器测试和安装、更新验收，
 仍从合并后的 main 构建六个平台归档，并执行构建内的运行时和原生依赖检查。
-六个平台构建成功后，执行 npm 构建、测试和发布；npm 版本验证完成后，再创建 GitHub Release，
-上传归档、校验和、版本文件和两个安装脚本。Release 草稿上传完成后才设为 latest，
-避免安装器读到缺少文件的版本。npm 和 GitHub 发布不具有跨服务事务性；后者失败时
-重跑失败的 GitHub 发布任务，不要重复发布已经存在的 npm 版本。
+Release 先执行 npm 构建、测试和发布，确认公开 registry 上的新版本可安装后，
+再启动六个平台的独立包构建。全部平台构建成功后，创建 GitHub Release，上传归档、
+校验和、版本文件和两个安装脚本。Release 草稿上传完成后才设为 latest，
+避免安装器读到缺少文件的版本。
+
+npm 用户可以先升级；独立安装器在 GitHub Release 更新前仍使用上一版。
+npm 发布或发布验证失败时，不启动六平台构建；后续独立包构建或上传失败不会撤销已发布的 npm 版本。
+临时故障应只重跑失败的任务，让后续任务继续，不要从头重跑整个 Release 或重复发布已有 npm 版本。
+需要修改源码或构建逻辑时，通过新的 PR 和版本发布修复。
