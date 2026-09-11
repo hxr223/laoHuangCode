@@ -1,6 +1,7 @@
 import type {
   AssistantModelMessage,
   ModelFinishReason,
+  ModelUsage,
   SystemModelMessage,
   ToolResultModelMessage,
   UserModelMessage,
@@ -76,6 +77,7 @@ export interface AssistantMessagePayload {
   readonly message: AssistantModelMessage;
   readonly requestId: string;
   readonly finishReason: ModelFinishReason;
+  readonly usage?: ModelUsage;
 }
 
 export interface ToolResultPayload {

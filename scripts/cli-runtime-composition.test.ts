@@ -117,6 +117,7 @@ async function fixture(t: TestContext) {
 
 test("two agent turns use the same persisted conversation history", async (t) => {
   const { root, controller, adapter } = await fixture(t);
+  const usage: Array<number | null> = [];
   const composed = createSessionRuntime({
     modelAdapter: adapter,
     catalog: new FakeCatalog(),
@@ -126,12 +127,20 @@ test("two agent turns use the same persisted conversation history", async (t) =>
     projectRoot: root,
     startupCwd: root,
     version: "9.8.7",
+    presentation: { contextUsageChanged: (value) => usage.push(value.contextTokens) },
   });
+  assert.equal(usage.at(-1), 0);
 
   await composed.session.submitInput("alpha");
   assert.equal(await composed.session.waitForIdle(), true);
+  assert.equal(usage.at(-1), 18);
+  assert.ok(usage.includes(2), "first user message is estimated before the response");
   await composed.session.submitInput("beta");
   assert.equal(await composed.session.waitForIdle(), true);
+  assert.equal(usage.at(-1), 18, "second usage replaces the first rather than accumulating");
+  const committed = controller.history!.entries().at(-1)!;
+  assert.equal(committed.entryType, "assistant_message");
+  if (committed.entryType === "assistant_message") assert.deepEqual(committed.payload.usage, { inputTokens: 12, outputTokens: 6 });
 
   assert.deepEqual(
     adapter.requests[1]?.messages.slice(-3).map((message) => message.role),
@@ -156,6 +165,7 @@ test("two agent turns use the same persisted conversation history", async (t) =>
 test("refreshSession restores resumed history and manual compaction into the agent", async (t) => {
   const { root, controller, adapter } = await fixture(t);
   const snapshots: string[][] = [];
+  const usage: Array<number | null> = [];
   const composed = createSessionRuntime({
     modelAdapter: adapter,
     catalog: new FakeCatalog(),
@@ -167,6 +177,7 @@ test("refreshSession restores resumed history and manual compaction into the age
     version: "9.8.7",
     presentation: {
       historyChanged: (entries) => snapshots.push(entries.map((entry) => entry.entryType)),
+      contextUsageChanged: (value) => usage.push(value.contextTokens),
     },
   });
   const originalSessionId = controller.currentSessionId!;
@@ -175,6 +186,7 @@ test("refreshSession restores resumed history and manual compaction into the age
   await composed.agent.run("x".repeat(10_000));
   await composed.agent.run("retain this tail");
   await composed.compact();
+  assert.equal(usage.at(-1), null, "summary request usage must not become the conversation baseline");
   assert.equal(controller.history?.entries().at(-1)?.entryType, "compaction");
   assert.ok(composed.agent.messages.some((message) =>
     message.role === "user" && message.content.includes("Earlier turns discussed alpha and beta.")),
@@ -182,14 +194,18 @@ test("refreshSession restores resumed history and manual compaction into the age
 
   await controller.createNew();
   composed.refreshSession();
+  assert.equal(usage.at(-1), 0);
   assert.deepEqual(composed.agent.messages.map((message) => message.role), ["system"]);
 
   await controller.resume(originalSessionId);
   composed.refreshSession();
+  assert.equal(usage.at(-1), null, "resuming must respect the compaction boundary");
   assert.ok(composed.agent.messages.some((message) =>
     message.role === "user" && message.content.includes("Earlier turns discussed alpha and beta.")),
   );
   assert.ok(snapshots.some((snapshot) => snapshot.includes("compaction")));
+  await composed.agent.run("continue after compression");
+  assert.equal(usage.at(-1), 18);
 
   await composed.session.close({ timeoutMs: 1_000 });
   await composed.close();
@@ -197,7 +213,7 @@ test("refreshSession restores resumed history and manual compaction into the age
 
 test("switchModel updates all model and context routes", async (t) => {
   const { root, controller, adapter } = await fixture(t);
-  const usage: Array<{ contextTokens: number; contextWindow: number }> = [];
+  const usage: Array<{ contextTokens: number | null; contextWindow: number }> = [];
   const composed = createSessionRuntime({
     modelAdapter: adapter,
     catalog: new FakeCatalog(),
@@ -212,6 +228,7 @@ test("switchModel updates all model and context routes", async (t) => {
 
   await composed.agent.run("remember this before switching");
   composed.switchModel({ provider: "other", model: "model-b", baseUrl: "https://example.test" });
+  assert.equal(usage.at(-1)?.contextTokens, 18);
   await composed.agent.run("use the other model");
 
   assert.equal(composed.route.provider, "other");
@@ -244,6 +261,7 @@ test("shared runtime prepares deferred tools, persists search and restores only 
     execute: () => { executions++; return { ok: true, content: "executed" }; },
   }));
   const requests: ModelRequest[] = [];
+  const usage: Array<number | null> = [];
   const adapter: ModelAdapter = {
     name: "dynamic-fixture",
     runAttempt: async (request) => {
@@ -275,6 +293,7 @@ test("shared runtime prepares deferred tools, persists search and restores only 
     projectRoot: root,
     startupCwd: root,
     version: "9.8.7",
+    presentation: { contextUsageChanged: (value) => usage.push(value.contextTokens) },
   });
   try {
     assert.equal(await composed.agent.run("use remote_0"), "done");
@@ -282,6 +301,8 @@ test("shared runtime prepares deferred tools, persists search and restores only 
       ["tool_search"], ["remote_0", "tool_search"], ["remote_0", "tool_search"],
     ]);
     assert.equal(executions, 1);
+    assert.equal(usage.at(-1), 12);
+    assert.ok(usage.some((value) => value !== null && value > 12), "tool results temporarily extend measured usage");
     assert.equal(controller.history?.entries().filter((entry) => entry.entryType === "tool_catalog").length, 1);
     assert.equal(controller.history?.entries().filter((entry) => entry.entryType === "tool_definitions").length, 1);
 
@@ -298,6 +319,34 @@ test("shared runtime prepares deferred tools, persists search and restores only 
     })));
     await composed.agent.run("check updated catalog");
     assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), ["tool_search"]);
+  } finally {
+    await composed.session.close({ timeoutMs: 1_000 });
+    await composed.close();
+  }
+});
+
+test("automatic compaction publishes unknown before the next main request", async (t) => {
+  const { root, controller, adapter } = await fixture(t);
+  const usage: Array<number | null> = [];
+  const composed = createSessionRuntime({
+    modelAdapter: adapter, catalog: new FakeCatalog(),
+    route: { provider: "test", model: "model-a", baseUrl: null },
+    tools: new ToolRegistry([]), sessionController: controller,
+    projectRoot: root, startupCwd: root, version: "9.8.7",
+    presentation: { contextUsageChanged: (value) => usage.push(value.contextTokens) },
+  });
+  try {
+    await composed.agent.run("x".repeat(20_000));
+    await composed.agent.run("y".repeat(20_000));
+    assert.ok(controller.history!.entries().some((entry) => entry.entryType === "compaction"));
+    assert.ok(usage.includes(null));
+    assert.equal(usage.at(-1), 18);
+    const history = controller.history!;
+    const entries = history.entries.bind(history);
+    history.entries = () => { throw new Error("display refresh must not scan history"); };
+    composed.refreshContextUsage();
+    assert.equal(usage.at(-1), 18);
+    history.entries = entries;
   } finally {
     await composed.session.close({ timeoutMs: 1_000 });
     await composed.close();

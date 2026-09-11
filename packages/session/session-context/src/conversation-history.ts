@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AssistantModelMessage,
   ModelFinishReason,
+  ModelUsage,
   SystemModelMessage,
   ToolResultModelMessage,
   UserModelMessage,
@@ -18,6 +19,7 @@ import type {
   UserMessageEntry,
   InstructionFileRecord,
 } from "@laohuang/session-store";
+import { ContextUsage } from "./context-usage.ts";
 
 export interface SystemContextInput {
   readonly message: SystemModelMessage;
@@ -41,6 +43,7 @@ export interface AssistantMessageInput {
   readonly message: AssistantModelMessage;
   readonly requestId: string;
   readonly finishReason: ModelFinishReason;
+  readonly usage?: ModelUsage;
 }
 
 export interface ToolResultsInput {
@@ -64,10 +67,13 @@ export class ConversationHistory {
   readonly #journal: SessionJournal;
   readonly #entries: SessionEntry[];
   readonly #staged = new Map<string, UserMessageInput>();
+  readonly #contextUsage: ContextUsage;
+  readonly #listeners = new Set<() => void>();
 
   private constructor(entries: readonly SessionEntry[], journal: SessionJournal) {
     this.#entries = [...entries];
     this.#journal = journal;
+    this.#contextUsage = new ContextUsage(entries);
   }
 
   static fromReplay(
@@ -203,9 +209,20 @@ export class ConversationHistory {
     return [...this.#entries];
   }
 
+  get contextTokens(): number | null {
+    return this.#contextUsage.tokens;
+  }
+
+  onChange(listener: () => void): () => void {
+    this.#listeners.add(listener);
+    return () => { this.#listeners.delete(listener); };
+  }
+
   private append(input: NewSessionEntry): SessionEntry {
     const entry = this.#journal.appendEntry(input);
     this.#entries.push(entry);
+    this.#contextUsage.append(entry);
+    for (const listener of this.#listeners) listener();
     return entry;
   }
 }
