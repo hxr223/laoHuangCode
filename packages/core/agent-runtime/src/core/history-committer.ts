@@ -1,5 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
-import type { ModelMessage } from "@laohuang/llm";
+import type { ModelMessage, ModelUsage } from "@laohuang/llm";
 import type { ToolCall, ToolResult } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 
@@ -17,6 +17,7 @@ export interface ConversationHistoryLike {
     readonly message: Extract<ModelMessage, { readonly role: "assistant" }>;
     readonly requestId: string;
     readonly finishReason: "stop" | "tool-calls" | "max-tokens";
+    readonly usage?: ModelUsage;
   }): unknown;
   appendToolResults(input: {
     readonly requestId: string;
@@ -108,6 +109,7 @@ export class HistoryCommitter {
   commitAssistant(message: HistoryMessage, metadata?: {
     readonly requestId: string;
     readonly finishReason: "stop" | "tool-calls" | "max-tokens";
+    readonly usage?: ModelUsage;
   }): boolean {
     const commitIfActive = this.context?.commitIfActive;
     if (typeof commitIfActive === "function") {
@@ -117,6 +119,7 @@ export class HistoryCommitter {
             message,
             requestId: metadata.requestId,
             finishReason: metadata.finishReason,
+            ...(metadata.usage === undefined ? {} : { usage: metadata.usage }),
           });
         }
         this.messages.push(message);
@@ -128,6 +131,7 @@ export class HistoryCommitter {
         message,
         requestId: metadata.requestId,
         finishReason: metadata.finishReason,
+        ...(metadata.usage === undefined ? {} : { usage: metadata.usage }),
       });
     }
     this.messages.push(message);
