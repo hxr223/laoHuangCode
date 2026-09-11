@@ -1,6 +1,6 @@
 {
   "name": "laohuang",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "A terminal coding agent CLI with a provider-neutral model runtime.",
   "type": "module",
   "bin": {
