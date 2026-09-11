@@ -264,6 +264,7 @@ export class AgentStepRunner {
       if (!history.commitAssistant(result.message, {
         requestId,
         finishReason: result.finishReason,
+        ...(toolCalls.length > 0 || textOf(result.message) !== "" ? { usage: result.usage } : {}),
       })) {
         this.emit("model_response_aborted", {
           round: modelRound,
