@@ -11,7 +11,6 @@ import {
   COMPACTION_SYSTEM_PROMPT,
   ContextBuilder,
   ContextGovernor,
-  DefaultTokenEstimator,
   type CompactionResult,
   type ConversationHistory,
 } from "@laohuang/session-context";
@@ -32,7 +31,7 @@ export interface SessionRuntimePresentation {
   historyChanged?(entries: readonly SessionEntry[]): void;
   sessionChanged?(sessionId: string): void;
   contextUsageChanged?(usage: {
-    readonly contextTokens: number;
+    readonly contextTokens: number | null;
     readonly contextWindow: number;
   }): void;
 }
@@ -184,27 +183,23 @@ export function createSessionRuntime(
     if (notify === undefined) {
       return;
     }
-    const entries = options.sessionController.history?.entries() ?? [];
-    const context = new ContextBuilder().build({
-      entries,
-      currentProvider: route.provider,
-      currentModel: route.model,
-    });
-    const estimator = new DefaultTokenEstimator();
     notify({
-      contextTokens:
-        estimator.estimateMessages(context.messages) +
-        estimator.estimateTools(projectTools(context.messages)),
+      contextTokens: options.sessionController.history === null ? 0 : options.sessionController.history.contextTokens,
       contextWindow: selectedModel.contextWindow,
     });
   };
 
+  let unsubscribeHistory: (() => void) | undefined;
   const refreshSession = (): void => {
     const sessionId = options.sessionController.currentSessionId;
     const history = options.sessionController.history;
     if (sessionId === null || history === null) {
       throw new Error("no active session");
     }
+    unsubscribeHistory?.();
+    unsubscribeHistory = history.onChange(() => {
+      if (options.sessionController.history === history) refreshContextUsage();
+    });
     session.setSessionId(sessionId);
     options.presentation?.sessionChanged?.(sessionId);
     let entries = history.entries();
@@ -278,6 +273,7 @@ export function createSessionRuntime(
     compact: () => options.sessionController.compact(),
     refreshContextUsage,
     async close() {
+      unsubscribeHistory?.();
       try {
         await recorder.close();
       } finally {
