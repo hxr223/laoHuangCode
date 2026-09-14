@@ -104,6 +104,16 @@ Agent 提供 `read`、`write`、`edit`、`bash` 四个工具，支持流式回�
 从源码运行、测试与终端验收见 [开发指南](docs/development.md)。
 发布相关说明见 [发布流程](docs/publishing.md) 和 [npm 分发说明](docs/npm-distribution.md)。
 
+## Acknowledgements / 致谢
+
+laoHuangCode 的开发受到 OpenCode、Pi、DSH、OpenAI Codex
+和 Kimi Code 等项目的启发。阅读和使用这些项目，帮助我思考
+终端编程助手的设计与实现。
+
+感谢这些项目的作者、维护者和贡献者公开分享代码与工程经验。
+
+其中，laoHuangCode 使用 pi-ai 提供模型接入能力。
+
 ## License
 
 [MIT](LICENSE)
