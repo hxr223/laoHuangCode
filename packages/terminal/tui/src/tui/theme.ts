@@ -56,7 +56,7 @@ export const DEFAULT_DARK_THEME = new TerminalTheme("dark", {
   dim: "#666666",
   success: "#b5bd68",
   error: "#cc6666",
-  warning: "#ffff00",
+  warning: "#d29922",
   user_bg: "#343541",
   tool_pending_bg: "#282832",
   tool_success_bg: "#283228",
