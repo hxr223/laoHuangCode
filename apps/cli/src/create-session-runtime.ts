@@ -1,4 +1,5 @@
 import { CodingAgent } from "@laohuang/agent-runtime";
+import type { SkillSession } from "@laohuang/tool-skill";
 import {
   ModelRuntime,
   type ModelAdapter,
@@ -37,6 +38,8 @@ export interface SessionRuntimePresentation {
 }
 
 export interface CreateSessionRuntimeOptions {
+  readonly skills?: SkillSession;
+  readonly skillInputFailed?: (input: string, error: unknown) => void;
   readonly modelAdapter: ModelAdapter;
   readonly catalog: ModelCatalog;
   readonly route: SessionRoute;
@@ -72,6 +75,8 @@ export function createSessionRuntime(
   let selectedModel = modelInfo(options.catalog, route);
   const modelRuntime = new ModelRuntime(options.modelAdapter);
   const activeConversationHistory = {
+    appendSkillContext: (input: Parameters<ConversationHistory["appendSkillContext"]>[0]) =>
+      activeHistory(options.sessionController).appendSkillContext(input),
     appendToolDefinitions: (input: Parameters<ConversationHistory["appendToolDefinitions"]>[0]) =>
       activeHistory(options.sessionController).appendToolDefinitions(input),
     appendToolCatalog: (input: Parameters<ConversationHistory["appendToolCatalog"]>[0]) =>
@@ -119,6 +124,15 @@ export function createSessionRuntime(
     });
 
   const agent = new CodingAgent({
+    resources: options.skills ? {
+      prepareInput: async (input, signal, inputs) => {
+        try { return await options.skills!.prepareInput(input, signal, inputs); }
+        catch (error) { if (!signal?.aborted) options.skillInputFailed?.(inputs?.join("\n\n") ?? input, error); throw error; }
+      },
+      prepareContext: (messages, signal) => options.skills!.prepareContext(messages, signal),
+      committed: messages => options.skills!.committed(messages),
+      finishTurn: () => options.skills!.finishTurn(),
+    } : undefined,
     modelAdapter: options.modelAdapter,
     model: route.model,
     tools: options.tools,
@@ -201,6 +215,7 @@ export function createSessionRuntime(
       if (options.sessionController.history === history) refreshContextUsage();
     });
     session.setSessionId(sessionId);
+    options.skills?.selectSession(sessionId);
     options.presentation?.sessionChanged?.(sessionId);
     let entries = history.entries();
     if (entries.length === 0) {

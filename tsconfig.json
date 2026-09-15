@@ -1,6 +1,9 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/skill/skill" },
+    { "path": "./packages/skill/skill-filesystem" },
+    { "path": "./packages/skill/tool-skill" },
     { "path": "./packages/fs/local-paths" },
     { "path": "./packages/fs/file-watcher" },
     { "path": "./packages/core/runtime-protocol" },

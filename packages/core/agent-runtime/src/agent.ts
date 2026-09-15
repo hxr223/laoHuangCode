@@ -49,6 +49,7 @@ import {
 import {
   AgentStepRunner,
   type AgentStepRunnerContext,
+  type AgentStepRunnerOptions,
 } from "./core/agent-step-runner.ts";
 import { RepeatToolPolicy } from "./core/repeat-tool-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
@@ -113,6 +114,7 @@ export interface RunOptions {
 }
 
 export interface CodingAgentOptions {
+  resources?: AgentStepRunnerOptions["resources"];
   modelAdapter: ModelAdapter;
   model: string;
   tools: AgentToolRegistry;
@@ -190,6 +192,7 @@ export class CodingAgent {
   private readonly conversationHistory: ConversationHistoryLike | null;
   private readonly contextGovernor: AgentContextGovernor | null;
   private readonly prepareTools: CodingAgentOptions["prepareTools"];
+  private readonly resources: CodingAgentOptions["resources"];
 
   constructor(options: CodingAgentOptions) {
     this.repeatToolReminderThresholds = normalizeReminderThresholds(
@@ -208,6 +211,7 @@ export class CodingAgent {
     this.conversationHistory = options.conversationHistory ?? null;
     this.contextGovernor = options.contextGovernor ?? null;
     this.prepareTools = options.prepareTools;
+    this.resources = options.resources;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
@@ -284,6 +288,7 @@ export class CodingAgent {
         toolRuntime: this.toolRuntime,
         getTools: () => this.tools.snapshot?.() ?? this.tools,
         prepareTools: this.prepareTools,
+        resources: this.resources,
         toolExecution: this.toolExecution,
         history: new HistoryCommitter({
           messages: this.messages,
@@ -316,6 +321,7 @@ export class CodingAgent {
       });
       return await runner.run();
     } finally {
+      this.resources?.finishTurn?.();
       this.activeRequestId = null;
       this.activeContext = null;
     }

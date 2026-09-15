@@ -65,7 +65,7 @@ npm 更新支持全局安装、项目直接依赖和 workspace 直接依赖；�
 梳理这个项目的目录结构，说明主要模块之间的关系。
 ```
 
-Agent 提供 `read`、`write`、`edit`、`bash` 四个工具，支持流式回复、运行中追加任务和取消执行。
+Agent 提供 `read`、`write`、`edit`、`bash` 和 `skill` 工具，支持流式回复、运行中追加任务和取消执行。
 
 - `/model`：搜索并选择所有已配置供应商的可用模型。
 - `/login`：配置供应商凭据。
@@ -73,6 +73,7 @@ Agent 提供 `read`、`write`、`edit`、`bash` 四个工具，支持流式回�
 - `/cancel`：取消当前任务。
 - `/name MCP 接入设计`：保存当前会话名称；`/name` 查看名称。
 - `/copy`：复制最近一条已完成助手回复的正文，保留 Markdown。
+- `/skill:review 参数`：显式加载 Skill，名称支持补全。
 - `/help`：查看全部命令。
 - `/exit`：退出。
 
@@ -96,6 +97,7 @@ Agent 提供 `read`、`write`、`edit`、`bash` 四个工具，支持流式回�
 ## 文档
 
 - [模型与凭据配置](docs/configuration.md)
+- [Skill 接入与使用](docs/skills.md)
 - [项目架构](docs/architecture.md)
 - [Bash 输出](docs/bash-output.md)
 

@@ -19,7 +19,7 @@ export function projectTranscript(
   const items: RestoredTranscriptItem[] = [];
   for (const entry of entries) {
     if (entry.entryType === "user_message") {
-      items.push({ kind: "user", text: entry.payload.message.content });
+      items.push({ kind: "user", text: entry.payload.message.skillContext?.input ?? entry.payload.message.content });
     } else if (entry.entryType === "assistant_message") {
       const text = entry.payload.message.content
         .filter((block) => block.type === "text")

@@ -198,6 +198,10 @@ export class ConversationHistory {
     return this.append({ entryType: "tool_catalog", payload: input });
   }
 
+  appendSkillContext(input: { readonly message: UserModelMessage }): SessionEntry {
+    return this.append({ entryType: "skill_context", payload: input });
+  }
+
   appendCompaction(input: CompactionPayload): CompactionEntry {
     return this.append({
       entryType: "compaction",

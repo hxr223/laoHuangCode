@@ -44,6 +44,7 @@ export class AgentTurnLoop<Context extends AgentTurnContext> {
     taskId: string,
     content: string,
     context: Context,
+    initialInputs?: readonly string[],
   ): Promise<TurnLoopResult> {
     let currentInput = content;
     let currentBatch: QueueInputBatch | null = null;
@@ -51,7 +52,8 @@ export class AgentTurnLoop<Context extends AgentTurnContext> {
       for (;;) {
         context.cancelToken.throwIfCancelled();
         this.lifecycle.markModelRunning(taskId);
-        context.setClaimedInput(currentBatch);
+        context.setClaimedInput(currentBatch ?? (initialInputs ? { content, eventIds: [], inputs: initialInputs } : null));
+        initialInputs = undefined;
         const result = await this.invokeRunner(currentInput, context);
         if (currentBatch !== null) {
           this.bridge.acknowledgeClaimedInput(taskId, currentBatch.eventIds);

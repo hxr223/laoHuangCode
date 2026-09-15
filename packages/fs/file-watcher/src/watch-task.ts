@@ -87,7 +87,11 @@ export class WatchTask {
                   this.queue({ ...change, path });
                 }
                 if (change.action === "deleted" && change.kind === "directory" && inside(path, this.path)) {
-                  this.fail(Object.assign(new Error(`Watch directory removed: ${path}`), { code: "ENOENT" }), generation);
+                  // Chokidar can emit a transient ancestor unlink while adding
+                  // a symlink (notably /var on macOS). Confirm it before recovery.
+                  void stat(path).then(info => {
+                    if (!info.isDirectory()) this.fail(Object.assign(new Error(`Watch directory removed: ${path}`), { code: "ENOENT" }), generation);
+                  }, error => this.fail(error, generation));
                 }
               } catch (error) { this.fail(error, generation); }
             },

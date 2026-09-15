@@ -93,6 +93,7 @@ export function routeHumanIntent(
 ): SessionAction {
   switch (intent.type) {
     case "prompt":
+      if (/^\s*\/skill:/.test(intent.text)) return makePromptAction(intent.text, intent.source);
       if (intent.text.startsWith("/")) {
         return commandAction(intent.text, intent.source);
       }
