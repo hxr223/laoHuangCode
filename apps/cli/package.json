@@ -26,6 +26,10 @@
     "@earendil-works/pi-ai": "^0.83.0"
   },
   "devDependencies": {
+    "@laohuang/skill": "0.0.0",
+    "@laohuang/skill-filesystem": "0.0.0",
+    "@laohuang/tool-skill": "0.0.0",
+    "@laohuang/file-watcher": "0.0.0",
     "@laohuang/mcp": "0.0.0",
     "@laohuang/local-paths": "0.0.0",
     "@laohuang/agent-runtime": "0.0.0",

@@ -107,6 +107,7 @@ export interface CompactionPayload {
 }
 
 export type SessionEntryType =
+  | "skill_context"
   | "tool_definitions"
   | "tool_catalog"
   | "system_context"
@@ -118,6 +119,11 @@ export type SessionEntryType =
   | "compaction";
 
 export type SessionEntry =
+  | (SessionItemBase & {
+      readonly kind: "entry";
+      readonly entryType: "skill_context";
+      readonly payload: { readonly message: UserModelMessage };
+    })
   | (SessionItemBase & {
       readonly kind: "entry";
       readonly entryType: "tool_definitions";
@@ -216,6 +222,7 @@ export interface NewSessionRecord {
 }
 
 const ENTRY_TYPES: ReadonlySet<string> = new Set([
+  "skill_context",
   "tool_definitions",
   "tool_catalog",
   "system_context",
@@ -332,6 +339,14 @@ export function parseSessionItem(
       throw new SessionSchemaError("invalid session entry type");
     }
     objectOf(input["payload"], "entry payload");
+    if (entryType === "skill_context") {
+      const payload = objectOf(input["payload"], "skill payload");
+      const message = objectOf(payload["message"], "skill message");
+      const metadata = objectOf(message["skillContext"], "skill metadata");
+      if (message["role"] !== "user" || typeof message["content"] !== "string" ||
+        !["catalog", "activation", "invalidation"].includes(String(metadata["kind"])) ||
+        typeof metadata["key"] !== "string") throw new SessionSchemaError("invalid skill context");
+    }
     if (entryType === "tool_definitions" || entryType === "tool_catalog") {
       const payload = objectOf(input["payload"], "tool context payload");
       const message = objectOf(payload["message"], "tool context message");

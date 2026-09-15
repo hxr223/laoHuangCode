@@ -185,7 +185,7 @@ export class SessionManager {
     return {
       sessionId: child.header.sessionId,
       path: child.path,
-      editorText: options.mode === "before" ? target.payload.message.content : "",
+      editorText: options.mode === "before" ? target.payload.message.skillContext?.input ?? target.payload.message.content : "",
     };
   }
 
@@ -298,7 +298,7 @@ function cwdFrom(replay: SessionReplay): string {
 function lastUserText(items: readonly SessionItem[]): string {
   for (const item of [...items].reverse()) {
     if (item.kind === "entry" && item.entryType === "user_message") {
-      return item.payload.message.content;
+      return item.payload.message.skillContext?.input ?? item.payload.message.content;
     }
   }
   return "";

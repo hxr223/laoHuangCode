@@ -142,7 +142,7 @@ function sortStable(value: unknown): unknown {
 
 function messagesForEntries(entries: readonly SessionEntry[]): readonly ModelMessage[] {
   return entries.flatMap((entry): ModelMessage[] => {
-    if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog") return [entry.payload.message];
+    if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog" || entry.entryType === "skill_context") return [entry.payload.message];
     if (entry.entryType === "system_context") {
       return [entry.payload.message];
     }

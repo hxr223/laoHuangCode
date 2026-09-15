@@ -203,6 +203,8 @@ export class CommandRegistry {
     return this.#specs.get(name);
   }
 
+  unregister(name: string): void { this.#specs.delete(name); }
+
   all(): CommandSpec[] {
     return [...this.#specs.keys()].sort().map((name) => this.#specs.get(name)!);
   }

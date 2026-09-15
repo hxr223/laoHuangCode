@@ -73,6 +73,7 @@ function makeBatch(events: readonly RoutedEvent[]): PendingInputBatch {
   return {
     events,
     content: combineInput(events),
+    inputs: events.map(item => String(item.event.payload["content"] ?? "")),
     eventIds: events.map((item) => item.event.event_id),
   };
 }
@@ -125,6 +126,7 @@ export class TaskContext implements AgentRuntimeContext {
   readonly taskId: string;
   readonly #session: AgentSession;
   #claimedInputEventIds: readonly string[] = [];
+  #inputParts: readonly string[] | undefined;
 
   constructor(session: AgentSession, taskId: string) {
     this.#session = session;
@@ -198,7 +200,10 @@ export class TaskContext implements AgentRuntimeContext {
   /** @internal Used by the session worker around each runner invocation. */
   setClaimedInput(batch: QueueInputBatch | null): void {
     this.#claimedInputEventIds = batch === null ? [] : batch.eventIds;
+    this.#inputParts = batch?.inputs;
   }
+
+  inputParts(): readonly string[] | undefined { return this.#inputParts; }
 
   commitInput(callback: () => void, rollback: () => void = () => {}): boolean {
     return this.#session.commitClaimedInput(
@@ -353,15 +358,16 @@ export class AgentSession {
     if (this.#state === SessionState.Stopped) {
       throw new Error("session is stopped");
     }
-    const text = content.trim();
-    if (!text) {
+    const skillInput = /^\s*\/skill:/.test(content);
+    const text = skillInput ? content : content.trim();
+    if (!text.trim()) {
       throw new Error("input must not be empty");
     }
-    const strategy = options.strategy;
+    const strategy = options.strategy ?? (skillInput ? "follow_up" : undefined);
     if (strategy !== undefined && !ROUTE_STRATEGIES.has(strategy)) {
       throw new Error(`unknown route strategy: ${strategy}`);
     }
-    const kind = text.startsWith("/")
+    const kind = text.startsWith("/") && !skillInput
       ? EventKind.InputSlashCommand
       : EventKind.InputUserMessage;
     const event = this.publishInput(kind, text, strategy);
@@ -697,7 +703,7 @@ export class AgentSession {
     if (!content) {
       return 0;
     }
-    this.startTask(content, null);
+    this.startTask(content, null, held.map(item => String(item.event.payload["content"] ?? "")));
     return held.length;
   }
 
@@ -816,7 +822,7 @@ export class AgentSession {
     });
   }
 
-  private startTask(content: string, inputEventId: string | null): string {
+  private startTask(content: string, inputEventId: string | null, inputs?: readonly string[]): string {
     const taskId = randomUUID().replaceAll("-", "");
     this.taskLifecycle.createTask(taskId, { correlationId: inputEventId });
     this.setIdle(false);
@@ -824,7 +830,7 @@ export class AgentSession {
     const workerKey = {};
     this.#worker = workerKey;
     this.#workerActive = true;
-    const worker = this.runTask(workerKey, taskId, content);
+    const worker = this.runTask(workerKey, taskId, content, inputs);
     // The task body handles runner failures itself; this guard only prevents
     // an unhandled rejection if event publication itself fails during
     // teardown (the Python original lost those to the daemon thread as well).
@@ -836,6 +842,7 @@ export class AgentSession {
     workerKey: object,
     taskId: string,
     content: string,
+    inputs?: readonly string[],
   ): Promise<void> {
     const context = new TaskContext(this, taskId);
     try {
@@ -844,7 +851,7 @@ export class AgentSession {
         bridge: this.#queueBridge,
         runner: this.runner,
       });
-      await turnLoop.run(taskId, content, context);
+      await turnLoop.run(taskId, content, context, inputs);
     } finally {
       this.settleWorker(workerKey);
     }

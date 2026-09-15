@@ -7,6 +7,10 @@
   },
   "include": ["src"],
   "references": [
+    { "path": "../../packages/skill/skill" },
+    { "path": "../../packages/skill/skill-filesystem" },
+    { "path": "../../packages/skill/tool-skill" },
+    { "path": "../../packages/fs/file-watcher" },
     { "path": "../../packages/fs/local-paths" },
     { "path": "../../packages/core/runtime-protocol" },
     { "path": "../../packages/core/tools" },

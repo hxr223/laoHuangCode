@@ -21,6 +21,7 @@ export interface QueueStatus {
 }
 
 export interface PendingInputBatchLike {
+  readonly inputs?: readonly string[];
   readonly content?: string | undefined;
   readonly eventIds?: readonly string[] | undefined;
 }
@@ -32,6 +33,7 @@ export interface AgentEventPublishOptions {
 }
 
 export interface AgentRuntimeContext {
+  inputParts?(): readonly string[] | undefined;
   readonly sessionId?: string | null;
   readonly taskId?: string | null;
   readonly cancelToken?: CancelToken | null;

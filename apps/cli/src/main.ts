@@ -66,6 +66,7 @@ import { SessionController } from "./session-controller.ts";
 import { createSessionRuntime, type SessionRuntime } from "./create-session-runtime.ts";
 import { createMcpRuntime, type McpRuntime } from "./create-mcp-runtime.ts";
 import { createMcpCommand } from "./mcp-commands.ts";
+import { createSkillRuntime, type SkillRuntime } from "./create-skill-runtime.ts";
 import {
   defaultInputFn,
   defaultSecretInputFn,
@@ -424,6 +425,8 @@ export async function main(
     reasoningEffort: "high",
   });
   let mcpRuntime: McpRuntime | undefined;
+  let skillRuntime: SkillRuntime | undefined;
+  let skillDraft: string | undefined;
   let runtimeForCleanup: AgentSession | undefined;
   let composedForCleanup: SessionRuntime | undefined;
   const unsubscribers: Array<() => void> = [];
@@ -456,7 +459,13 @@ export async function main(
       terminalUi.state.model = config.model;
     }
 
+    skillRuntime = await createSkillRuntime({ configPath, projectRoot: instructionRoot,
+      home: getHomeDirectory({ env: environ }), report: message => {
+        if (runtimeForCleanup) runtimeForCleanup.publishNotice(message);
+        else outputFn(message);
+      } });
     const toolRegistry = new ToolRegistry([
+      skillRuntime.session.tool,
       ...createFileToolDefinitions({ projectRoot, pathOptions: {
         env: environ,
         shellPath: () => resolveBashPath({ shellPath, env: environ }),
@@ -470,6 +479,14 @@ export async function main(
       catalog: modelPlatform.catalog,
       route: { provider: config.provider, model: config.model, baseUrl: config.baseUrl },
       tools: toolRegistry,
+      skills: skillRuntime.session,
+      skillInputFailed: (input) => {
+        terminalUi?.setComposerText(input);
+        if (!terminalUi) {
+          skillDraft = input;
+          outputFn(`Skill input retained:\n${input}\nSubmit an empty line to retry, or enter a replacement.`);
+        }
+      },
       prepareTools: (signal) => mcpRuntime?.prepareTools(signal) ?? Promise.resolve(),
       sessionController,
       projectRoot: instructionRoot,
@@ -595,6 +612,7 @@ export async function main(
     });
 
     commands.registry.register(createMcpCommand(mcpRuntime, commandPresenter));
+    await skillRuntime.attachCommands(commands.registry);
     const projector = new EventProjector();
     unsubscribers.push(
       runtime.eventBus.subscribe((event) => {
@@ -663,6 +681,7 @@ export async function main(
         presenter: commandPresenter,
         suggestCommand: (command) => commands.registry.suggest(command),
         sink: plainSink!,
+        recoverInput: () => { const input = skillDraft; skillDraft = undefined; return input; },
       });
       startMcp();
       cleanShutdown = await running;
@@ -679,8 +698,11 @@ export async function main(
       for (const unsubscribe of unsubscribers) unsubscribe();
       try { await mcpRuntime?.close(); }
       finally {
-        if (composedForCleanup) await composedForCleanup.close();
-        else await sessionController.close();
+        try { await skillRuntime?.close(); }
+        finally {
+          if (composedForCleanup) await composedForCleanup.close();
+          else await sessionController.close();
+        }
       }
     }
   }

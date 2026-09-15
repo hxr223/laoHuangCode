@@ -112,6 +112,10 @@ export class ConfigManager {
     return this.readDocument({ optional: true })["shell_path"] as string | undefined;
   }
 
+  getSkillDirs(): readonly string[] {
+    return (this.readDocument({ optional: true })["skillDirs"] as string[] | undefined) ?? [];
+  }
+
   resolveSettings(options: ResolveSettingsOptions = {}): Config {
     const document = this.readDocument();
     const environment = options.environ ?? process.env;
@@ -209,6 +213,10 @@ export class ConfigManager {
 }
 
 function validateDocument(document: Record<string, unknown>): void {
+  const skillDirs = document["skillDirs"];
+  if (skillDirs !== undefined && (!Array.isArray(skillDirs) || skillDirs.some(path => typeof path !== "string" || !path.trim()))) {
+    throw new Error("Configuration skillDirs must be an array of non-empty paths");
+  }
   const shellPath = document["shell_path"];
   if (shellPath !== undefined && (typeof shellPath !== "string" || !shellPath.trim())) {
     throw new Error("Configuration shell_path must be a non-empty string");

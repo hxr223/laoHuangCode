@@ -63,6 +63,7 @@ export function serializeConversation(entries: readonly SessionEntry[]): string 
       lines.push(`[loaded tool definitions] ${(entry.payload.message.toolDefinitions ?? []).map(tool => tool.spec.name).join(", ")}`);
     } else if (
       entry.entryType === "user_message" ||
+      entry.entryType === "skill_context" ||
       entry.entryType === "reminder" ||
       entry.entryType === "project_instructions"
     ) {
@@ -118,7 +119,7 @@ function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[
 }
 
 function messageForEntry(entry: SessionEntry): ModelMessage {
-  if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog") return entry.payload.message;
+  if (entry.entryType === "tool_definitions" || entry.entryType === "tool_catalog" || entry.entryType === "skill_context") return entry.payload.message;
   if (entry.entryType === "assistant_message") {
     return entry.payload.message;
   }
