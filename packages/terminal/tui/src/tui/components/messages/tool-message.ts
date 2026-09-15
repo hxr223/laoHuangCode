@@ -37,8 +37,10 @@ export class ToolMessage implements TuiComponent {
         style: subject.startsWith("$ ") ? { foreground: "bash" } : undefined,
       });
     }
-    if (options.key) title.push({ text: `  [${options.key.slice(-8)}]` });
-    const detail = options.status === "running" ? "Running…" : options.status;
+    if (options.key && name !== "skill") title.push({ text: `  [${options.key.slice(-8)}]` });
+    const detail = name === "skill"
+      ? ({ running: "加载中…", completed: "已加载", failed: "加载失败", cancelled: "已取消" }[options.status] ?? options.status)
+      : options.status === "running" ? "Running…" : options.status;
     const metadata = [
       detail,
       options.exitCode === null ? "" : `exit ${options.exitCode}`,
