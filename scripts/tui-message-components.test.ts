@@ -79,6 +79,7 @@ test("notice tone selects semantic style", () => {
   const spans = warning.render({ width: 40, theme: DEFAULT_DARK_THEME }).lines[0]!.spans;
 
   assert.equal(spans[0]!.style?.foreground, "warning");
+  assert.equal(DEFAULT_DARK_THEME.color("warning"), "#d29922");
 });
 
 test("message components emit semantic styled-line snapshots at 40 and 80 columns", () => {
