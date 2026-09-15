@@ -6,6 +6,7 @@ import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 export type HistoryMessage = ModelMessage;
 
 export interface ConversationHistoryLike {
+  appendSkillContext?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
   appendToolDefinitions?(input: { readonly message: Extract<ModelMessage, { role: "system" }> }): unknown;
   appendToolCatalog?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
   appendUser(input: {
@@ -64,8 +65,8 @@ export class HistoryCommitter {
     this.conversationHistory = options.conversationHistory ?? null;
   }
 
-  commitInput(content: string): boolean {
-    const message: HistoryMessage = { role: "user", content };
+  commitInput(content: string | Extract<ModelMessage, { role: "user" }>): boolean {
+    const message: HistoryMessage = typeof content === "string" ? { role: "user", content } : content;
     const commitInput = this.context?.commitInput;
     if (typeof commitInput === "function") {
       return this.commitContextMessage(
@@ -83,12 +84,12 @@ export class HistoryCommitter {
     return true;
   }
 
-  commitPending(batch: PendingInputBatchLike): boolean {
+  commitPending(batch: PendingInputBatchLike, prepared?: Extract<ModelMessage, { role: "user" }>): boolean {
     const content = batch.content ?? "";
     if (content === "") {
       return true;
     }
-    const message: HistoryMessage = { role: "user", content };
+    const message: HistoryMessage = prepared ?? { role: "user", content };
     const commitPending = this.context?.commitPending;
     if (typeof commitPending === "function") {
       return this.commitContextMessage(
@@ -175,6 +176,12 @@ export class HistoryCommitter {
 
   snapshot(): HistoryMessage[] {
     return [...this.messages];
+  }
+
+  commitSkillContext(message: Extract<ModelMessage, { role: "user" }>): void {
+    this.raiseIfCancelled();
+    this.conversationHistory?.appendSkillContext?.({ message });
+    this.messages.push(message);
   }
 
   commitToolContext(message: Extract<ModelMessage, { role: "system" | "user" }>): void {

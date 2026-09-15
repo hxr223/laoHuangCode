@@ -1,5 +1,6 @@
 /** Input batch claimed from the session queue for a subsequent turn. */
 export interface QueueInputBatch {
+  readonly inputs?: readonly string[];
   readonly content: string;
   readonly eventIds: readonly string[];
 }

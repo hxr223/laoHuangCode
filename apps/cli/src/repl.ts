@@ -424,7 +424,8 @@ async function runClassicSessionRepl(
         if (typeof prompt !== "function") {
           throw new Error("Classic session UI requires a prompt function.");
         }
-        userInput = (await (prompt as (this: SessionUiLike) => string | Promise<string>).call(ui)).trim();
+        userInput = await (prompt as (this: SessionUiLike) => string | Promise<string>).call(ui);
+        if (!/^\s*\/skill:/.test(userInput)) userInput = userInput.trim();
       } catch (error) {
         if (isEofError(error)) {
           break;
@@ -682,6 +683,7 @@ export async function runPlainSessionRepl(
     presenter: CommandPresenter;
     suggestCommand: CommandSuggester;
     sink: PlainEventSink;
+    recoverInput?: () => string | undefined;
   },
 ): Promise<boolean> {
   const inputFn = options.inputFn ?? defaultInputFn;
@@ -697,7 +699,9 @@ export async function runPlainSessionRepl(
     for (;;) {
       let userInput: string;
       try {
-        userInput = (await inputFn("")).trim();
+        userInput = await inputFn("");
+        if (!userInput.trim()) userInput = options.recoverInput?.() ?? userInput;
+        if (!/^\s*\/skill:/.test(userInput)) userInput = userInput.trim();
       } catch (error) {
         if (isEofError(error)) {
           // A pipe may close immediately after submitting work. Let the

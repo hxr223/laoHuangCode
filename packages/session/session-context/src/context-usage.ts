@@ -30,7 +30,7 @@ export class ContextUsage {
     }
     if (this.#tokens === null) return;
     if (entry.entryType === "user_message" || entry.entryType === "assistant_message" ||
-      entry.entryType === "tool_result" || entry.entryType === "reminder") {
+      entry.entryType === "tool_result" || entry.entryType === "reminder" || entry.entryType === "skill_context") {
       this.#tokens += estimateMessage(entry.payload.message);
     }
   }

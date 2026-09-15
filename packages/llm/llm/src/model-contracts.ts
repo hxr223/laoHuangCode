@@ -47,6 +47,19 @@ export interface UserModelMessage {
   readonly role: "user";
   readonly content: string;
   readonly toolCatalog?: ToolCatalogState;
+  readonly skillContext?: {
+    readonly kind: "catalog" | "activation" | "invalidation";
+    readonly key: string;
+    readonly input?: string;
+    readonly skills?: readonly {
+      readonly name: string;
+      readonly providerId: string;
+      readonly sourceId: string;
+      readonly identity: string;
+      readonly resourceBase: string;
+      readonly bodyHash: string;
+    }[];
+  };
 }
 
 export interface TextContentBlock {

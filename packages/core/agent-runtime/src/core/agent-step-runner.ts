@@ -12,6 +12,7 @@ import {
   type ModelUsage,
   type TextContentBlock,
   type ToolCallContentBlock,
+  type UserModelMessage,
 } from "@laohuang/llm";
 import { touchedPathOf, ToolSelection, toolVersion } from "@laohuang/tools";
 import type { ToolCall, ToolExecutionMode, ToolResult, ToolSpec, ToolRegistryLike } from "@laohuang/tools";
@@ -31,6 +32,7 @@ import {
 } from "@laohuang/tools";
 
 export interface AgentStepRunnerContext extends HistoryCommitContext {
+  inputParts?(): readonly string[] | undefined;
   modelStarted?(): boolean | void;
   modelRequestOpened?(): boolean | void;
   toolsStarted?(): void;
@@ -55,6 +57,12 @@ export interface AgentContextGovernor {
 }
 
 export interface AgentStepRunnerOptions {
+  resources?: {
+    prepareInput(input: string, signal?: AbortSignal, inputs?: readonly string[]): Promise<UserModelMessage>;
+    prepareContext(messages: readonly ModelMessage[], signal?: AbortSignal): Promise<readonly UserModelMessage[]>;
+    committed(messages: readonly ModelMessage[]): void;
+    finishTurn?(): void;
+  };
   selection?: ToolSelection;
   model: string;
   provider: string;
@@ -103,10 +111,13 @@ export class AgentStepRunner {
     let modelRound = 0;
     let modelRequests = 0;
     let totalTokens = 0;
+    let pendingResourceInputs: ModelMessage[] = [];
 
-    if (!history.commitInput(userInput)) {
+    const input = await this.options.resources?.prepareInput(userInput, cancelToken?.signal, context?.inputParts?.()) ?? { role: "user" as const, content: userInput };
+    if (!history.commitInput(input)) {
       throw this.options.createCancelled("cancelled before user input commit");
     }
+    pendingResourceInputs.push(input);
     this.emit("user_message", { content: userInput });
     this.options.injectBaselineInstructions(cancelToken);
     try { await this.options.prepareTools?.(cancelToken?.signal); }
@@ -117,6 +128,10 @@ export class AgentStepRunner {
 
     for (;;) {
       this.raiseIfCancelled();
+      for (const message of await this.options.resources?.prepareContext(history.snapshot(), cancelToken?.signal) ?? []) {
+        history.commitSkillContext(message);
+        this.options.resources?.committed([message]);
+      }
       if (context?.modelStarted?.() === false) {
         throw this.options.createCancelled("cancelled before model request");
       }
@@ -163,7 +178,7 @@ export class AgentStepRunner {
       let selected = select(history.snapshot());
       if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
       let prepared: { messages: readonly ModelMessage[]; contextTokens?: number; contextWindow?: number; hardInputLimit?: number } = { messages: history.snapshot() };
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
         prepared = await this.options.contextGovernor?.prepare({
           messages: history.snapshot(), tools: selected.view.definitions,
           provider: this.options.provider, model: this.options.model,
@@ -171,9 +186,14 @@ export class AgentStepRunner {
         }) ?? { messages: history.snapshot() };
         history.retain(prepared.messages);
         selected = select(prepared.messages);
-        if (!selected.announcement) break;
-        if (attempt === 1) throw this.options.createError("Tool catalog announcement cannot fit the retained context.");
-        history.commitToolContext({ role: "user", ...selected.announcement });
+        const resources = await this.options.resources?.prepareContext(prepared.messages, cancelToken?.signal) ?? [];
+        if (!selected.announcement && resources.length === 0) break;
+        if (attempt === 2) throw this.options.createError("Resource catalog cannot fit the retained context.");
+        if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
+        for (const message of resources) {
+          history.commitSkillContext(message);
+          this.options.resources?.committed([message]);
+        }
       }
       remainingTokens = prepared.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
         : Math.max(0, prepared.hardInputLimit - (prepared.contextTokens ?? 0) - 1024);
@@ -207,9 +227,12 @@ export class AgentStepRunner {
           onDelta: (kind, payload) => {
             this.emit(kind, { round: modelRound, request_id: requestId, ...payload });
           },
-          onRequestOpened: modelRequestOpened
-            ? () => modelRequestOpened.call(context)
-            : null,
+          onRequestOpened: () => {
+            if (modelRequestOpened?.call(context) === false) return false;
+            this.options.resources?.committed(pendingResourceInputs);
+            pendingResourceInputs = [];
+            return true;
+          },
         });
       } catch (error) {
         if (error instanceof ModelStreamCancelled) {
@@ -298,6 +321,7 @@ export class AgentStepRunner {
       })).results;
       const repeated = repeatToolPolicy.record(toolCalls, toolResults);
       history.commitToolResults(toolCalls, toolResults);
+      this.options.resources?.committed(history.snapshot().slice(-toolResults.length));
       this.raiseIfCancelled();
       const current = new Map(this.options.getTools().definitions.map(spec => [spec.name, toolVersion(spec)]));
       const pending = selected.pending().filter(tool => current.get(tool.spec.name) === tool.version);
@@ -321,9 +345,11 @@ export class AgentStepRunner {
       }
       const pendingBatch = context?.safePoint?.();
       if (pendingBatch !== null && pendingBatch !== undefined && (pendingBatch.content ?? "") !== "") {
-        if (!history.commitPending(pendingBatch)) {
+        const pendingInput = await this.options.resources?.prepareInput(pendingBatch.content ?? "", cancelToken?.signal, pendingBatch.inputs);
+        if (!history.commitPending(pendingBatch, pendingInput)) {
           throw this.options.createCancelled("cancelled before pending input commit");
         }
+        if (pendingInput) pendingResourceInputs.push(pendingInput);
         this.emit("user_message", {
           content: pendingBatch.content,
           pending_event_ids: [...(pendingBatch.eventIds ?? [])],
