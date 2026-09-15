@@ -16,10 +16,33 @@ import {
   createToolBlock,
   createUserBlock,
   createWelcomeBlock,
+  TranscriptStore,
 } from "../packages/terminal/tui/src/tui/transcript-store.ts";
 import { DEFAULT_DARK_THEME, DEFAULT_LIGHT_THEME, type TerminalTheme } from "../packages/terminal/tui/src/tui/theme.ts";
 
 type Snapshot = Array<Array<{ text: string; style?: object }>>;
+
+test("skill cards show the skill name and load status, with instructions only when expanded", () => {
+  const store = new TranscriptStore();
+  const update = { text: "", stream: "", correlationId: "skill-call-123" };
+  store.apply({ ...update, kind: "tool.started", payload: { name: "skill", arguments: { name: "grill-me" } } });
+  const render = () => {
+    const block = store.blockFor("tool", update.correlationId);
+    assert.equal(block.kind, "tool");
+    if (block.kind !== "tool") throw new Error("Expected tool block");
+    return new ToolMessage(block).render({ width: 80, theme: DEFAULT_DARK_THEME }).lines
+      .map(line => line.spans.map(span => span.text).join("").trimEnd()).join("\n");
+  };
+  assert.equal(render(), "● skill  grill-me\n加载中…");
+  store.apply({ ...update, kind: "tool.finished", payload: { status: "completed", result: { ok: true, content: "Ask about the plan", skillReceipt: "internal" } } });
+  assert.equal(render(), "● skill  grill-me\n已加载");
+  store.setToolOutputExpanded(true);
+  assert.equal(render(), "● skill  grill-me\n已加载\nAsk about the plan");
+  store.apply({ ...update, kind: "tool.finished", payload: { status: "failed", result: { ok: false, error: "Skill unavailable" } } });
+  assert.match(render(), /加载失败/);
+  assert.match(render(), /Skill unavailable/);
+  assert.doesNotMatch(render(), /已加载/);
+});
 
 function snapshot(component: { render(context: { width: number; theme: TerminalTheme }): { lines: readonly { spans: readonly { text: string; style?: object }[] }[] } }, width: number, theme: TerminalTheme): Snapshot {
   return component.render({ width, theme }).lines.map((line) =>

@@ -212,7 +212,7 @@ export class UIEventReducer {
       const args = payload.arguments;
       let subject = "";
       if (isRecord(args)) {
-        subject = String(args.command || args.path || "");
+        subject = String(name === "skill" ? args.name ?? "" : args.command || args.path || "");
       }
       this.state.activeTools.set(correlationId, {
         toolCallId: correlationId,

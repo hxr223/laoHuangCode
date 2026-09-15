@@ -315,7 +315,7 @@ export class TranscriptStore {
     if (kind === "tool.started") {
       this.freezeThinking();
       const args = update.payload.arguments;
-      const subject = isRecord(args) ? String(args.command || args.path || "") : "";
+      const subject = isRecord(args) ? String(update.payload.name === "skill" ? args.name ?? "" : args.command || args.path || "") : "";
       this.append(createToolBlock(correlationId, {
         name: String(update.payload.name ?? "tool"),
         subject,
@@ -368,6 +368,11 @@ export class TranscriptStore {
         if (typeof text === "string") item[stream] = redactToolSnapshot(text, update.payload[`${stream}_start_mid_line`] === true);
       }
       item.outputNote = toolOutputNote(update.payload);
+      if (item.name === "skill" && isRecord(update.payload.result)) {
+        const result = update.payload.result;
+        if (typeof result.content === "string") item.stdout = redactToolText(result.content);
+        if (typeof result.error === "string") item.outputNote = redactToolText(result.error);
+      }
       item.mutable = false;
       touchBlock(item);
       this.#toolOutputRedactor.clear(correlationId);
