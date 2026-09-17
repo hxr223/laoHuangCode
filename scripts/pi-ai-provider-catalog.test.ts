@@ -5,20 +5,20 @@ import { eligibleProviderIds } from "../packages/llm/llm-pi-ai/src/index.ts";
 
 const EXCLUDED = new Set(["amazon-bedrock", "google-vertex"]);
 const EXPECTED = [
-  "ant-ling", "anthropic", "azure-openai-responses", "cerebras",
+  "ant-ling", "anthropic", "azure-openai-responses", "baseten", "cerebras",
   "cloudflare-ai-gateway", "cloudflare-workers-ai", "deepseek", "fireworks",
   "github-copilot", "google", "groq", "huggingface", "kimi-coding",
   "minimax", "minimax-cn", "mistral", "moonshotai", "moonshotai-cn",
   "nvidia", "openai", "opencode", "opencode-go", "openrouter",
-  "qwen-token-plan", "qwen-token-plan-cn", "radius", "together",
+  "qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual", "radius", "together",
   "vercel-ai-gateway", "xai", "xiaomi", "xiaomi-token-plan-ams",
   "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "zai", "zai-coding-cn",
 ];
 
-test("pi-ai 0.83 api-key provider snapshot matches the product contract", () => {
+test("pi-ai 0.85.1 api-key provider snapshot matches the product contract", () => {
   const models = builtinModels();
   assert.deepEqual(eligibleProviderIds(models, EXCLUDED), EXPECTED);
-  assert.equal(EXPECTED.length, 35);
+  assert.equal(EXPECTED.length, 37);
   assert.ok(!EXPECTED.includes("openai-codex"));
 });
 

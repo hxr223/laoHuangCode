@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ModelError,
+  ModelStreamCancelled,
   type ApiKeySetupInteraction,
   type ModelPlatform,
 } from "@laohuang/llm";
@@ -100,9 +101,6 @@ test("verified evidence decorates status but never enables a provider", () => {
   const models = createModels({ credentials, modelsStore, authContext });
   models.setProvider(fakeProvider("deepseek", { apiKey: true }));
   const platform = new PiAiPlatform(models, {
-    credentials,
-    modelsStore,
-    authContext,
     excludedProviderIds: new Set(["deepseek"]),
     verifiedProviderIds: new Set(["deepseek"]),
   });
@@ -142,9 +140,6 @@ test("api-key auth rejects an OAuth-only interaction event", async () => {
   const models = createModels({ credentials, modelsStore, authContext });
   models.setProvider(provider);
   const platform = new PiAiPlatform(models, {
-    credentials,
-    modelsStore,
-    authContext,
     excludedProviderIds: new Set(),
     verifiedProviderIds: new Set(),
   });
@@ -168,9 +163,6 @@ test("dynamic models restore offline and survive refresh failure", async () => {
   });
   firstModels.setProvider(dynamicRadiusProvider(false));
   const firstPlatform = new PiAiPlatform(firstModels, {
-    credentials: firstCredentials,
-    modelsStore: modelStore,
-    authContext,
     excludedProviderIds: new Set(),
     verifiedProviderIds: new Set(),
   });
@@ -196,9 +188,6 @@ test("dynamic models restore offline and survive refresh failure", async () => {
   secondModels.setProvider(dynamicRadiusProvider(true));
   await secondModels.refresh({ allowNetwork: false });
   const secondPlatform = new PiAiPlatform(secondModels, {
-    credentials: secondCredentials,
-    modelsStore: modelStore,
-    authContext,
     excludedProviderIds: new Set(),
     verifiedProviderIds: new Set(),
   });
@@ -237,9 +226,6 @@ test("catalog refresh only touches the requested dynamic provider", async () => 
   models.setProvider(dynamicCountingProvider("radius", calls));
   models.setProvider(dynamicCountingProvider("openrouter", calls));
   const platform = new PiAiPlatform(models, {
-    credentials,
-    modelsStore: modelStore,
-    authContext,
     excludedProviderIds: new Set(),
     verifiedProviderIds: new Set(),
   });
@@ -250,6 +236,83 @@ test("catalog refresh only touches the requested dynamic provider", async () => 
   assert.equal(calls.get("openrouter") ?? 0, 0);
   assert.equal(platform.catalog.getModel("radius", "radius-model")?.id, "radius-model");
   assert.equal(platform.catalog.getModel("openrouter", "openrouter-model"), undefined);
+});
+
+test("catalog refresh reports cancellation even when a provider ignores its signal", { timeout: 3000 }, async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<void>();
+  const provider = fakeProvider("cancel-test", { apiKey: true });
+  provider.auth.apiKey!.resolve = async () => ({ auth: { apiKey: "test-key" } });
+  provider.refreshModels = async (context) => {
+    if (!context.allowNetwork) return;
+    entered.resolve();
+    await release.promise;
+    await assert.rejects(
+      context.publish({ update: () => assert.fail("cancelled publication") }),
+      { name: "AbortError" },
+    );
+    finished.resolve();
+  };
+  const platform = makePlatformWithProviders([provider]);
+  const controller = new AbortController();
+  const refresh = platform.catalog.refresh(provider.id, controller.signal);
+  await entered.promise;
+  controller.abort();
+  try {
+    await assert.rejects(refresh, ModelStreamCancelled);
+  } finally {
+    release.resolve();
+  }
+  await finished.promise;
+  await assert.rejects(platform.catalog.refresh(provider.id, controller.signal), ModelStreamCancelled);
+});
+
+test("a newer catalog refresh prevents stale memory and cache publication", { timeout: 3000 }, async () => {
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const finished = Promise.withResolvers<void>();
+  const provider = fakeProvider("generation-test", { apiKey: true });
+  const base = provider.getModels()[0]!;
+  let current = [base];
+  let generation = 0;
+  provider.getModels = () => current;
+  provider.auth.apiKey!.resolve = async () => ({ auth: { apiKey: "test-key" } });
+  provider.refreshModels = async (context) => {
+    if (!context.allowNetwork) return;
+    const first = ++generation === 1;
+    if (first) {
+      entered.resolve();
+      await release.promise;
+    }
+    const models = [{ ...base, id: first ? "stale" : "newest" }];
+    const publication = context.publish({
+      persist: { models },
+      update: () => { current = models; },
+    });
+    if (first) await assert.rejects(publication, { name: "AbortError" });
+    else assert.equal(await publication, true);
+    if (first) finished.resolve();
+  };
+  const credentials = new InMemoryCredentialStore();
+  const modelsStore = new InMemoryModelsStore();
+  const authContext = defaultProviderAuthContext();
+  const models = createModels({ credentials, modelsStore, authContext });
+  models.setProvider(provider);
+  const platform = new PiAiPlatform(models, {
+    excludedProviderIds: new Set(), verifiedProviderIds: new Set(),
+  });
+  const oldRefresh = platform.catalog.refresh(provider.id);
+  await entered.promise;
+  try {
+    await platform.catalog.refresh(provider.id);
+  } finally {
+    release.resolve();
+  }
+  await oldRefresh;
+  await finished.promise;
+  assert.deepEqual(platform.catalog.listModels(provider.id).map(model => model.id), ["newest"]);
+  assert.equal((await modelsStore.read(provider.id))?.models[0]?.id, "newest");
 });
 
 function fakeProvider(
@@ -368,10 +431,12 @@ function dynamicCountingProvider(
     },
     getModels: () => current,
     refreshModels: async (context) => {
-      calls.set(id, (calls.get(id) ?? 0) + 1);
       if (!context.allowNetwork) return;
-      current = [model];
-      await context.store.write({ models: current, checkedAt: 1234 });
+      calls.set(id, (calls.get(id) ?? 0) + 1);
+      await context.publish({
+        persist: { models: [model], checkedAt: 1234 },
+        update: () => { current = [model]; },
+      });
     },
     stream: noEvents,
     streamSimple: noEvents,
@@ -407,12 +472,16 @@ function dynamicRadiusProvider(failOnNetwork: boolean): Provider {
     },
     getModels: () => current,
     refreshModels: async (context) => {
-      const stored = await context.store.read();
-      if (stored !== undefined) current = [...stored.models];
+      const stored = context.stored;
+      if (stored !== undefined) {
+        await context.publish({ update: () => { current = [...stored.models]; } });
+      }
       if (!context.allowNetwork) return;
       if (failOnNetwork) throw new Error("refresh failed");
-      current = [model];
-      await context.store.write({ models: current, checkedAt: 1234 });
+      await context.publish({
+        persist: { models: [model], checkedAt: 1234 },
+        update: () => { current = [model]; },
+      });
     },
     stream: noEvents,
     streamSimple: noEvents,
@@ -426,9 +495,6 @@ function makePlatformWithProviders(providers: readonly Provider[]): ModelPlatfor
   const models = createModels({ credentials, modelsStore, authContext });
   for (const provider of providers) models.setProvider(provider);
   return new PiAiPlatform(models, {
-    credentials,
-    modelsStore,
-    authContext,
     excludedProviderIds: new Set(["amazon-bedrock", "google-vertex"]),
     verifiedProviderIds: new Set(),
   });

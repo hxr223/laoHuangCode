@@ -23,7 +23,7 @@
   "dependencies": {
     "@modelcontextprotocol/client": "2.0.0",
     "koffi": "3.2.1",
-    "@earendil-works/pi-ai": "^0.83.0"
+    "@earendil-works/pi-ai": "0.85.1"
   },
   "devDependencies": {
     "@laohuang/skill": "0.0.0",
