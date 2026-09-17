@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { PiAiAdapter, piModelErrorKind } from "./adapter.ts";
+import { CustomModelRegistry } from "./custom-models.ts";
 import {
   PiCredentialStore,
   type ApiKeyCredentialStoreLike,
@@ -38,6 +39,8 @@ export interface PiAiPlatformOptions {
   readonly modelCatalogStore: ModelCatalogStoreLike;
   readonly excludedProviderIds: ReadonlySet<string>;
   readonly verifiedProviderIds?: ReadonlySet<string>;
+  readonly readCustomModels?: () => Promise<unknown>;
+  readonly environ?: Record<string, string | undefined>;
 }
 
 export async function createPiAiPlatform(
@@ -46,15 +49,28 @@ export async function createPiAiPlatform(
   const credentials = new PiCredentialStore(options.credentials);
   const modelsStore = new PiModelsStore(options.modelCatalogStore);
   const authContext = defaultProviderAuthContext();
+  if (options.environ !== undefined) authContext.env = async (name) => options.environ?.[name];
   const models = builtinModels({
     credentials,
     modelsStore,
     authContext,
   });
   await models.refresh({ allowNetwork: false });
+  const custom = new CustomModelRegistry(models, options.excludedProviderIds,
+    options.readCustomModels ?? (async () => undefined));
+  await custom.reload();
+  const verified = new Set(options.verifiedProviderIds ?? []);
+  for (const id of custom.providerIds) verified.delete(id);
   return new PiAiPlatform(models, {
     excludedProviderIds: options.excludedProviderIds,
-    verifiedProviderIds: options.verifiedProviderIds ?? new Set(),
+    verifiedProviderIds: verified,
+    reload: async () => {
+      await custom.reload();
+      verified.clear();
+      for (const id of options.verifiedProviderIds ?? []) {
+        if (!custom.providerIds.has(id)) verified.add(id);
+      }
+    },
   });
 }
 
@@ -74,7 +90,7 @@ export class PiAiPlatform implements ModelPlatform {
   readonly catalog: ModelCatalog;
   readonly auth: ModelAuthService;
   private readonly models: Models;
-  private readonly eligibleIds: ReadonlySet<string>;
+  private readonly eligibleIds: Set<string>;
   private readonly verifiedProviderIds: ReadonlySet<string>;
 
   constructor(
@@ -82,6 +98,7 @@ export class PiAiPlatform implements ModelPlatform {
     options: {
       readonly excludedProviderIds: ReadonlySet<string>;
       readonly verifiedProviderIds: ReadonlySet<string>;
+      readonly reload?: () => Promise<void>;
     },
   ) {
     this.models = models;
@@ -92,6 +109,11 @@ export class PiAiPlatform implements ModelPlatform {
       this.models,
       this.eligibleIds,
       this.verifiedProviderIds,
+      async () => {
+        await options.reload?.();
+        this.eligibleIds.clear();
+        for (const id of eligibleProviderIds(models, options.excludedProviderIds)) this.eligibleIds.add(id);
+      },
     );
     this.auth = new PiAiAuthService(this.models, this.eligibleIds, this.catalog);
   }
@@ -109,15 +131,18 @@ class PiAiCatalog implements ModelCatalog {
   private readonly models: Models;
   private readonly eligibleIds: ReadonlySet<string>;
   private readonly verifiedProviderIds: ReadonlySet<string>;
+  readonly reload: () => Promise<void>;
 
   constructor(
     models: Models,
     eligibleIds: ReadonlySet<string>,
     verifiedProviderIds: ReadonlySet<string>,
+    reload: () => Promise<void>,
   ) {
     this.models = models;
     this.eligibleIds = eligibleIds;
     this.verifiedProviderIds = verifiedProviderIds;
+    this.reload = reload;
   }
 
   listProviders(): readonly ModelProviderInfo[] {

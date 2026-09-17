@@ -254,6 +254,8 @@ export interface ApiKeySetupInteraction {
 }
 
 export interface ModelCatalog {
+  /** Atomically reload user-owned model definitions, retaining the last valid catalog on failure. */
+  reload?(): Promise<void>;
   listProviders(): readonly ModelProviderInfo[];
   getProvider(provider: string): ModelProviderInfo | undefined;
   listModels(provider: string): readonly ModelInfo[];
