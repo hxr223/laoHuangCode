@@ -92,6 +92,7 @@ test("replay envelopes restore same-route pi assistant metadata", () => {
     model: "deepseek-v4-flash",
     responseModel: "deepseek-v4-flash-202608",
     responseId: "response-1",
+    providerThinkingLevel: "high",
     stopReason: "toolUse",
     usage: zeroUsage(),
     timestamp: 12,
@@ -104,6 +105,7 @@ test("replay envelopes restore same-route pi assistant metadata", () => {
         name: "read",
         arguments: { path: "a.txt" },
         thoughtSignature: "tool-sig",
+        namespace: "filesystem",
       },
     ],
   };
@@ -129,6 +131,7 @@ test("replay envelopes restore same-route pi assistant metadata", () => {
 
   assert.equal(restored.api, "openai-completions");
   assert.equal(restored.responseId, "response-1");
+  assert.equal(restored.providerThinkingLevel, "high");
   assert.equal(restored.responseModel, "deepseek-v4-flash-202608");
   assert.equal(restored.content[0]?.type, "text");
   assert.equal(restored.content[0]?.textSignature, "text-sig");
@@ -137,6 +140,38 @@ test("replay envelopes restore same-route pi assistant metadata", () => {
   assert.equal(restored.content[1]?.redacted, true);
   assert.equal(restored.content[2]?.type, "toolCall");
   assert.equal(restored.content[2]?.thoughtSignature, "tool-sig");
+  assert.equal(restored.content[2]?.namespace, "filesystem");
+});
+
+test("replay validates optional effort and namespace without inventing missing values", () => {
+  const route = { provider: "deepseek", model: "deepseek-v4-flash" };
+  for (const patch of [
+    {},
+    { providerThinkingLevel: 42 },
+    { blocks: [{ type: "tool-call", namespace: 42 }] },
+  ]) {
+    const restored = toPiAssistant({
+      role: "assistant",
+      ...route,
+      content: [{ type: "tool-call", call: { id: "c1", name: "read", arguments: "{}" } }],
+      replay: {
+        adapter: "pi-ai",
+        version: 1,
+        state: {
+          ...route,
+          api: "openai-completions",
+          stopReason: "toolUse",
+          responseId: "r1",
+          blocks: [{ type: "tool-call" }],
+          ...patch,
+        },
+      },
+    }, route);
+    assert.equal(restored.providerThinkingLevel, undefined);
+    assert.equal(restored.content[0]?.type, "toolCall");
+    assert.equal(restored.content[0]?.namespace, undefined);
+    assert.equal(restored.responseId, Object.keys(patch).length === 0 ? "r1" : undefined);
+  }
 });
 
 test("foreign or malformed replay degrades to visible provider-neutral content", () => {
