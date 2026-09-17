@@ -27,6 +27,7 @@ export interface PiReplayThinkingBlock {
 export interface PiReplayToolCallBlock {
   readonly type: "tool-call";
   readonly thoughtSignature?: string;
+  readonly namespace?: string;
 }
 
 export type PiReplayBlock =
@@ -40,6 +41,7 @@ export interface PiReplayStateV1 {
   readonly model: string;
   readonly responseModel?: string;
   readonly responseId?: string;
+  readonly providerThinkingLevel?: string;
   readonly stopReason: string;
   readonly blocks: readonly PiReplayBlock[];
 }
@@ -62,6 +64,9 @@ export function toReplayEnvelope(message: AssistantMessage): ModelReplayEnvelope
         : { responseModel: message.responseModel }),
       ...(message.responseId === undefined ? {} : { responseId: message.responseId }),
       stopReason: message.stopReason,
+      ...(message.providerThinkingLevel === undefined
+        ? {}
+        : { providerThinkingLevel: message.providerThinkingLevel }),
       blocks: message.content.map(replayBlockOf),
     },
   };
@@ -85,6 +90,9 @@ export function toPiAssistant(
       : { responseModel: replay.responseModel }),
     ...(replay?.responseId === undefined ? {} : { responseId: replay.responseId }),
     usage: zeroUsage(),
+    ...(replay?.providerThinkingLevel === undefined
+      ? {}
+      : { providerThinkingLevel: replay.providerThinkingLevel }),
     stopReason: (replay?.stopReason ?? "stop") as StopReason,
     timestamp: 0,
     content,
@@ -113,6 +121,7 @@ function replayBlockOf(
   }
   return {
     type: "tool-call",
+    ...(block.namespace === undefined ? {} : { namespace: block.namespace }),
     ...(block.thoughtSignature === undefined
       ? {}
       : { thoughtSignature: block.thoughtSignature }),
@@ -149,6 +158,9 @@ function toPiContentBlock(
     id: block.call.id,
     name: block.call.name,
     arguments: parseToolArguments(block.call.arguments),
+    ...(replay?.type === "tool-call" && replay.namespace !== undefined
+      ? { namespace: replay.namespace }
+      : {}),
     ...(replay?.type === "tool-call" && replay.thoughtSignature !== undefined
       ? { thoughtSignature: replay.thoughtSignature }
       : {}),
@@ -186,6 +198,10 @@ function validReplayState(
     return undefined;
   }
   const blocks = state["blocks"];
+  if (
+    state["providerThinkingLevel"] !== undefined &&
+    typeof state["providerThinkingLevel"] !== "string"
+  ) return undefined;
   if (!Array.isArray(blocks) || blocks.length !== message.content.length) {
     return undefined;
   }
@@ -206,6 +222,9 @@ function validReplayState(
       : {}),
     ...(typeof state["responseId"] === "string" ? { responseId: state["responseId"] } : {}),
     stopReason: state["stopReason"],
+    ...(typeof state["providerThinkingLevel"] === "string"
+      ? { providerThinkingLevel: state["providerThinkingLevel"] }
+      : {}),
     blocks: replayBlocks,
   };
 }
@@ -250,6 +269,9 @@ function parseReplayBlock(
     };
   }
   if (visible.type === "tool-call" && candidate["type"] === "tool-call") {
+    if (candidate["namespace"] !== undefined && typeof candidate["namespace"] !== "string") {
+      return undefined;
+    }
     if (
       candidate["thoughtSignature"] !== undefined &&
       typeof candidate["thoughtSignature"] !== "string"
@@ -258,6 +280,7 @@ function parseReplayBlock(
     }
     return {
       type: "tool-call",
+      ...(typeof candidate["namespace"] === "string" ? { namespace: candidate["namespace"] } : {}),
       ...(typeof candidate["thoughtSignature"] === "string"
         ? { thoughtSignature: candidate["thoughtSignature"] }
         : {}),

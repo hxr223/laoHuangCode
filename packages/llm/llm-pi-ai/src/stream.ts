@@ -82,7 +82,7 @@ function resultFromMessage(
   message: AssistantMessage,
   hadDelta: boolean,
 ): ModelResult {
-  const finishReason = finishReasonOf(message);
+  const finishReason = finishReasonOf(message, hadDelta);
   const content = contentOf(message, finishReason, hadDelta);
   rejectTextualDsml(request, content, hadDelta);
   return {
@@ -99,10 +99,16 @@ function resultFromMessage(
   };
 }
 
-function finishReasonOf(message: AssistantMessage): ModelFinishReason {
+function finishReasonOf(message: AssistantMessage, hadDelta: boolean): ModelFinishReason {
   if (message.stopReason === "stop") return "stop";
   if (message.stopReason === "toolUse") return "tool-calls";
   if (message.stopReason === "length") return "max-tokens";
+  if (message.stopReason === "deferred") {
+    throw new ModelError("pi-ai deferred responses are not supported", {
+      kind: "protocol",
+      hadDelta,
+    });
+  }
   if (message.stopReason === "aborted") {
     throw new ModelStreamCancelled(message.errorMessage ?? "model request aborted");
   }

@@ -1,5 +1,6 @@
 import {
   ModelError,
+  ModelStreamCancelled,
   type ApiKeySetupInteraction,
   type ApiKeySetupPrompt,
   type ModelAuthService,
@@ -13,22 +14,17 @@ import {
 import {
   defaultProviderAuthContext,
   getSupportedThinkingLevels,
-  ModelsError,
   type Api,
-  type AuthContext,
   type AuthEvent,
   type AuthPrompt,
-  type Credential,
-  type CredentialStore,
   type Model as PiModel,
   type Models,
-  type ModelsStore,
   type ModelThinkingLevel,
-  type ProviderModelsStore,
   type Provider,
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { PiAiAdapter, piModelErrorKind } from "./adapter.ts";
+import { CustomModelRegistry } from "./custom-models.ts";
 import {
   PiCredentialStore,
   type ApiKeyCredentialStoreLike,
@@ -43,6 +39,8 @@ export interface PiAiPlatformOptions {
   readonly modelCatalogStore: ModelCatalogStoreLike;
   readonly excludedProviderIds: ReadonlySet<string>;
   readonly verifiedProviderIds?: ReadonlySet<string>;
+  readonly readCustomModels?: () => Promise<unknown>;
+  readonly environ?: Record<string, string | undefined>;
 }
 
 export async function createPiAiPlatform(
@@ -51,18 +49,28 @@ export async function createPiAiPlatform(
   const credentials = new PiCredentialStore(options.credentials);
   const modelsStore = new PiModelsStore(options.modelCatalogStore);
   const authContext = defaultProviderAuthContext();
+  if (options.environ !== undefined) authContext.env = async (name) => options.environ?.[name];
   const models = builtinModels({
     credentials,
     modelsStore,
     authContext,
   });
   await models.refresh({ allowNetwork: false });
+  const custom = new CustomModelRegistry(models, options.excludedProviderIds,
+    options.readCustomModels ?? (async () => undefined));
+  await custom.reload();
+  const verified = new Set(options.verifiedProviderIds ?? []);
+  for (const id of custom.providerIds) verified.delete(id);
   return new PiAiPlatform(models, {
-    credentials,
-    modelsStore,
-    authContext,
     excludedProviderIds: options.excludedProviderIds,
-    verifiedProviderIds: options.verifiedProviderIds ?? new Set(),
+    verifiedProviderIds: verified,
+    reload: async () => {
+      await custom.reload();
+      verified.clear();
+      for (const id of options.verifiedProviderIds ?? []) {
+        if (!custom.providerIds.has(id)) verified.add(id);
+      }
+    },
   });
 }
 
@@ -82,17 +90,15 @@ export class PiAiPlatform implements ModelPlatform {
   readonly catalog: ModelCatalog;
   readonly auth: ModelAuthService;
   private readonly models: Models;
-  private readonly eligibleIds: ReadonlySet<string>;
+  private readonly eligibleIds: Set<string>;
   private readonly verifiedProviderIds: ReadonlySet<string>;
 
   constructor(
     models: Models,
     options: {
-      readonly credentials: CredentialStore;
-      readonly modelsStore: ModelsStore;
-      readonly authContext: AuthContext;
       readonly excludedProviderIds: ReadonlySet<string>;
       readonly verifiedProviderIds: ReadonlySet<string>;
+      readonly reload?: () => Promise<void>;
     },
   ) {
     this.models = models;
@@ -103,9 +109,11 @@ export class PiAiPlatform implements ModelPlatform {
       this.models,
       this.eligibleIds,
       this.verifiedProviderIds,
-      options.credentials,
-      options.modelsStore,
-      options.authContext,
+      async () => {
+        await options.reload?.();
+        this.eligibleIds.clear();
+        for (const id of eligibleProviderIds(models, options.excludedProviderIds)) this.eligibleIds.add(id);
+      },
     );
     this.auth = new PiAiAuthService(this.models, this.eligibleIds, this.catalog);
   }
@@ -123,24 +131,18 @@ class PiAiCatalog implements ModelCatalog {
   private readonly models: Models;
   private readonly eligibleIds: ReadonlySet<string>;
   private readonly verifiedProviderIds: ReadonlySet<string>;
-  private readonly credentials: CredentialStore;
-  private readonly modelsStore: ModelsStore;
-  private readonly authContext: AuthContext;
+  readonly reload: () => Promise<void>;
 
   constructor(
     models: Models,
     eligibleIds: ReadonlySet<string>,
     verifiedProviderIds: ReadonlySet<string>,
-    credentials: CredentialStore,
-    modelsStore: ModelsStore,
-    authContext: AuthContext,
+    reload: () => Promise<void>,
   ) {
     this.models = models;
     this.eligibleIds = eligibleIds;
     this.verifiedProviderIds = verifiedProviderIds;
-    this.credentials = credentials;
-    this.modelsStore = modelsStore;
-    this.authContext = authContext;
+    this.reload = reload;
   }
 
   listProviders(): readonly ModelProviderInfo[] {
@@ -205,80 +207,17 @@ class PiAiCatalog implements ModelCatalog {
     providerId: string,
     signal: AbortSignal | undefined,
   ): Promise<void> {
-    const provider = this.models.getProvider(providerId);
-    if (provider === undefined || provider.refreshModels === undefined) {
-      return;
-    }
-    const stored = await this.readCredential(providerId);
-    const credential = await this.resolveRefreshCredential(provider, stored, signal);
-    if (credential === undefined) {
-      return;
-    }
-    try {
-      await provider.refreshModels({
-        credential,
-        store: this.providerStore(providerId),
-        allowNetwork: true,
-        force: true,
-        ...(signal === undefined ? {} : { signal }),
-      });
-    } catch (error) {
-      try {
-        await provider.refreshModels({
-          credential: stored,
-          store: this.providerStore(providerId),
-          allowNetwork: false,
-          ...(signal === undefined ? {} : { signal }),
-        });
-      } catch {
-        // Preserve the original refresh error.
-      }
-      throw error;
-    }
-  }
-
-  private async readCredential(providerId: string): Promise<Credential | undefined> {
-    try {
-      return await this.credentials.read(providerId);
-    } catch (error) {
-      throw new ModelsError("auth", `Credential store read failed for ${providerId}`, {
-        cause: error,
-      });
-    }
-  }
-
-  private async resolveRefreshCredential(
-    provider: Provider,
-    stored: Credential | undefined,
-    signal: AbortSignal | undefined,
-  ): Promise<Credential | undefined> {
-    if (signal?.aborted) {
-      return undefined;
-    }
-    if (stored?.type === "api_key" || stored === undefined) {
-      const apiKey = provider.auth.apiKey;
-      if (apiKey === undefined) {
-        return undefined;
-      }
-      const result = await apiKey.resolve({
-        ctx: this.authContext,
-        credential: stored?.type === "api_key" ? stored : undefined,
-      });
-      return result === undefined
-        ? undefined
-        : { type: "api_key", key: result.auth.apiKey, env: result.env };
-    }
-    throw new ModelError("OAuth credentials are not supported", {
-      kind: "protocol",
+    const result = await this.models.refresh({
+      providers: [providerId],
+      allowNetwork: true,
+      force: true,
+      ...(signal === undefined ? {} : { signal }),
     });
-  }
-
-  private providerStore(providerId: string): ProviderModelsStore {
-    return {
-      read: () => this.modelsStore.read(providerId),
-      write: (entry) => this.modelsStore.write(providerId, entry),
-      delete: () => this.modelsStore.delete(providerId),
-    };
+    if (result.aborted) {
+      throw new ModelStreamCancelled("model catalog refresh cancelled");
+    }
+    const error = result.errors.get(providerId);
+    if (error !== undefined) throw normalizePiError(error);
   }
 }
 

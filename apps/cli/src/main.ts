@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { ModelCatalog, ModelMessage } from "@laohuang/llm";
+import type { ModelCatalog, ModelMessage, ModelPlatform } from "@laohuang/llm";
 import {
   ContextUsage,
   type BuildContextInput,
@@ -13,6 +13,7 @@ import { projectTranscript } from "@laohuang/session-store";
 import { createPiAiPlatform } from "@laohuang/llm-pi-ai";
 import {
   ConfigManager,
+  CustomModelsStore,
   CredentialStore,
   ModelCatalogStore,
   defaultConfigPath,
@@ -113,6 +114,7 @@ export interface MainOptions {
   configPath?: string | undefined;
   credentialsPath?: string | undefined;
   modelsPath?: string | undefined;
+  customModelsPath?: string | undefined;
   inputFn?: InputFn | undefined;
   secretInputFn?: InputFn | undefined;
   outputFn?: OutputFn | undefined;
@@ -235,12 +237,23 @@ export async function main(
   const modelCatalogStore = new ModelCatalogStore(
     options.modelsPath ?? join(dirname(configPath), "models.json"),
   );
-  const modelPlatform = await createPiAiPlatform({
-    credentials,
-    modelCatalogStore,
-    excludedProviderIds: EXCLUDED_PROVIDER_IDS,
-    verifiedProviderIds: VERIFIED_PROVIDER_IDS,
-  });
+  const customModels = new CustomModelsStore(
+    options.customModelsPath ?? join(dirname(configPath), "custom-models.json"),
+  );
+  let modelPlatform: ModelPlatform;
+  try {
+    modelPlatform = await createPiAiPlatform({
+      credentials,
+      modelCatalogStore,
+      excludedProviderIds: EXCLUDED_PROVIDER_IDS,
+      verifiedProviderIds: VERIFIED_PROVIDER_IDS,
+      readCustomModels: () => customModels.read(),
+      environ,
+    });
+  } catch (error) {
+    writeStderr(`Configuration error: ${errorMessage(error)}`);
+    return 2;
+  }
   let presenterInput: PromptFn = async (prompt) => inputFn(prompt);
   let presenterSecretInput: PromptFn = async (prompt) => secretInputFn(prompt);
   const providerAuth = new ProviderAuthController({ auth: modelPlatform.auth });

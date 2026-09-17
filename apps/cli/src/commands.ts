@@ -1036,6 +1036,7 @@ export class SessionCommands {
       return true;
     }
 
+    await this.reloadModelDefinitions();
     let provider: string | undefined;
     let modelName: string | undefined;
     if (args.length === 2) {
@@ -1218,6 +1219,7 @@ export class SessionCommands {
       this.notice("Usage: /login [provider]", tones.invalid);
       return true;
     }
+    await this.reloadModelDefinitions();
     const provider = args[0] ?? (await this.chooseProvider());
     if (provider === null || provider === undefined) {
       return true;
@@ -1288,6 +1290,15 @@ export class SessionCommands {
       );
     }
     return true;
+  }
+
+  private async reloadModelDefinitions(): Promise<void> {
+    if (!this.#catalog.reload) return;
+    await this.#catalog.reload();
+    if (this.#catalog.getModel(this.#currentConfig.provider, this.#currentConfig.model)) {
+      this.#onModelSelected?.({ config: this.#currentConfig });
+      this.adjustReasoningEffortForCurrentModel({ emitNotice: true });
+    }
   }
 
   /** Compatibility alias for the pre-/login credential commands. */

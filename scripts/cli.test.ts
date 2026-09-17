@@ -804,14 +804,21 @@ test("first start collects provider key and model in the terminal", async () => 
   await withTempDir(async (directory) => {
     const configPath = join(directory, "config.json");
     const credentialsPath = join(directory, "credentials.json");
-    const answers = ["7", "1", "/exit"];
+    const answers = ["1", "/exit"];
+    let selectingProvider = true;
     const outputs: string[] = [];
 
     const status = await cliMain([], {
       environ: {},
       configPath,
       credentialsPath,
-      inputFn: () => answers.shift()!,
+      inputFn: () => {
+        if (!selectingProvider) return answers.shift()!;
+        selectingProvider = false;
+        const choice = outputs.join("\n").match(/^\s*(\d+)\. DeepSeek\b/m);
+        assert.ok(choice, "DeepSeek must appear in the provider menu");
+        return choice[1]!;
+      },
       secretInputFn: () => "terminal-secret",
       outputFn: (message) => {
         outputs.push(message);

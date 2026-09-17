@@ -11,7 +11,8 @@
   },
   "files": ["dist"],
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.83.0",
-    "@laohuang/llm": "0.0.0"
+    "@earendil-works/pi-ai": "0.85.1",
+    "@laohuang/llm": "0.0.0",
+    "typebox": "1.3.7"
   }
 }

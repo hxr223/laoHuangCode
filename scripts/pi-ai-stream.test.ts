@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   ModelError,
+  ModelRuntime,
   ModelStreamCancelled,
   type ModelEvent,
   type ModelRequest,
@@ -127,6 +128,26 @@ test("consumePiEvents maps aborted and provider errors", async () => {
     ),
     (error: unknown) => error instanceof ModelError && error.kind === "retryable",
   );
+});
+
+test("deferred responses are rejected without resubmitting the model request", async () => {
+  let attempts = 0;
+  const runtime = new ModelRuntime({
+    name: "deferred-fixture",
+    runAttempt: async (input) => {
+      attempts += 1;
+      return consumePiEvents(events([{
+        type: "done",
+        reason: "deferred",
+        message: assistant([], { stopReason: "deferred" }),
+      }]), input);
+    },
+  }, { sleep: async () => { assert.fail("must not schedule a retry"); } });
+  await assert.rejects(runtime.complete(request()), (error: unknown) =>
+    error instanceof ModelError && error.kind === "protocol" &&
+    /deferred responses are not supported/.test(error.message),
+  );
+  assert.equal(attempts, 1);
 });
 
 test("consumePiEvents rejects invalid terminal streams", async () => {
