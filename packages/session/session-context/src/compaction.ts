@@ -1,5 +1,5 @@
 import type { ModelMessage } from "@laohuang/llm";
-import type { SessionEntry } from "@laohuang/session-store";
+import { contextResetBoundary, type SessionEntry } from "@laohuang/session-store";
 
 import type { TokenEstimator } from "./token-estimator.ts";
 
@@ -22,6 +22,8 @@ export interface SelectCompactionPlanInput {
 }
 
 export function selectCompactionPlan(input: SelectCompactionPlanInput): CompactionPlan {
+  const boundary = contextResetBoundary(input.entries);
+  input = { ...input, entries: input.entries.filter(entry => entry.seq > boundary) };
   const units = semanticUnits(input.entries);
   const retained: SemanticUnit[] = [];
   let tokens = 0;
@@ -89,7 +91,7 @@ function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
     if (groupedDefinitions.has(entry.id)) continue;
-    if (entry.entryType === "image_offload" || entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "compaction") {
+    if (entry.entryType === "context_reset" || entry.entryType === "image_offload" || entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "compaction") {
       continue;
     }
     if (entry.entryType === "assistant_message") {

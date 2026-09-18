@@ -17,7 +17,7 @@ export class ContextUsage {
 
   /** Histories are append-only and ordered; process each committed entry once. */
   append(entry: SessionEntry): void {
-    if (entry.entryType === "compaction" || entry.entryType === "image_offload") {
+    if (entry.entryType === "context_reset" || entry.entryType === "compaction" || entry.entryType === "image_offload") {
       this.#tokens = null;
       return;
     }

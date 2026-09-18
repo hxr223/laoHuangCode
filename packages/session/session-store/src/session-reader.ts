@@ -110,6 +110,11 @@ function corrupt(path: string, line: number, error: unknown): SessionCorruptErro
 function findOpenToolCalls(items: readonly SessionItem[]): readonly OpenToolCall[] {
   const calls = new Map<string, OpenToolCall>();
   for (const item of items) {
+    if (item.kind === "entry" && item.entryType === "context_reset") {
+      for (const [id, call] of calls) {
+        if (call.seq <= item.payload.resetThroughSeq) calls.delete(id);
+      }
+    }
     if (item.kind === "entry" && item.entryType === "assistant_message") {
       for (const block of item.payload.message.content) {
         if (block.type === "tool-call") {

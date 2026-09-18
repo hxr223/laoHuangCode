@@ -64,6 +64,8 @@ export function projectTranscript(
         result,
         isError: entry.payload.message.isError,
       });
+    } else if (entry.entryType === "context_reset") {
+      items.push({ kind: "notice", text: "Conversation context was cleared.", tone: "info" });
     } else if (entry.entryType === "compaction") {
       items.push({
         kind: "notice",
