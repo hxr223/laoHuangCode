@@ -1,4 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
+import { randomUUID } from "node:crypto";
 import type { ModelMessage, ModelUsage } from "@laohuang/llm";
 import type { ToolCall, ToolResult } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
@@ -66,7 +67,9 @@ export class HistoryCommitter {
   }
 
   commitInput(content: string | Extract<ModelMessage, { role: "user" }>): boolean {
-    const message: HistoryMessage = typeof content === "string" ? { role: "user", content } : content;
+    const message: HistoryMessage = typeof content === "string" ? { role: "user", content } : {
+      ...content, ...(content.attachments?.length ? { attachmentKey: content.attachmentKey ?? randomUUID() } : {}),
+    };
     const commitInput = this.context?.commitInput;
     if (typeof commitInput === "function") {
       return this.commitContextMessage(
@@ -89,7 +92,9 @@ export class HistoryCommitter {
     if (content === "") {
       return true;
     }
-    const message: HistoryMessage = prepared ?? { role: "user", content };
+    const message: HistoryMessage = prepared ? {
+      ...prepared, ...(prepared.attachments?.length ? { attachmentKey: prepared.attachmentKey ?? randomUUID() } : {}),
+    } : { role: "user", content };
     const commitPending = this.context?.commitPending;
     if (typeof commitPending === "function") {
       return this.commitContextMessage(
@@ -150,21 +155,23 @@ export class HistoryCommitter {
       if (call === undefined || result === undefined) {
         continue;
       }
+      const { attachmentContent: attachments, ...textResult } = result;
       const message: Extract<ModelMessage, { readonly role: "tool-result" }> = {
         role: "tool-result",
         toolCallId: call.id,
         toolName: call.name,
-        content: JSON.stringify(result),
+        content: JSON.stringify(textResult),
+        ...(attachments?.length ? { attachments, attachmentKey: randomUUID() } : {}),
         isError: result.ok !== true,
       };
       messages.push(message);
-      this.messages.push(message);
     }
     this.conversationHistory?.appendToolResults({
       requestId: "tool-results",
       messages,
       recovered: false,
     });
+    this.messages.push(...messages);
   }
 
   commitReminder(content: string): void {

@@ -11,6 +11,7 @@
   },
   "files": ["dist"],
   "dependencies": {
+    "@laohuang/attachment": "0.0.0",
     "@laohuang/runtime-protocol": "0.0.0"
   }
 }

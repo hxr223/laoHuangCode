@@ -3,6 +3,8 @@ import type {
   Context as PiContext,
   Message as PiMessage,
   Tool as PiTool,
+  TextContent,
+  ImageContent,
 } from "@earendil-works/pi-ai";
 import type { ToolSpec } from "@laohuang/tools";
 import { toPiAssistant } from "./replay.ts";
@@ -14,7 +16,7 @@ function toolsOf(request: ModelRequest): PiTool[] | undefined {
   return request.tools.map(toolOf);
 }
 
-export function toPiContext(request: ModelRequest): PiContext {
+export function toPiContext(request: ModelRequest, attachments?: ReadonlyMap<ModelMessage, readonly (TextContent | ImageContent)[]>): PiContext {
   const systems = request.messages.filter(
     (message): message is Extract<ModelMessage, { role: "system" }> =>
       message.role === "system" && message.toolDefinitions === undefined,
@@ -26,7 +28,7 @@ export function toPiContext(request: ModelRequest): PiContext {
   }
   const messages = request.messages
     .filter((message) => message.role !== "system")
-    .map((message) => toPiMessage(message, request.provider, request.model));
+    .map((message) => toPiMessage(message, request.provider, request.model, attachments?.get(message)));
   const tools = toolsOf(request);
   return {
     ...(systems[0] === undefined ? {} : { systemPrompt: systems[0].content }),
@@ -39,9 +41,13 @@ function toPiMessage(
   message: Exclude<ModelMessage, { role: "system" }>,
   provider: string,
   model: string,
+  attachments?: readonly (TextContent | ImageContent)[],
 ): PiMessage {
+  if ((message.role === "user" || message.role === "tool-result") && message.attachments?.length && attachments === undefined) {
+    throw new ModelError("Attachments must be prepared before serializing model context", { kind: "protocol" });
+  }
   if (message.role === "user") {
-    return { role: "user", content: message.content, timestamp: 0 };
+    return { role: "user", content: attachments?.length ? [{ type: "text", text: message.content }, ...attachments] : message.content, timestamp: 0 };
   }
   if (message.role === "assistant") {
     return toPiAssistant(message, { provider, model });
@@ -50,7 +56,7 @@ function toPiMessage(
     role: "toolResult",
     toolCallId: message.toolCallId,
     toolName: message.toolName,
-    content: [{ type: "text", text: message.content || "(no output)" }],
+    content: [{ type: "text", text: message.content || "(no output)" }, ...(attachments ?? [])],
     isError: message.isError,
     timestamp: 0,
   };

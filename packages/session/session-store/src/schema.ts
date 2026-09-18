@@ -7,6 +7,7 @@ import type {
   UserModelMessage,
   ReasoningEffort,
 } from "@laohuang/llm";
+import { assertAttachmentContent } from "@laohuang/attachment";
 import { normalizeSessionTitle } from "./session-metadata.ts";
 
 export type SessionOrigin = "new" | "fork" | "clone" | "import";
@@ -107,6 +108,7 @@ export interface CompactionPayload {
 }
 
 export type SessionEntryType =
+  | "image_offload"
   | "skill_context"
   | "tool_definitions"
   | "tool_catalog"
@@ -119,6 +121,11 @@ export type SessionEntryType =
   | "compaction";
 
 export type SessionEntry =
+  | (SessionItemBase & {
+      readonly kind: "entry";
+      readonly entryType: "image_offload";
+      readonly payload: { readonly keys: readonly string[] };
+    })
   | (SessionItemBase & {
       readonly kind: "entry";
       readonly entryType: "skill_context";
@@ -222,6 +229,7 @@ export interface NewSessionRecord {
 }
 
 const ENTRY_TYPES: ReadonlySet<string> = new Set([
+  "image_offload",
   "skill_context",
   "tool_definitions",
   "tool_catalog",
@@ -338,7 +346,18 @@ export function parseSessionItem(
     if (!ENTRY_TYPES.has(entryType)) {
       throw new SessionSchemaError("invalid session entry type");
     }
-    objectOf(input["payload"], "entry payload");
+    const entryPayload = objectOf(input["payload"], "entry payload");
+    if (entryType === "image_offload" && (!Array.isArray(entryPayload.keys) || entryPayload.keys.some(key => typeof key !== "string"))) {
+      throw new SessionSchemaError("invalid image offload keys");
+    }
+    if (entryPayload.message !== undefined) {
+      const message = objectOf(entryPayload.message, "message");
+      if (message.attachments !== undefined) {
+        if ((message.role !== "user" && message.role !== "tool-result") || !Array.isArray(message.attachments)) throw new SessionSchemaError("invalid message attachments");
+        for (const attachment of message.attachments) assertAttachmentContent(attachment);
+        if (typeof message.attachmentKey !== "string" || !message.attachmentKey) throw new SessionSchemaError("missing attachment occurrence key");
+      }
+    }
     if (entryType === "skill_context") {
       const payload = objectOf(input["payload"], "skill payload");
       const message = objectOf(payload["message"], "skill message");

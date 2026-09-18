@@ -18,8 +18,11 @@ import {
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { toPiContext } from "./context.ts";
 import { consumePiEvents } from "./stream.ts";
+import { prepareRequestImages, type ImagePreparationOptions } from "./images.ts";
+import { AttachmentError } from "@laohuang/attachment";
 
 export interface PiAiAdapterOptions {
+  readonly attachments?: ImagePreparationOptions;
   readonly eligibleProviderIds: ReadonlySet<string>;
 }
 
@@ -28,6 +31,7 @@ export function createPiAiAdapter(options: PiAiAdapterOptions): PiAiAdapter {
 }
 
 export class PiAiAdapter implements ModelAdapter {
+  private readonly attachments?: ImagePreparationOptions;
   readonly name = "pi-ai";
   private readonly models: Pick<
     Models,
@@ -43,6 +47,7 @@ export class PiAiAdapter implements ModelAdapter {
     >,
   ) {
     this.eligibleProviderIds = options.eligibleProviderIds;
+    this.attachments = options.attachments;
     this.models = models;
   }
 
@@ -61,9 +66,6 @@ export class PiAiAdapter implements ModelAdapter {
       );
     }
     this.checkActive(request);
-    if (request.onRequestOpened?.() === false) {
-      throw new ModelStreamCancelled("model request was cancelled before opening");
-    }
     const requestModel = request.baseUrl === undefined
       ? model
       : { ...model, baseUrl: request.baseUrl };
@@ -76,20 +78,28 @@ export class PiAiAdapter implements ModelAdapter {
       maxRetries: 0,
     };
     try {
+      const images = await prepareRequestImages(request, model, this.attachments).catch(error => {
+        this.checkActive(request);
+        if (error instanceof ModelError) throw error;
+        throw new ModelError(errorMessage(error), { kind: "protocol", cause: error });
+      });
+      this.checkActive(request);
+      if (request.onRequestOpened?.() === false) throw new ModelStreamCancelled("model request was cancelled before opening");
       const stream = this.models.streamSimple(
         requestModel as PiModel<Api>,
-        toPiContext(request),
+        toPiContext(request, images),
         options,
       );
       const result = await consumePiEvents(stream, request, request.onEvent);
       this.checkActive(request);
       return result;
     } catch (error) {
+      this.checkActive(request);
       if (error instanceof ModelError || error instanceof ModelStreamCancelled) {
         throw error;
       }
       throw new ModelError(errorMessage(error), {
-        kind: piModelErrorKind(error),
+        kind: error instanceof AttachmentError ? "protocol" : piModelErrorKind(error),
         cause: error,
       });
     }

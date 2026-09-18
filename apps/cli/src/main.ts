@@ -27,7 +27,7 @@ import { findProjectRoot } from "@laohuang/project-instructions";
 import { type AgentSession, SessionState, routeHumanIntent } from "@laohuang/session-runtime";
 import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
 import { ToolRegistry, type ToolSpec } from "@laohuang/tools";
-import { createFileToolDefinitions } from "@laohuang/tool-fs";
+import { createFileToolDefinitions, createReadImageTool } from "@laohuang/tool-fs";
 import { getHomeDirectory } from "@laohuang/local-paths";
 import { createBashToolDefinition, resolveBashPath } from "@laohuang/tool-bash";
 
@@ -68,6 +68,7 @@ import { createSessionRuntime, type SessionRuntime } from "./create-session-runt
 import { createMcpRuntime, type McpRuntime } from "./create-mcp-runtime.ts";
 import { createMcpCommand } from "./mcp-commands.ts";
 import { createSkillRuntime, type SkillRuntime } from "./create-skill-runtime.ts";
+import { createAttachmentRuntime } from "./create-attachment-runtime.ts";
 import {
   defaultInputFn,
   defaultSecretInputFn,
@@ -241,8 +242,10 @@ export async function main(
     options.customModelsPath ?? join(dirname(configPath), "custom-models.json"),
   );
   let modelPlatform: ModelPlatform;
+  let attachmentRuntime: ReturnType<typeof createAttachmentRuntime> | undefined;
   try {
     modelPlatform = await createPiAiPlatform({
+      attachments: { store: () => attachmentRuntime?.store },
       credentials,
       modelCatalogStore,
       excludedProviderIds: EXCLUDED_PROVIDER_IDS,
@@ -428,7 +431,13 @@ export async function main(
   let terminalUi: TerminalUI | null = null;
   let terminalDriver: StdTerminalDriver | null = null;
   let selectedModel = modelPlatform.catalog.getModel(config.provider, config.model);
+  attachmentRuntime = createAttachmentRuntime({
+    root: join(getHomeDirectory({ env: environ }), ".laohuang", "attachments"),
+    sessionsRoot: defaultSessionsRoot(environ),
+    onError: error => writeStderr(`Attachment cleanup failed: ${errorMessage(error)}`),
+  });
   const sessionController = new SessionController({
+    attachments: attachmentRuntime.store,
     sessionsRoot: defaultSessionsRoot(environ),
     projectRoot,
     initialCwd: process.cwd(),
@@ -478,6 +487,16 @@ export async function main(
         else outputFn(message);
       } });
     const toolRegistry = new ToolRegistry([
+      createReadImageTool({ store: attachmentRuntime.store, projectRoot,
+        pathOptions: { env: environ, shellPath: () => resolveBashPath({ shellPath, env: environ }) },
+        resolveReference: id => {
+          for (const entry of sessionController.history?.entries() ?? []) {
+            if (!("message" in entry.payload) || !("attachments" in entry.payload.message)) continue;
+            for (const block of entry.payload.message.attachments ?? []) if (block.type === "image" && block.ref.id === id) return block.ref;
+          }
+          return undefined;
+        },
+      }),
       skillRuntime.session.tool,
       ...createFileToolDefinitions({ projectRoot, pathOptions: {
         env: environ,
@@ -488,6 +507,7 @@ export async function main(
     let commandDispatcher: CommandHandler | undefined;
     let runtimeInitialized = false;
     const composedRuntime = createSessionRuntime({
+      attachments: attachmentRuntime.store,
       modelAdapter: modelPlatform.adapter,
       catalog: modelPlatform.catalog,
       route: { provider: config.provider, model: config.model, baseUrl: config.baseUrl },
@@ -713,8 +733,10 @@ export async function main(
       finally {
         try { await skillRuntime?.close(); }
         finally {
-          if (composedForCleanup) await composedForCleanup.close();
-          else await sessionController.close();
+          try {
+            if (composedForCleanup) await composedForCleanup.close();
+            else await sessionController.close();
+          } finally { attachmentRuntime.close(); }
         }
       }
     }

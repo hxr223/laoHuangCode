@@ -4,6 +4,7 @@ import {
   statSync,
 } from "node:fs";
 import { join } from "node:path";
+import type { AttachmentStore } from "@laohuang/attachment";
 
 import {
   createSessionJournal,
@@ -28,6 +29,7 @@ import type {
 } from "./schema.ts";
 
 export interface SessionManagerOptions {
+  readonly attachments?: AttachmentStore;
   readonly sessionsRoot: string;
   readonly appVersion: string;
 }
@@ -84,16 +86,19 @@ export interface CloneResult {
 }
 
 export class SessionManager {
+  readonly #attachments?: AttachmentStore;
   readonly #sessionsRoot: string;
   readonly #appVersion: string;
 
   constructor(options: SessionManagerOptions) {
+    this.#attachments = options.attachments;
     this.#sessionsRoot = options.sessionsRoot;
     this.#appVersion = options.appVersion;
   }
 
   create(options: CreateSessionOptions): OpenedSession {
     const journal = createSessionJournal({
+      attachments: this.#attachments,
       sessionsRoot: this.#sessionsRoot,
       projectRoot: options.projectRoot,
       initialCwd: options.initialCwd,
@@ -123,6 +128,7 @@ export class SessionManager {
     }
     const replay = readSessionFile(summary.path);
     const journal = createSessionJournal({
+      attachments: this.#attachments,
       sessionsRoot: this.#sessionsRoot,
       header: replay.header,
       path: summary.path,
@@ -162,6 +168,7 @@ export class SessionManager {
       throw new Error("fork target must be a user_message entry");
     }
     const child = createSessionJournal({
+      attachments: this.#attachments,
       sessionsRoot: this.#sessionsRoot,
       projectRoot: parent.header.projectRoot,
       initialCwd: parent.header.initialCwd,
@@ -195,6 +202,7 @@ export class SessionManager {
       (item): item is SessionEntry => item.kind === "entry",
     );
     const child = createSessionJournal({
+      attachments: this.#attachments,
       sessionsRoot: this.#sessionsRoot,
       projectRoot: parent.header.projectRoot,
       initialCwd: parent.header.initialCwd,

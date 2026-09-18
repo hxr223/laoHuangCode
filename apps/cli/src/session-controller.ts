@@ -1,4 +1,5 @@
 import { EventBus } from "@laohuang/runtime-protocol";
+import type { AttachmentStore } from "@laohuang/attachment";
 import {
   ConversationHistory,
   type CompactionResult,
@@ -16,6 +17,7 @@ import {
 import type { ReasoningEffort } from "@laohuang/llm";
 
 export interface SessionControllerOptions {
+  readonly attachments?: AttachmentStore;
   readonly sessionsRoot: string;
   readonly projectRoot: string;
   readonly initialCwd: string;
@@ -45,6 +47,7 @@ export class SessionController {
   constructor(options: SessionControllerOptions) {
     this.#sessionsRoot = options.sessionsRoot;
     this.#manager = new SessionManager({
+      attachments: options.attachments,
       sessionsRoot: options.sessionsRoot,
       appVersion: options.appVersion,
     });

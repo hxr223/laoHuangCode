@@ -83,12 +83,15 @@ export class DefaultTokenEstimator implements TokenEstimator {
   }
 
   private estimateMessage(message: ModelMessage): number {
+    const attachmentTokens = (message.role === "user" || message.role === "tool-result")
+      ? (message.attachments ?? []).reduce((sum, block, index) => sum + (block.type === "image" && !message.omittedImageIndexes?.includes(index)
+        ? 85 + 170 * Math.ceil(block.ref.width / 512) * Math.ceil(block.ref.height / 512) : 32), 0) : 0;
     if (message.role === "system" && message.toolDefinitions !== undefined) return 0;
     if (message.role === "system" || message.role === "user") {
-      return MESSAGE_OVERHEAD + BLOCK_OVERHEAD + this.estimateText(message.content);
+      return MESSAGE_OVERHEAD + BLOCK_OVERHEAD + this.estimateText(message.content) + attachmentTokens;
     }
     if (message.role === "tool-result") {
-      return MESSAGE_OVERHEAD + BLOCK_OVERHEAD + this.estimateText(message.content);
+      return MESSAGE_OVERHEAD + BLOCK_OVERHEAD + this.estimateText(message.content) + attachmentTokens;
     }
     return MESSAGE_OVERHEAD + message.content.reduce((total, block) => {
       if (block.type === "text" || block.type === "reasoning") {

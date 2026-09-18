@@ -9,6 +9,7 @@ import {
   writeSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { assertAttachmentContent, type AttachmentStore } from "@laohuang/attachment";
 
 import {
   canonicalProjectRoot,
@@ -36,6 +37,7 @@ export interface SessionJournal {
 }
 
 export interface CreateSessionJournalOptions {
+  readonly attachments?: AttachmentStore;
   readonly sessionsRoot: string;
   readonly projectRoot?: string;
   readonly initialCwd?: string;
@@ -58,6 +60,7 @@ export class SessionJournalLockError extends Error {
 }
 
 class FileSessionJournal implements SessionJournal {
+  private readonly attachments?: AttachmentStore;
   readonly header: SessionHeader;
   readonly path: string;
   #fd: number;
@@ -65,7 +68,8 @@ class FileSessionJournal implements SessionJournal {
   #nextSeq: number;
   #closed = false;
 
-  constructor(input: { header: SessionHeader; path: string; nextSeq: number; fd: number }) {
+  constructor(input: { header: SessionHeader; path: string; nextSeq: number; fd: number; attachments?: AttachmentStore }) {
+    this.attachments = input.attachments;
     this.header = input.header;
     this.path = input.path;
     this.#nextSeq = input.nextSeq;
@@ -85,7 +89,17 @@ class FileSessionJournal implements SessionJournal {
       entryType: input.entryType,
       payload: input.payload,
     } as SessionEntry;
-    this.writeItem(entry);
+    const message = "message" in entry.payload ? entry.payload.message : undefined;
+    const attachments = message && "attachments" in message ? message.attachments : undefined;
+    if (attachments?.length) {
+      for (const attachment of attachments) assertAttachmentContent(attachment);
+      if (!this.attachments) throw new Error("Attachment persistence requires an attachment store");
+      if (!("attachmentKey" in message!) || !message!.attachmentKey) throw new Error("Attachment message requires an occurrence key");
+      this.attachments.commit(attachments.map(block => block.ref), () => {
+        this.writeItem(entry);
+        this.flush();
+      });
+    } else this.writeItem(entry);
     if (entry.entryType === "compaction") {
       this.flush();
     }
@@ -166,7 +180,7 @@ export function createSessionJournal(options: CreateSessionJournalOptions): Sess
     if (!existing) {
       writeLine(fd, header);
       fsyncSync(fd);
-      return new FileSessionJournal({ header, path, nextSeq: 1, fd });
+      return new FileSessionJournal({ header, path, nextSeq: 1, fd, attachments: options.attachments });
     }
     const replay = readSessionFile(path);
     return new FileSessionJournal({
@@ -174,6 +188,7 @@ export function createSessionJournal(options: CreateSessionJournalOptions): Sess
       path,
       nextSeq: replay.lastSeq + 1,
       fd,
+      attachments: options.attachments,
     });
   } catch (error) {
     releaseLock(lockPath);

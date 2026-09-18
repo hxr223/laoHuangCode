@@ -213,6 +213,12 @@ export class ConversationHistory {
     return [...this.#entries];
   }
 
+  offloadImages(keys: readonly string[]): void {
+    if (keys.length === 0) return;
+    this.append({ entryType: "image_offload", payload: { keys: [...keys] } });
+    this.#journal.flush();
+  }
+
   get contextTokens(): number | null {
     return this.#contextUsage.tokens;
   }
