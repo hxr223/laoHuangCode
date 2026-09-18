@@ -7,7 +7,7 @@ import type { SessionEntry } from "./schema.ts";
 export function attachmentReferences(entries: readonly SessionEntry[]): ReadonlySet<AttachmentId> {
   const result = new Set<AttachmentId>();
   for (const entry of entries) {
-    if (entry.entryType === "compaction" || entry.entryType === "image_offload") continue;
+    if (entry.entryType === "compaction" || entry.entryType === "image_offload" || entry.entryType === "context_reset") continue;
     if (!("message" in entry.payload) || !entry.payload.message || typeof entry.payload.message !== "object") throw new Error("Incomplete session message during attachment scan");
     const message = entry.payload.message;
     if (!("attachments" in message)) continue;

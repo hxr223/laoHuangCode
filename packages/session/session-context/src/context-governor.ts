@@ -134,10 +134,9 @@ export class ContextGovernor {
     }
     const summarizedFromSeq = plan.summarizedEntries[0]?.seq ?? 1;
     const summarizedThroughSeq = plan.summarizedEntries.at(-1)?.seq ?? Math.max(0, summarizedFromSeq - 1);
-    const activeCompaction = [...input.entries].reverse().find(
-      (entry): entry is CompactionEntry => entry.entryType === "compaction",
-    );
-    const messagesBefore = this.#builder.build(input).messages;
+    const built = this.#builder.build(input);
+    const activeCompaction = input.entries.find(entry => entry.id === built.activeCompactionId);
+    const messagesBefore = built.messages;
     const tokensBefore = this.#estimator.estimateMessages(messagesBefore)
       + this.#estimator.estimateTools(input.projectTools?.(messagesBefore) ?? input.tools);
     const summary = plan.summarizedEntries.length === 0

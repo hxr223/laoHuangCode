@@ -1,3 +1,4 @@
+import "./sqlite-warning-filter.ts";
 import { main } from "./main.ts";
 
 main().then(

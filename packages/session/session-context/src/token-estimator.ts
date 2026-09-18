@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { ModelMessage, ModelUsage } from "@laohuang/llm";
 import type { ToolSpec } from "@laohuang/tools";
-import type { SessionEntry } from "@laohuang/session-store";
+import { contextResetBoundary, type SessionEntry } from "@laohuang/session-store";
 
 export interface UsageAnchor {
   readonly throughEntryId: string;
@@ -105,6 +105,7 @@ export class DefaultTokenEstimator implements TokenEstimator {
 
   private isValidAnchor(input: TokenMeasurementInput, anchor: UsageAnchor): boolean {
     return anchor.provider === input.provider &&
+      anchor.throughSeq > contextResetBoundary(input.entries) &&
       anchor.model === input.model &&
       anchor.systemFingerprint === input.systemFingerprint &&
       anchor.projectInstructionsFingerprint === input.projectInstructionsFingerprint &&

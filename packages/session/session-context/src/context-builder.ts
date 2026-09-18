@@ -3,12 +3,13 @@ import {
   projectImageOffloads,
   type ModelMessage,
 } from "@laohuang/llm";
-import type {
-  AssistantMessageEntry,
-  CompactionEntry,
-  ProjectInstructionsEntry,
-  SessionEntry,
-  SystemContextEntry,
+import {
+  contextResetBoundary,
+  type AssistantMessageEntry,
+  type CompactionEntry,
+  type ProjectInstructionsEntry,
+  type SessionEntry,
+  type SystemContextEntry,
 } from "@laohuang/session-store";
 
 export interface BuildContextInput {
@@ -37,7 +38,8 @@ export class ContextBuilder {
   build(input: BuildContextInput): BuiltContext {
     const sorted = [...input.entries].sort((left, right) => left.seq - right.seq);
     const superseded = supersededEntryIds(sorted);
-    const activeCompaction = latestCompaction(sorted);
+    const boundary = contextResetBoundary(sorted);
+    const activeCompaction = latestCompaction(sorted.filter(entry => entry.seq > boundary));
     const selected: SelectedMessage[] = [];
     const system = latestActive(sorted, "system_context", superseded);
     if (system !== null) {
@@ -57,7 +59,7 @@ export class ContextBuilder {
         },
       });
     }
-    for (const entry of conversationTail(sorted, activeCompaction)) {
+    for (const entry of conversationTail(sorted, activeCompaction).filter(entry => entry.seq > boundary)) {
       const message = modelMessageForEntry(entry, input.currentProvider, input.currentModel);
       if (message !== null) {
         selected.push({ entryId: entry.id, message });

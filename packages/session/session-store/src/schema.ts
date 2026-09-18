@@ -108,6 +108,7 @@ export interface CompactionPayload {
 }
 
 export type SessionEntryType =
+  | "context_reset"
   | "image_offload"
   | "skill_context"
   | "tool_definitions"
@@ -121,6 +122,12 @@ export type SessionEntryType =
   | "compaction";
 
 export type SessionEntry =
+  | (SessionItemBase & {
+      readonly kind: "entry";
+      /** Legacy /clear marker: read/replay only, no current command produces it. */
+      readonly entryType: "context_reset";
+      readonly payload: { readonly resetThroughSeq: number; readonly reason: "user_clear" };
+    })
   | (SessionItemBase & {
       readonly kind: "entry";
       readonly entryType: "image_offload";
@@ -229,6 +236,7 @@ export interface NewSessionRecord {
 }
 
 const ENTRY_TYPES: ReadonlySet<string> = new Set([
+  "context_reset",
   "image_offload",
   "skill_context",
   "tool_definitions",
@@ -347,6 +355,14 @@ export function parseSessionItem(
       throw new SessionSchemaError("invalid session entry type");
     }
     const entryPayload = objectOf(input["payload"], "entry payload");
+    if (entryType === "context_reset") {
+      const boundary = entryPayload.resetThroughSeq;
+      if (typeof boundary !== "number" || !Number.isSafeInteger(boundary) || boundary < 0 ||
+        boundary >= (input.seq as number) || entryPayload.reason !== "user_clear" ||
+        Object.keys(entryPayload).some(key => key !== "resetThroughSeq" && key !== "reason")) {
+        throw new SessionSchemaError("invalid legacy context reset");
+      }
+    }
     if (entryType === "image_offload" && (!Array.isArray(entryPayload.keys) || entryPayload.keys.some(key => typeof key !== "string"))) {
       throw new SessionSchemaError("invalid image offload keys");
     }
@@ -434,6 +450,12 @@ export function validateSessionItems(
     previousSeq = item.seq;
   }
   return items;
+}
+
+/** Legacy resets affect model context, never durable attachment ownership. */
+export function contextResetBoundary(entries: readonly SessionEntry[]): number {
+  return entries.reduce((boundary, entry) => entry.entryType === "context_reset"
+    ? Math.max(boundary, entry.payload.resetThroughSeq) : boundary, 0);
 }
 
 function objectOf(value: unknown, label: string): Record<string, unknown> {

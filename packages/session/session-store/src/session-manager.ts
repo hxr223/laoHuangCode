@@ -316,7 +316,9 @@ function copyEntries(journal: SessionJournal, entries: readonly SessionEntry[]):
   for (const entry of entries) {
     const input: NewSessionEntry = {
       entryType: entry.entryType,
-      payload: entry.payload,
+      payload: entry.entryType === "context_reset"
+        ? { ...entry.payload, resetThroughSeq: entries.filter(candidate => candidate.seq <= entry.payload.resetThroughSeq).length }
+        : entry.payload,
       ...(entry.taskId === undefined ? {} : { taskId: entry.taskId }),
       ...(entry.turnId === undefined ? {} : { turnId: entry.turnId }),
       copiedFrom: {
