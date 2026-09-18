@@ -15,6 +15,7 @@ import type { ToolSpec } from "@laohuang/tools";
 
 /** Provider-neutral input for one model completion. */
 export interface ModelRuntimeRequest {
+  readonly imageContext?: ModelRequest["imageContext"];
   readonly provider: string;
   readonly model: string;
   readonly baseUrl?: string;
@@ -64,6 +65,7 @@ export class ModelRuntime {
     const maxAttempts = validateMaxAttempts(request.maxAttempts ?? 3);
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const adapterRequest: ModelRequest = {
+        ...(request.imageContext === undefined ? {} : { imageContext: request.imageContext }),
         provider: request.provider,
         model: request.model,
         ...(request.baseUrl === undefined ? {} : { baseUrl: request.baseUrl }),

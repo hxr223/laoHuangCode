@@ -1,6 +1,8 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/attachment/attachment" },
+    { "path": "./packages/attachment/attachment-local" },
     { "path": "./packages/skill/skill" },
     { "path": "./packages/skill/skill-filesystem" },
     { "path": "./packages/skill/tool-skill" },

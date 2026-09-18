@@ -1,4 +1,5 @@
 export * from "./adapter.ts";
+export * from "./images.ts";
 export * from "./context.ts";
 export * from "./credential-bridge.ts";
 export * from "./models-store-bridge.ts";

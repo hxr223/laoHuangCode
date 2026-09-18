@@ -1,4 +1,5 @@
 import { CodingAgent } from "@laohuang/agent-runtime";
+import type { AttachmentStore } from "@laohuang/attachment";
 import type { SkillSession } from "@laohuang/tool-skill";
 import {
   ModelRuntime,
@@ -38,6 +39,7 @@ export interface SessionRuntimePresentation {
 }
 
 export interface CreateSessionRuntimeOptions {
+  readonly attachments?: AttachmentStore;
   readonly skills?: SkillSession;
   readonly skillInputFailed?: (input: string, error: unknown) => void;
   readonly modelAdapter: ModelAdapter;
@@ -73,7 +75,32 @@ export function createSessionRuntime(
 ): SessionRuntime {
   let route = { ...options.route };
   let selectedModel = modelInfo(options.catalog, route);
-  const modelRuntime = new ModelRuntime(options.modelAdapter);
+  let attachmentTurnStart: number | undefined;
+  const adapter: ModelAdapter = {
+    name: options.modelAdapter.name,
+    runAttempt: request => {
+      const history = options.sessionController.history;
+      const entries = history?.entries() ?? [];
+      const boundary = attachmentTurnStart ?? [...entries].reverse().find(entry => entry.entryType === "user_message")?.seq ?? 0;
+      const protectedKeys = new Set<string>();
+      for (const entry of entries) {
+        if (entry.seq < boundary || !("message" in entry.payload)) continue;
+        const message = entry.payload.message;
+        if (!("attachments" in message)) continue;
+        for (const [index] of (message.attachments ?? []).entries()) protectedKeys.add(`${message.attachmentKey}:${index}`);
+      }
+      return options.modelAdapter.runAttempt({ ...request, imageContext: {
+        offloaded: new Set(entries.flatMap(entry => entry.entryType === "image_offload" ? entry.payload.keys : [])),
+        protectedKeys,
+        persistOffload: keys => {
+          if (!history) throw new Error("Cannot persist image offload without an active session");
+          history.offloadImages(keys);
+        },
+      } });
+    },
+  };
+  const modelRuntime = new ModelRuntime(adapter);
+  let releaseAttachments: (() => void) | undefined;
   const activeConversationHistory = {
     appendSkillContext: (input: Parameters<ConversationHistory["appendSkillContext"]>[0]) =>
       activeHistory(options.sessionController).appendSkillContext(input),
@@ -124,16 +151,21 @@ export function createSessionRuntime(
     });
 
   const agent = new CodingAgent({
-    resources: options.skills ? {
+    resources: {
       prepareInput: async (input, signal, inputs) => {
-        try { return await options.skills!.prepareInput(input, signal, inputs); }
+        attachmentTurnStart ??= (options.sessionController.history?.entries().at(-1)?.seq ?? 0) + 1;
+        releaseAttachments ??= options.attachments?.protect();
+        try { return await options.skills?.prepareInput(input, signal, inputs) ?? { role: "user", content: input }; }
         catch (error) { if (!signal?.aborted) options.skillInputFailed?.(inputs?.join("\n\n") ?? input, error); throw error; }
       },
-      prepareContext: (messages, signal) => options.skills!.prepareContext(messages, signal),
-      committed: messages => options.skills!.committed(messages),
-      finishTurn: () => options.skills!.finishTurn(),
-    } : undefined,
-    modelAdapter: options.modelAdapter,
+      prepareContext: (messages, signal) => options.skills?.prepareContext(messages, signal) ?? Promise.resolve([]),
+      committed: messages => options.skills?.committed(messages),
+      finishTurn: () => {
+        try { options.skills?.finishTurn(); }
+        finally { releaseAttachments?.(); releaseAttachments = undefined; attachmentTurnStart = undefined; }
+      },
+    },
+    modelAdapter: adapter,
     model: route.model,
     tools: options.tools,
     prepareTools: options.prepareTools,
@@ -155,6 +187,7 @@ export function createSessionRuntime(
           ? [...entries].reverse().find((entry) => entry.entryType === "assistant_message")
           : undefined;
         const prepared = await createGovernor(history).prepare({
+          protectedFromSeq: attachmentTurnStart,
           entries: entries.filter((entry) => entry !== pendingAssistant),
           currentProvider: route.provider,
           currentModel: route.model,

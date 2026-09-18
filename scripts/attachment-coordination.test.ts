@@ -1,0 +1,56 @@
+import assert from "node:assert/strict";
+import { fork } from "node:child_process";
+import { once } from "node:events";
+import { mkdtemp, mkdir, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { LocalAttachmentStore } from "@laohuang/attachment-local";
+import { RETENTION_MS, CLEANUP_INTERVAL_MS } from "@laohuang/attachment";
+import { createAttachmentRuntime } from "../apps/cli/src/create-attachment-runtime.ts";
+
+test("attachment: another process protects live operations; crash recovery reaps stale operations", async t => {
+  const root = await mkdtemp(join(tmpdir(), "laohuang-attachment-process-"));
+  let now = 1_000_000;
+  const store = new LocalAttachmentStore({ root, now: () => now });
+  const ref = await store.saveFile((async function* () { yield Buffer.from("shared"); })(), "file");
+  const child = fork(new URL("./fixtures/attachment-process.ts", import.meta.url), [root], { stdio: ["ignore", "ignore", "ignore", "ipc"] });
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill(); store.close(); await rm(root, { recursive: true, force: true }); });
+  const [ready] = await once(child, "message");
+  assert.equal(ready, "ready");
+  now += RETENTION_MS;
+  assert.equal(store.collectGarbage(() => new Set(), true).skipped, true);
+  assert.equal((await readdir(join(root, "tmp"))).length, 1);
+  const exited = once(child, "exit");
+  child.kill("SIGKILL"); await exited;
+  assert.deepEqual(store.collectGarbage(() => new Set(), true).deleted, [ref.id]);
+  assert.deepEqual(await readdir(join(root, "tmp")), []);
+});
+
+test("attachment: startup due check, remaining interval, failure and shutdown use one scheduler", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
+  const root = await mkdtemp(join(tmpdir(), "laohuang-attachment-scheduler-"));
+  const sessionsRoot = join(root, "sessions");
+  await mkdir(sessionsRoot);
+  const errors: unknown[] = [];
+  let runtime = createAttachmentRuntime({ root: join(root, "attachments"), sessionsRoot, onError: error => errors.push(error) });
+  t.after(async () => { runtime.close(); await rm(root, { recursive: true, force: true }); });
+  assert.equal(runtime.store.nextCollectionAt, 0);
+  t.mock.timers.tick(1);
+  const deadline = runtime.store.nextCollectionAt;
+  assert.ok(deadline > Date.now());
+  runtime.close();
+  t.mock.timers.tick(1000);
+  runtime = createAttachmentRuntime({ root: join(root, "attachments"), sessionsRoot, onError: error => errors.push(error) });
+  assert.equal(runtime.store.nextCollectionAt, deadline);
+  t.mock.timers.tick(deadline - Date.now() - 1);
+  assert.equal(runtime.store.nextCollectionAt, deadline);
+  t.mock.timers.tick(1);
+  assert.equal(runtime.store.nextCollectionAt, deadline + CLEANUP_INTERVAL_MS);
+  await rm(sessionsRoot, { recursive: true, force: true });
+  t.mock.timers.tick(CLEANUP_INTERVAL_MS);
+  assert.equal(errors.length, 1);
+  assert.equal(runtime.store.nextCollectionAt, deadline + CLEANUP_INTERVAL_MS);
+  t.mock.timers.tick(1000);
+  assert.equal(errors.length, 1);
+});

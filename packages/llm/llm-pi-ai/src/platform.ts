@@ -24,6 +24,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { builtinModels } from "@earendil-works/pi-ai/providers/all";
 import { PiAiAdapter, piModelErrorKind } from "./adapter.ts";
+import type { ImagePreparationOptions } from "./images.ts";
 import { CustomModelRegistry } from "./custom-models.ts";
 import {
   PiCredentialStore,
@@ -35,6 +36,7 @@ import {
 } from "./models-store-bridge.ts";
 
 export interface PiAiPlatformOptions {
+  readonly attachments?: ImagePreparationOptions;
   readonly credentials: ApiKeyCredentialStoreLike;
   readonly modelCatalogStore: ModelCatalogStoreLike;
   readonly excludedProviderIds: ReadonlySet<string>;
@@ -62,6 +64,7 @@ export async function createPiAiPlatform(
   const verified = new Set(options.verifiedProviderIds ?? []);
   for (const id of custom.providerIds) verified.delete(id);
   return new PiAiPlatform(models, {
+    attachments: options.attachments,
     excludedProviderIds: options.excludedProviderIds,
     verifiedProviderIds: verified,
     reload: async () => {
@@ -96,6 +99,7 @@ export class PiAiPlatform implements ModelPlatform {
   constructor(
     models: Models,
     options: {
+      readonly attachments?: ImagePreparationOptions;
       readonly excludedProviderIds: ReadonlySet<string>;
       readonly verifiedProviderIds: ReadonlySet<string>;
       readonly reload?: () => Promise<void>;
@@ -104,7 +108,7 @@ export class PiAiPlatform implements ModelPlatform {
     this.models = models;
     this.eligibleIds = new Set(eligibleProviderIds(models, options.excludedProviderIds));
     this.verifiedProviderIds = options.verifiedProviderIds;
-    this.adapter = new PiAiAdapter({ eligibleProviderIds: this.eligibleIds }, models);
+    this.adapter = new PiAiAdapter({ eligibleProviderIds: this.eligibleIds, attachments: options.attachments }, models);
     this.catalog = new PiAiCatalog(
       this.models,
       this.eligibleIds,

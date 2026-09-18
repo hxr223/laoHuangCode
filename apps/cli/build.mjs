@@ -12,5 +12,5 @@ await build({
   format: "esm",
   sourcemap: true,
   banner: { js: "#!/usr/bin/env node\nimport { createRequire as createBundleRequire } from 'node:module';\nconst require = createBundleRequire(import.meta.url);" },
-  external: ["@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "koffi", "@modelcontextprotocol/client", "@modelcontextprotocol/client/*"],
+  external: ["sharp", "@earendil-works/pi-ai", "@earendil-works/pi-ai/*", "koffi", "@modelcontextprotocol/client", "@modelcontextprotocol/client/*"],
 });

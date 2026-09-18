@@ -1,5 +1,6 @@
 import {
   portableModelMessage,
+  projectImageOffloads,
   type ModelMessage,
 } from "@laohuang/llm";
 import type {
@@ -63,8 +64,9 @@ export class ContextBuilder {
       }
     }
     validateToolPairs(selected);
+    const offloaded = new Set(sorted.flatMap(entry => entry.entryType === "image_offload" ? entry.payload.keys : []));
     return {
-      messages: selected.map((item) => item.message),
+      messages: selected.map((item) => projectImageOffloads(item.message, offloaded)),
       sourceEntryIds: selected.map((item) => item.entryId),
       activeCompactionId: activeCompaction?.id ?? null,
     };

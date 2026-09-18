@@ -1,4 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
+import type { AttachmentContent } from "@laohuang/attachment";
 
 /**
  * Internal immutable specification for one fixed tool. `promptGuidelines`
@@ -30,6 +31,7 @@ export const TOUCHED_PATH: unique symbol = Symbol("laohuang.touchedPath");
 
 /** Plain-object result returned to the model for every tool call. */
 export interface ToolResult {
+  attachmentContent?: readonly AttachmentContent[];
   ok: boolean;
   status?: string;
   content?: string;

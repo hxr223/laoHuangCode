@@ -1,4 +1,5 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
+import type { AttachmentContent } from "@laohuang/attachment";
 import type { LoadedTool, ToolCatalogState, ToolCall, ToolSpec } from "@laohuang/tools";
 
 /** Raised when a streamed model response is incomplete or invalid. */
@@ -46,6 +47,9 @@ export interface SystemModelMessage {
 export interface UserModelMessage {
   readonly role: "user";
   readonly content: string;
+  readonly attachments?: readonly AttachmentContent[];
+  readonly attachmentKey?: string;
+  readonly omittedImageIndexes?: readonly number[];
   readonly toolCatalog?: ToolCatalogState;
   readonly skillContext?: {
     readonly kind: "catalog" | "activation" | "invalidation";
@@ -101,6 +105,9 @@ export interface ToolResultModelMessage {
   readonly toolCallId: string;
   readonly toolName: string;
   readonly content: string;
+  readonly attachments?: readonly AttachmentContent[];
+  readonly attachmentKey?: string;
+  readonly omittedImageIndexes?: readonly number[];
   readonly isError: boolean;
 }
 
@@ -180,6 +187,11 @@ export type ModelEvent =
   | { readonly type: "response-validating" };
 
 export interface ModelRequest {
+  readonly imageContext?: {
+    readonly offloaded: ReadonlySet<string>;
+    readonly protectedKeys: ReadonlySet<string>;
+    readonly persistOffload: (keys: readonly string[]) => void;
+  };
   readonly provider: string;
   readonly model: string;
   readonly baseUrl?: string;
@@ -194,6 +206,14 @@ export interface ModelRequest {
   readonly isRequestActive?: (requestId: string) => boolean;
   readonly onEvent?: (event: ModelEvent) => void;
   readonly onRequestOpened?: () => boolean | void;
+}
+
+/** Stable occurrence keys allow context eviction without releasing durable object references. */
+export function projectImageOffloads(message: ModelMessage, keys: ReadonlySet<string>): ModelMessage {
+  if ((message.role !== "user" && message.role !== "tool-result") || !message.attachments?.length) return message;
+  const omittedImageIndexes = message.attachments.flatMap((block, index) => block.type === "image" && keys.has(`${message.attachmentKey}:${index}`) ? [index] : []);
+  if (!omittedImageIndexes.length) return message;
+  return { ...message, omittedImageIndexes };
 }
 
 export interface ModelResult {

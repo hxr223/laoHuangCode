@@ -41,6 +41,7 @@ export interface CalculatedModelBudget {
 }
 
 export interface PrepareContextInput {
+  readonly protectedFromSeq?: number;
   readonly reserveTokens?: number;
   readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
   readonly entries: readonly SessionEntry[];
@@ -121,6 +122,7 @@ export class ContextGovernor {
   async compact(input: ManualCompactionInput): Promise<CompactionResult> {
     const calculated = calculateModelBudget({ budget: input.budget, policy: input.policy });
     const plan = selectCompactionPlan({
+      protectedFromSeq: input.protectedFromSeq,
       entries: input.entries,
       // A search preflight reserves the pending call/result/definition unit.
       // Keep the latest completed unit and summarize older units to make room.

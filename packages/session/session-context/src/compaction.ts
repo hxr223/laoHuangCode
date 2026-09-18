@@ -15,6 +15,7 @@ export interface CompactionPlan {
 }
 
 export interface SelectCompactionPlanInput {
+  readonly protectedFromSeq?: number;
   readonly entries: readonly SessionEntry[];
   readonly retainTokens: number;
   readonly estimator: TokenEstimator;
@@ -36,12 +37,16 @@ export function selectCompactionPlan(input: SelectCompactionPlanInput): Compacti
   if (retained.length === 0 && units.length > 0) {
     retained.push(units.at(-1)!);
   }
-  const retainedFirst = retained[0]?.entries[0]?.seq ?? Number.MAX_SAFE_INTEGER;
+  const currentTurn = input.protectedFromSeq ?? [...input.entries].reverse().find(entry => entry.entryType === "user_message")?.seq ?? 0;
+  const hasCurrentImages = input.entries.some(entry => entry.seq >= currentTurn && "message" in entry.payload &&
+    "attachments" in entry.payload.message && entry.payload.message.attachments?.some(block => block.type === "image"));
+  const retainedFirst = Math.min(retained[0]?.entries[0]?.seq ?? Number.MAX_SAFE_INTEGER, hasCurrentImages ? currentTurn : Number.MAX_SAFE_INTEGER);
+  const retainedUnits = units.filter(unit => unit.entries[0]!.seq >= retainedFirst);
   const summarized = units.filter((unit) => unit.entries[0]!.seq < retainedFirst);
   return {
     summarizedEntries: summarized.flatMap((unit) => unit.entries),
-    retainedEntries: retained.flatMap((unit) => unit.entries),
-    retainedFromSeq: retained[0]?.entries[0]?.seq ?? 1,
+    retainedEntries: retainedUnits.flatMap((unit) => unit.entries),
+    retainedFromSeq: retainedUnits[0]?.entries[0]?.seq ?? 1,
   };
 }
 
@@ -69,6 +74,9 @@ export function serializeConversation(entries: readonly SessionEntry[]): string 
     ) {
       lines.push(`[${entry.payload.message.role}] ${entry.payload.message.content}`);
     }
+    if ("message" in entry.payload && "attachments" in entry.payload.message) {
+      for (const block of entry.payload.message.attachments ?? []) lines.push(`[attachment metadata only; not visual interpretation] ${JSON.stringify(block)}`);
+    }
     lines.push("</entry>");
   }
   lines.push("</conversation>");
@@ -81,7 +89,7 @@ function semanticUnits(entries: readonly SessionEntry[]): readonly SemanticUnit[
   for (let index = 0; index < entries.length; index += 1) {
     const entry = entries[index]!;
     if (groupedDefinitions.has(entry.id)) continue;
-    if (entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "compaction") {
+    if (entry.entryType === "image_offload" || entry.entryType === "system_context" || entry.entryType === "project_instructions" || entry.entryType === "compaction") {
       continue;
     }
     if (entry.entryType === "assistant_message") {
