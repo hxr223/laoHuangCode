@@ -121,3 +121,18 @@ npm 用户可以先升级；独立安装器在 GitHub Release 更新前仍使用
 npm 发布或发布验证失败时，不启动六平台构建；后续独立包构建或上传失败不会撤销已发布的 npm 版本。
 临时故障应只重跑失败的任务，让后续任务继续，不要从头重跑整个 Release 或重复发布已有 npm 版本。
 需要修改源码或构建逻辑时，通过新的 PR 和版本发布修复。
+
+### 恢复已发布 npm 版本的独立安装包
+
+如果 npm 发布成功、registry 验证超时，先确认公开 registry 的 `latest` 已是目标版本。
+在 GitHub Actions 的 `Release` 工作流选择 `Run workflow`，分支选择 `main`，
+输入版本号，或执行 `gh workflow run release.yml --ref main -f version=X.Y.Z`。
+
+恢复入口不执行 npm publish，仅接受已发布的 npm latest 稳定版本。它读取 npm 的
+`gitHead`，确认该提交属于 main 且来自合并 PR、提交中的版本匹配，然后固定从该提交
+构建六平台归档，并将 GitHub Release 指向该提交。不会用当前 main 的产品代码替换
+已发布版本，也不会覆盖已公开的 GitHub Release；匹配提交的草稿可继续上传。
+
+正常 npm 发布后的 registry 验证最多等待约五分钟。只有发布编排文件的变更无需提升
+产品版本，也不触发自动发布；具体允许列表由 `scripts/release-control.mjs` 定义，CI
+和 Release 共用。产品源码、依赖和安装包构建脚本不在该列表中，仍必须提升版本。

@@ -63,17 +63,23 @@ jobs:
       - run: node --test --test-shard=${{ matrix.shard }}/5 "scripts/**/*.test.ts"
 
   version:
-    # Every merged pull request is an npm publish: the version must be a stable
-    # X.Y.Z SemVer, not yet published, and above npm's current latest.
+    # Product changes require a new version; release-infrastructure-only fixes do not.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: https://registry.npmjs.org
+      - name: Detect product changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/release-control.mjs changes "$BASE_SHA"
       - name: Validate the package version
+        if: steps.changes.outputs.required == 'true'
         run: npm run check:version
