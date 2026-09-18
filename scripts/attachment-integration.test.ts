@@ -33,6 +33,22 @@ const model: Model<Api> = { id: "vision", name: "vision", provider: "fake", api:
   input: ["text", "image"], contextWindow: 128000, maxTokens: 8192, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } };
 const request = (messages: ModelRequest["messages"]): ModelRequest => ({ provider: "fake", model: "vision", messages, tools: [] });
 
+test("attachment: read_image describes path-first usage and every parameter", async t => {
+  const { store, root } = await fixture(t);
+  const { spec } = createReadImageTool({ store, projectRoot: root, resolveReference: () => undefined });
+  assert.match(spec.description, /Use path to read a local image file/);
+  assert.match(spec.description, /attachment reference already returned in the current session; do not guess IDs/);
+  assert.match(spec.description, /exactly one of path or attachment_id/);
+  const properties = spec.parameters.properties as Record<string, { description: string; properties?: Record<string, { description: string }> }>;
+  for (const name of ["path", "attachment_id", "region", "full_resolution"]) assert.ok(properties[name]!.description.length > 0);
+  for (const name of ["x", "y", "width", "height"]) assert.ok(properties.region!.properties![name]!.description.length > 0);
+  assert.match(properties.path!.description, /relative paths resolve against the default working directory/);
+  assert.match(properties.attachment_id!.description, /not referenced by the current session are rejected/);
+  assert.match(properties.region!.description, /Out-of-bounds regions are rejected/);
+  assert.match(properties.full_resolution!.description, /Defaults to false/);
+  assert.match(properties.full_resolution!.description, /request preparation fails instead of silently downscaling/);
+});
+
 test("attachment: user/tool results persist references, fork/clone retain and global scans fail closed", async t => {
   const { store, ref, sessionsRoot, root, advance } = await fixture(t);
   const manager = new SessionManager({ sessionsRoot, appVersion: "test", attachments: store });
