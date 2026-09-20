@@ -2,6 +2,7 @@ import type { KeyInput } from "./key-id.ts";
 import { keySignature, parseKey } from "./key-parser.ts";
 
 export type ActionId =
+  | "paste_clipboard"
   | "toggle_tool_output"
   | "editor_newline"
   | "select_model"

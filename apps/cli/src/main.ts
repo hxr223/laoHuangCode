@@ -84,6 +84,7 @@ import {
 import { resolveNpmInstallation } from "./update-installation.ts";
 import { runUpdate, updateDiagnostic } from "./update.ts";
 import { copyText, createClipboardRunner } from "./clipboard.ts";
+import { createClipboardPaste } from "./clipboard-paste.ts";
 
 export const VERSION = readPackageVersion();
 
@@ -429,6 +430,7 @@ export async function main(
   // The interactive UI is constructed only once configuration is known; its
   // provider/model are read-only in TS.
   let terminalUi: TerminalUI | null = null;
+  const clipboardPaste = createClipboardPaste({ platform: process.platform, env: environ });
   let terminalDriver: StdTerminalDriver | null = null;
   let selectedModel = modelPlatform.catalog.getModel(config.provider, config.model);
   attachmentRuntime = createAttachmentRuntime({
@@ -474,6 +476,7 @@ export async function main(
         version: VERSION,
         theme: args.theme,
         driver: terminalDriver,
+        clipboardReader: signal => clipboardPaste.read(signal),
         capabilities: { reasoning: selectedModel?.reasoning ?? false },
         contextWindow: selectedModel?.contextWindow,
       });
@@ -736,7 +739,10 @@ export async function main(
           try {
             if (composedForCleanup) await composedForCleanup.close();
             else await sessionController.close();
-          } finally { attachmentRuntime.close(); }
+          } finally {
+            try { await clipboardPaste.close(); }
+            finally { attachmentRuntime.close(); }
+          }
         }
       }
     }

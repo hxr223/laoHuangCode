@@ -242,6 +242,7 @@ function ansiNoticeStyle(theme: TerminalTheme, tone: NoticeTone): string {
 // ---------------------------------------------------------------------------
 
 type LoopWorkItem =
+  | { type: "clipboard"; controller: AbortController; text: string | null; error?: string }
   | { type: "input"; data: Uint8Array }
   | { type: "event"; event: unknown }
   | {
@@ -321,6 +322,7 @@ export class InteractiveTerminalLoop {
   #renderTimer: ReturnType<typeof setTimeout> | null = null;
   #lastRenderAt = 0;
   #disposeResize: (() => void) | null = null;
+  #clipboard: AbortController | null = null;
   writeError: unknown = null;
 
   constructor(
@@ -446,6 +448,7 @@ export class InteractiveTerminalLoop {
   }
 
   requestExit(): void {
+    this.invalidateClipboardPaste();
     this.#exitRequested = true;
     this.#exitResolve?.();
   }
@@ -455,6 +458,7 @@ export class InteractiveTerminalLoop {
       return;
     }
     this.#closed = true;
+    this.invalidateClipboardPaste();
     if (this.#renderTimer !== null) { clearTimeout(this.#renderTimer); this.#renderTimer = null; }
     this.#running = false;
     this.#cancelPendingViews();
@@ -650,13 +654,27 @@ export class InteractiveTerminalLoop {
         }
         changed = true;
       } else if (item.type === "open_selection") {
+        this.invalidateClipboardPaste();
         this.#viewHost.openSelection(item.request).then(item.resolve);
         changed = true;
       } else if (item.type === "open_prompt") {
+        this.invalidateClipboardPaste();
         this.#viewHost.openPrompt(item.request).then(item.resolve);
         changed = true;
       } else if (item.type === "close_view") {
         this.#viewHost.closeActive(item.value);
+        changed = true;
+      } else if (item.type === "clipboard") {
+        if (this.#clipboard === item.controller) this.#clipboard = null;
+        if (item.controller.signal.aborted) {
+          this.#appendNotice("Clipboard paste cancelled because input changed; paste again.");
+        } else if (item.error) {
+          this.#appendNotice(item.error);
+        } else if (item.text) {
+          this.#applyEditorAction(inputAction(InputActionKind.Insert, item.text));
+        } else {
+          this.#appendNotice("Clipboard has no image or text.");
+        }
         changed = true;
       } else if (item.event instanceof LocalMessage) {
         const message = item.event;
@@ -697,6 +715,7 @@ export class InteractiveTerminalLoop {
   #applyActions(actions: readonly InputAction[]): void {
     for (const action of actions) {
       if (action.kind === InputActionKind.Newline) {
+        this.invalidateClipboardPaste();
         if (this.#viewHost.activeId() !== null) {
           this.#viewHost.handleInput({ type: "text", text: "\n" });
           this.#needsRender = true;
@@ -710,6 +729,12 @@ export class InteractiveTerminalLoop {
   }
 
   #applyInputEvent(event: TuiInputEvent): void {
+    const clipboardAction = event.type === "key" && this.#ui.keybindings.resolve(event.key, ["editor"]) === "paste_clipboard";
+    if (clipboardAction && this.#viewHost.activeId() === null) {
+      this.#pasteClipboard();
+      return;
+    }
+    this.invalidateClipboardPaste();
     if (this.#viewHost.handleInput(event)) {
       this.#needsRender = true;
       return;
@@ -730,6 +755,7 @@ export class InteractiveTerminalLoop {
   }
 
   #applyKeyAction(action: ActionId): void {
+    if (action === "paste_clipboard") return; // Never read images into a modal or secret prompt.
     const capability = ACTION_CAPABILITIES[action as keyof typeof ACTION_CAPABILITIES];
     if (capability !== undefined && !this.#ui.capabilities[capability]) {
       this.#appendNotice(unavailableActionNotice(action as keyof typeof ACTION_CAPABILITIES));
@@ -859,6 +885,7 @@ export class InteractiveTerminalLoop {
   }
 
   #applyEof(): void {
+    this.invalidateClipboardPaste();
     const effect = this.#editor.apply(
       inputAction(InputActionKind.Eof),
       { runtimeActive: this.#ui.isRunning() },
@@ -886,6 +913,27 @@ export class InteractiveTerminalLoop {
   #appendNotice(text: string): void {
     this.#ui.appendTranscript(
       createNoticeBlock(this.#ui.newBlockId(), text, "warning"),
+    );
+  }
+
+  invalidateClipboardPaste(): void {
+    this.#clipboard?.abort();
+  }
+
+  #pasteClipboard(): void {
+    if (this.#clipboard) return;
+    const read = this.#ui.clipboardReader;
+    if (!read) { this.#appendNotice("Clipboard paste is unavailable in this host."); return; }
+    const controller = new AbortController();
+    this.#clipboard = controller;
+    const deliver = (text: string | null, error?: string): void => {
+      if (this.#closed || this.#exitRequested) return;
+      this.#work.push({ type: "clipboard", controller, text, error });
+      this.#scheduleWakeup();
+    };
+    void Promise.resolve().then(() => read(controller.signal)).then(
+      text => deliver(text),
+      error => deliver(null, error instanceof Error ? error.message : "Clipboard paste failed."),
     );
   }
 
@@ -953,6 +1001,7 @@ export class InteractiveTerminalLoop {
 
 /** A terminal driver that may also expose raw-mode entry. */
 export interface TerminalUIOptions {
+  clipboardReader?: (signal: AbortSignal) => Promise<string | null>;
   /** Plain-text fallback writer used when no live loop owns the screen. */
   output?: (text: string) => void;
   projectRoot?: string;
@@ -1009,6 +1058,7 @@ function normalizePositiveInteger(value: number | undefined): number {
  * writer (non-interactive sessions should prefer PlainEventSink).
  */
 export class TerminalUI {
+  readonly clipboardReader: TerminalUIOptions["clipboardReader"];
   readonly theme: TerminalTheme;
   readonly state: UIState;
   readonly reducer: UIEventReducer;
@@ -1043,6 +1093,7 @@ export class TerminalUI {
   #keyActionCallback: ((action: Exclude<ActionId, "editor_newline" | "steer_now" | "submit_follow_up" | "dismiss" | "cancel">) => void) | null;
 
   constructor(options: TerminalUIOptions = {}) {
+    this.clipboardReader = options.clipboardReader;
     this.theme = resolveTerminalTheme(options.theme);
     this.projectRoot = options.projectRoot ?? null;
     this.provider = options.provider ?? null;
@@ -1197,6 +1248,7 @@ export class TerminalUI {
   }
 
   setSessionId(sessionId: string): void {
+    if (sessionId !== this.#sessionId) this.#loop?.invalidateClipboardPaste();
     if (sessionId !== this.#sessionId) this.state.contextTokens = 0;
     this.#sessionId = sessionId;
     this.#loop?.requestRender();
@@ -1219,6 +1271,7 @@ export class TerminalUI {
   }
 
   setComposerText(text: string): void {
+    this.#loop?.invalidateClipboardPaste();
     const editor = this.#loop?.editor;
     if (editor === undefined) {
       return;
