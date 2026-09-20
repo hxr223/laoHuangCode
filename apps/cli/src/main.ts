@@ -25,7 +25,7 @@ import {
 } from "@laohuang/runtime-protocol";
 import { findProjectRoot } from "@laohuang/project-instructions";
 import { type AgentSession, SessionState, routeHumanIntent } from "@laohuang/session-runtime";
-import { PlainEventSink, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
+import { PlainEventSink, PromptCancelledError, PromptEofError, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
 import { ToolRegistry, type ToolSpec } from "@laohuang/tools";
 import { createFileToolDefinitions, createReadImageTool } from "@laohuang/tool-fs";
 import { getHomeDirectory } from "@laohuang/local-paths";
@@ -389,15 +389,40 @@ export async function main(
         model: args.model,
         baseUrl: args.baseUrl,
       });
-      if (
-        !(await validateConfiguredSelection({
-          config,
-          catalog: modelPlatform.catalog,
-          providerAuth,
-          presenter: startupPresenter,
-        }))
-      ) {
+      const validation = await validateConfiguredSelection({
+        config,
+        catalog: modelPlatform.catalog,
+        providerAuth,
+        presenter: startupPresenter,
+      });
+      if (validation === false) {
         return 2;
+      }
+      if (typeof validation === "string") {
+        const canRecover = (options.stdin ?? process.stdin).isTTY === true
+          && (options.stdout ?? process.stdout).isTTY === true
+          && !args.model && !environ["LAOHUANG_MODEL"];
+        if (!canRecover) throw new Error(validation);
+        outputFn(`${validation}. Please reconfigure profile '${config.profile}'.`);
+        let selection: ModelSelection | null;
+        try {
+          selection = await runInitialModelSelection({ selector, presenter: startupPresenter, providerAuth });
+        } catch (error) {
+          if (!(error instanceof PromptCancelledError) && !(error instanceof PromptEofError)) throw error;
+          selection = null;
+        }
+        if (selection === null) {
+          outputFn("Configuration cancelled.");
+          return 0;
+        }
+        const saved = manager.resolve({ environ: {}, profile: config.profile });
+        const baseUrl = selection.config.provider === saved.provider ? saved.baseUrl : selection.config.baseUrl;
+        manager.configure({
+          name: config.profile!, provider: selection.config.provider,
+          model: selection.config.model, baseUrl,
+        });
+        config = { ...config, ...selection.config, baseUrl: args.baseUrl ?? environ["LAOHUANG_BASE_URL"] ?? baseUrl };
+        outputFn(`Saved profile '${config.profile}' to ${configPath}`);
       }
     } else {
       const selection = await runInitialModelSelection({
@@ -822,10 +847,10 @@ async function validateConfiguredSelection(options: {
   readonly catalog: ModelCatalog;
   readonly providerAuth: ProviderAuthController;
   readonly presenter: PlainCommandPresenter;
-}): Promise<boolean> {
+}): Promise<boolean | string> {
   const provider = options.catalog.getProvider(options.config.provider);
   if (provider === undefined) {
-    throw new Error(`Unknown provider: ${options.config.provider}`);
+    return `Unknown provider: ${options.config.provider}`;
   }
   if (
     !(await options.providerAuth.ensureConfigured(options.config.provider, {
@@ -840,9 +865,7 @@ async function validateConfiguredSelection(options: {
   }
   await options.catalog.refresh(options.config.provider);
   if (options.catalog.getModel(options.config.provider, options.config.model) === undefined) {
-    throw new Error(
-      `Unknown model: ${options.config.provider}/${options.config.model}`,
-    );
+    return `Unknown model: ${options.config.provider}/${options.config.model}`;
   }
   return true;
 }
