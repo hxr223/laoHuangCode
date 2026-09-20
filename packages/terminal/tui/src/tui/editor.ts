@@ -460,6 +460,7 @@ const CONTROL_KEYS: ReadonlyMap<number, KeyInput> = new Map([
   [15, makeKeyInput("character", { text: "o", ctrl: true })],
   [19, makeKeyInput("character", { text: "s", ctrl: true })],
   [20, makeKeyInput("character", { text: "t", ctrl: true })],
+  [22, makeKeyInput("character", { text: "v", ctrl: true })],
 ]);
 
 type EscapeConsumption =
@@ -629,6 +630,10 @@ export class RawInputDecoder {
       return kind !== undefined
         ? { status: "action", action: inputAction(kind) }
         : ESCAPE_CONSUMED;
+    }
+    if (second === 0x76 /* v */) {
+      this.buffer = this.buffer.subarray(2);
+      return { status: "action", action: inputAction(InputActionKind.Key, "", makeKeyInput("character", { text: "v", alt: true })) };
     }
     // An unsupported Alt sequence has no editor meaning; retain its character.
     this.buffer = this.buffer.subarray(1);
@@ -979,7 +984,7 @@ function decodeSpecialEscapeAction(sequence: string): InputAction | null {
 }
 
 function decodeModifiedControlKey(sequence: string): InputAction | null {
-  const kitty = /^\x1b\[(13|57414|9|117)(?::\d*)?(?::\d+)?;(\d+)(?::(\d+))?u$/.exec(sequence);
+  const kitty = /^\x1b\[(13|57414|9|117|118)(?::\d*)?(?::\d+)?;(\d+)(?::(\d+))?u$/.exec(sequence);
   if (kitty !== null) {
     const code = kitty[1]!;
     const modifier = Number.parseInt(kitty[2]!, 10) - 1;
@@ -991,6 +996,9 @@ function decodeModifiedControlKey(sequence: string): InputAction | null {
     }
     if (!isKittyPressEvent(kitty[3])) {
       return null;
+    }
+    if (code === "118" && (matchesKittyModifiers(modifier, 4) || matchesKittyModifiers(modifier, 2))) {
+      return inputAction(InputActionKind.Key, "", makeKeyInput("character", { text: "v", ctrl: matchesKittyModifiers(modifier, 4), alt: matchesKittyModifiers(modifier, 2) }));
     }
     if (
       (code === "13" || code === "57414")
@@ -1017,6 +1025,9 @@ function decodeModifiedControlKey(sequence: string): InputAction | null {
   }
   const modifier = Number.parseInt(modifyOtherKeys[1]!, 10) - 1;
   const codepoint = Number.parseInt(modifyOtherKeys[2]!, 10);
+  if (codepoint === 118 && (modifier === 4 || modifier === 2)) {
+    return inputAction(InputActionKind.Key, "", makeKeyInput("character", { text: "v", ctrl: modifier === 4, alt: modifier === 2 }));
+  }
   if (codepoint === 117 && modifier === 4) {
     return inputAction(InputActionKind.DeleteToLineStart);
   }
