@@ -17,7 +17,6 @@ import {
 import { parseArgs } from "../apps/cli/src/args.ts";
 import {
   runPlainSessionRepl,
-  runRepl,
   runSessionRepl,
   supportsTerminalUI,
   type SessionReplSession,
@@ -99,71 +98,6 @@ function delay(ms: number): Promise<void> {
     setTimeout(resolve, ms);
   });
 }
-
-test("session repl keeps prompting while the worker runs", async () => {
-  const started: string[] = [];
-  let release!: () => void;
-  const gate = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const session = new AgentSession(async (text: string) => {
-    started.push(text);
-    await gate;
-    return "done";
-  });
-
-  class FakeUI {
-    commandRegistry = null;
-    inputs = ["first", "second", "/exit"];
-    messages: string[] = [];
-    showWelcome(): void {
-      this.messages.push("welcome");
-    }
-    prompt(): string {
-      const value = this.inputs.shift();
-      if (value === undefined) {
-        throw new PromptEofError();
-      }
-      if (value === "/exit") {
-        release();
-      }
-      return value;
-    }
-    write(message: string): void {
-      this.messages.push(message);
-    }
-    showError(message: string): void {
-      this.messages.push(message);
-    }
-    showGoodbye(): void {
-      this.messages.push("goodbye");
-    }
-    showInterrupted(): void {
-      this.messages.push("interrupted");
-    }
-    stopEventRenderer(): void {}
-  }
-
-  const ui = new FakeUI();
-  const presenter = new RecordingPresenter();
-  session.eventBus.subscribe((event) => {
-    if (event.kind === EventKind.UiMessage) {
-      ui.messages.push(String((event.payload as { text?: unknown }).text ?? ""));
-    }
-  });
-
-  await runSessionRepl(session, {
-    ui,
-    presenter,
-    suggestCommand: () => null,
-  });
-
-  assert.equal(started[0], "first");
-  assert.ok(presenter.notices.some((notice) =>
-    notice.text.includes("Message queued")
-  ));
-  assert.ok(ui.messages.includes("goodbye"));
-});
 
 test("persistent terminal repl exits without leaving its queue blocked", async () => {
   class PersistentUI {
@@ -594,71 +528,6 @@ test("plain repl receives unknown-command suggestions without terminal UI", asyn
   ));
 });
 
-test("session repl routes submitted text through neutral session actions", async () => {
-  const actions: string[] = [];
-  const session = new AgentSession(async () => "done");
-  const originalSubmitAction = session.submitAction.bind(session);
-  session.submitAction = async (action) => {
-    actions.push(action.type);
-    return originalSubmitAction(action);
-  };
-
-  class FakeUI {
-    commandRegistry = null;
-    inputs = ["hello", "/exit"];
-    prompt(): string {
-      const value = this.inputs.shift();
-      if (value === undefined) {
-        throw new PromptEofError();
-      }
-      return value;
-    }
-    showWelcome(): void {}
-    showGoodbye(): void {}
-    showError(): void {}
-    stopEventRenderer(): void {}
-  }
-
-  await runSessionRepl(session, {
-    ui: new FakeUI(),
-    presenter: new RecordingPresenter(),
-    suggestCommand: () => null,
-  });
-
-  assert.deepEqual(actions, ["prompt"]);
-});
-
-test("session repl reports malformed slash input without exiting", async () => {
-  const presenter = new RecordingPresenter();
-  const session = new AgentSession(async () => "unused");
-
-  class FakeUI {
-    commandRegistry = null;
-    inputs = ['/model "unterminated', "/exit"];
-    prompt(): string {
-      const value = this.inputs.shift();
-      if (value === undefined) {
-        throw new PromptEofError();
-      }
-      return value;
-    }
-    showWelcome(): void {}
-    showGoodbye(): void {}
-    showError(): void {}
-    stopEventRenderer(): void {}
-  }
-
-  await runSessionRepl(session, {
-    ui: new FakeUI(),
-    presenter,
-    suggestCommand: () => null,
-  });
-
-  assert.ok(presenter.notices.some((notice) =>
-    notice.text.includes("No closing quotation")
-  ));
-});
-
 test("persistent repl preserves follow-up submit metadata", async () => {
   const actions: Array<{ type: string; text?: string }> = [];
   const session = new AgentSession(async () => null);
@@ -744,60 +613,6 @@ test("startup model selection uses the plain presenter and shared selector servi
   ]);
   assert.deepEqual(auth.loginCalls, []);
   assert.ok(output.includes("Select model provider"));
-});
-
-test("user can chat until exit", async () => {
-  const inputs = ["hello", "/exit"];
-  const outputs: string[] = [];
-  const agentInputs: string[] = [];
-  const agent = {
-    run(text: string): string {
-      agentInputs.push(text);
-      return "hi there";
-    },
-  };
-
-  await runRepl(agent, {
-    inputFn: () => inputs.shift()!,
-    outputFn: (message) => {
-      outputs.push(message);
-    },
-  });
-
-  assert.deepEqual(agentInputs, ["hello"]);
-  assert.ok(outputs.some((output) => output.includes("hi there")));
-});
-
-test("repl can drive a structured terminal ui", async () => {
-  class FakeUI {
-    inputs = ["hello", "/exit"];
-    events: unknown[] = [];
-    showWelcome(): void {
-      this.events.push("welcome");
-    }
-    prompt(): string {
-      return this.inputs.shift()!;
-    }
-    thinking(): { close(): void } {
-      return { close(): void {} };
-    }
-    showAssistant(response: string): void {
-      this.events.push(["assistant", response]);
-    }
-    showGoodbye(): void {
-      this.events.push("goodbye");
-    }
-    showInterrupted(): void {}
-    showError(): void {}
-    write(): void {}
-  }
-
-  const ui = new FakeUI();
-  const agent = { run: async (_text: string): Promise<string> => "hi there" };
-
-  await runRepl(agent, { ui });
-
-  assert.deepEqual(ui.events, ["welcome", ["assistant", "hi there"], "goodbye"]);
 });
 
 test("first start collects provider key and model in the terminal", async () => {

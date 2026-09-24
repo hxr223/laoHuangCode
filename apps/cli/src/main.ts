@@ -1,28 +1,19 @@
-/** Command-line entry and concrete composition for laohuang. */
+/**
+ * laohuang 的命令行入口与应用装配。
+ * 执行顺序：参数分流 → 配置与认证 → 会话和工具装配 → 输入循环 → 资源清理。
+ * config、doctor、update 等子命令处理完成后直接退出，不进入会话循环。
+ */
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { ModelCatalog, ModelMessage, ModelPlatform } from "@laohuang/llm";
-import {
-  ContextUsage,
-  type BuildContextInput,
-} from "@laohuang/session-context";
+import { ContextUsage, type BuildContextInput } from "@laohuang/session-context";
 import { projectTranscript } from "@laohuang/session-store";
 import { createPiAiPlatform } from "@laohuang/llm-pi-ai";
-import {
-  ConfigManager,
-  CustomModelsStore,
-  CredentialStore,
-  ModelCatalogStore,
-  defaultConfigPath,
-  type Config,
-} from "@laohuang/local-config";
-import {
-  EventProjector,
-  makeCancelIntent,
-} from "@laohuang/runtime-protocol";
+import { ConfigManager, CustomModelsStore, CredentialStore, ModelCatalogStore, defaultConfigPath, type Config } from "@laohuang/local-config";
+import { EventProjector, makeCancelIntent } from "@laohuang/runtime-protocol";
 import { findProjectRoot } from "@laohuang/project-instructions";
 import { type AgentSession, SessionState, routeHumanIntent } from "@laohuang/session-runtime";
 import { PlainEventSink, PromptCancelledError, PromptEofError, StdTerminalDriver, TerminalUI } from "@laohuang/tui";
@@ -31,56 +22,21 @@ import { createFileToolDefinitions, createReadImageTool } from "@laohuang/tool-f
 import { getHomeDirectory } from "@laohuang/local-paths";
 import { createBashToolDefinition, resolveBashPath } from "@laohuang/tool-bash";
 
-import {
-  SessionCommands,
-  type CommandResult,
-  type QueueStatus,
-} from "./commands.ts";
-import type {
-  CommandPresenter,
-  PromptPresentation,
-} from "./command-presentation.ts";
-import {
-  ModelSelector,
-  type InputFn as PromptFn,
-  type ModelSelection,
-} from "./model-selection.ts";
+import { SessionCommands, type CommandResult, type QueueStatus } from "./commands.ts";
+import type { CommandPresenter, PromptPresentation } from "./command-presentation.ts";
+import { ModelSelector, type InputFn as PromptFn, type ModelSelection } from "./model-selection.ts";
 import { PlainCommandPresenter } from "./plain-command-presenter.ts";
-import {
-  ProviderAuthController,
-  type AuthPromptHandler,
-} from "./provider-auth.ts";
-import {
-  EXCLUDED_PROVIDER_IDS,
-  VERIFIED_PROVIDER_IDS,
-} from "./provider-policy.ts";
+import { ProviderAuthController, type AuthPromptHandler } from "./provider-auth.ts";
+import { EXCLUDED_PROVIDER_IDS, VERIFIED_PROVIDER_IDS } from "./provider-policy.ts";
 import { TerminalCommandPresenter } from "./terminal-command-presenter.ts";
-import {
-  CliUsageError,
-  HELP,
-  UPDATE_HELP,
-  USAGE,
-  parseArgs,
-  type ParseResult,
-} from "./args.ts";
+import { CliUsageError, HELP, UPDATE_HELP, USAGE, parseArgs, type ParseResult } from "./args.ts";
 import { SessionController } from "./session-controller.ts";
 import { createSessionRuntime, type SessionRuntime } from "./create-session-runtime.ts";
 import { createMcpRuntime, type McpRuntime } from "./create-mcp-runtime.ts";
 import { createMcpCommand } from "./mcp-commands.ts";
 import { createSkillRuntime, type SkillRuntime } from "./create-skill-runtime.ts";
 import { createAttachmentRuntime } from "./create-attachment-runtime.ts";
-import {
-  defaultInputFn,
-  defaultSecretInputFn,
-  errorMessage,
-  runPlainSessionRepl,
-  runSessionRepl,
-  runTerminalUi,
-  supportsTerminalUI,
-  type CommandHandler,
-  type InputFn,
-  type OutputFn,
-} from "./repl.ts";
+import { defaultInputFn, defaultSecretInputFn, errorMessage, runPlainSessionRepl, runSessionRepl, runTerminalUi, supportsTerminalUI, type CommandHandler, type InputFn, type OutputFn } from "./repl.ts";
 import { resolveNpmInstallation } from "./update-installation.ts";
 import { runUpdate, updateDiagnostic } from "./update.ts";
 import { copyText, createClipboardRunner } from "./clipboard.ts";
@@ -88,6 +44,7 @@ import { createClipboardPaste } from "./clipboard-paste.ts";
 
 export const VERSION = readPackageVersion();
 
+/** 从 CLI 包的清单读取版本，避免在入口中重复维护版本号。 */
 function readPackageVersion(): string {
   try {
     const packageJsonPath = fileURLToPath(
@@ -102,7 +59,7 @@ function readPackageVersion(): string {
       return (parsed as { version: string }).version;
     }
   } catch {
-    // Fall through to the placeholder when the package manifest is missing.
+    // 清单缺失、读取失败或 JSON 无效时，使用下方的占位版本。
   }
   return "0.0.0";
 }
@@ -111,6 +68,7 @@ function writeStderr(message: string): void {
   process.stderr.write(`${message}\n`);
 }
 
+/** 可注入的环境、存储路径和输入输出，便于测试隔离真实终端与用户配置。 */
 export interface MainOptions {
   environ?: Record<string, string | undefined> | undefined;
   configPath?: string | undefined;
@@ -125,6 +83,7 @@ export interface MainOptions {
   updateFn?: ((signal?: AbortSignal) => Promise<number>) | undefined;
 }
 
+/** 切换到空会话时清除旧消息，并重新显示欢迎内容。 */
 export function resetEmptySessionTranscript(
   terminalUi: Pick<TerminalUI, "replaceTranscript" | "showWelcome"> | null,
 ): void {
@@ -132,7 +91,7 @@ export function resetEmptySessionTranscript(
   terminalUi?.showWelcome();
 }
 
-/** Refresh presentation without running the governor or triggering compaction. */
+/** 仅刷新上下文用量显示，不执行上下文治理或触发压缩。 */
 export function refreshSessionContextUsage(
   terminalUi: Pick<TerminalUI, "setContextUsage"> | null,
   input: BuildContextInput & {
@@ -148,10 +107,12 @@ export function refreshSessionContextUsage(
   );
 }
 
+/** 执行 CLI 并返回退出码；由调用方决定如何退出进程。 */
 export async function main(
   argv?: readonly string[] | null,
   options: MainOptions = {},
 ): Promise<number> {
+  // 先处理参数错误、版本和帮助，避免这些路径依赖配置或模型平台。
   let parsed: ParseResult;
   try {
     parsed = parseArgs(argv ?? process.argv.slice(2));
@@ -178,6 +139,7 @@ export async function main(
     return 0;
   }
   if (parsed.kind === "update") {
+    // 将进程信号转为更新操作的取消信号，并保留对应的退出码。
     const controller = new AbortController();
     let signalExitCode: 130 | 143 | null = null;
     const handleSigint = (): void => {
@@ -219,8 +181,7 @@ export async function main(
   }
   const args = parsed.args;
   const projectRoot = process.cwd();
-  // Instruction loading roots at the nearest .git ancestor; the tool
-  // registry keeps the plain cwd as its root.
+  // 项目指令从最近的 .git 祖先目录加载；文件和命令工具仍以当前工作目录为根。
   const instructionRoot = findProjectRoot(process.cwd(), projectRoot);
   const interactive = supportsTerminalUI({
     inputFn: options.inputFn,
@@ -231,6 +192,7 @@ export async function main(
   const inputFn = options.inputFn ?? defaultInputFn;
   const secretInputFn = options.secretInputFn ?? defaultSecretInputFn;
 
+  // 配置、凭据、模型目录缓存和自定义模型分别存储，默认放在同一配置目录。
   const configPath = options.configPath ?? defaultConfigPath(environ);
   const manager = new ConfigManager(configPath);
   const credentials = new CredentialStore(
@@ -246,6 +208,7 @@ export async function main(
   let attachmentRuntime: ReturnType<typeof createAttachmentRuntime> | undefined;
   try {
     modelPlatform = await createPiAiPlatform({
+      // 附件运行时稍后才创建，通过回调取得届时可用的存储实例。
       attachments: { store: () => attachmentRuntime?.store },
       credentials,
       modelCatalogStore,
@@ -265,6 +228,7 @@ export async function main(
     catalog: modelPlatform.catalog,
     providerAuth,
   });
+  // 启动配置阶段尚未创建 TUI，统一使用普通输入输出完成选择和认证。
   const startupPresenter = new PlainCommandPresenter({
     output: outputFn,
     input: async (prompt) => inputFn(prompt),
@@ -272,6 +236,7 @@ export async function main(
   });
 
   if (args.command === "config") {
+    // 配置子命令：列出配置、切换当前配置，或选择模型并保存指定配置。
     if (args.configAction === "list") {
       let profiles;
       try {
@@ -330,6 +295,7 @@ export async function main(
   }
 
   if (args.command === "doctor") {
+    // 诊断配置、认证状态、模型目录和 Bash 可用性，汇总为诊断退出码。
     let settings;
     try {
       settings = manager.resolveSettings({
@@ -378,6 +344,7 @@ export async function main(
       : 1;
   }
 
+  // 会话启动前解析配置，并确认服务商、认证和模型仍然可用。
   let config: Config;
   let shellPath: string | undefined;
   try {
@@ -399,6 +366,7 @@ export async function main(
         return 2;
       }
       if (typeof validation === "string") {
+        // 仅在交互终端且未显式覆盖模型时，引导用户修复失效的已存配置。
         const canRecover = (options.stdin ?? process.stdin).isTTY === true
           && (options.stdout ?? process.stdout).isTTY === true
           && !args.model && !environ["LAOHUANG_MODEL"];
@@ -415,6 +383,8 @@ export async function main(
           outputFn("Configuration cancelled.");
           return 0;
         }
+        // 同一服务商保留原有地址；切换服务商时使用新选择的地址。
+        // 持久化配置与本次运行的参数、环境变量覆盖分别处理。
         const saved = manager.resolve({ environ: {}, profile: config.profile });
         const baseUrl = selection.config.provider === saved.provider ? saved.baseUrl : selection.config.baseUrl;
         manager.configure({
@@ -425,6 +395,7 @@ export async function main(
         outputFn(`Saved profile '${config.profile}' to ${configPath}`);
       }
     } else {
+      // 尚无配置文件时完成首次选择，并写入 default 配置。
       const selection = await runInitialModelSelection({
         selector,
         presenter: startupPresenter,
@@ -452,8 +423,7 @@ export async function main(
     return 2;
   }
 
-  // The interactive UI is constructed only once configuration is known; its
-  // provider/model are read-only in TS.
+  // 配置确定后再准备界面和会话资源，保证初始模型信息一致。
   let terminalUi: TerminalUI | null = null;
   const clipboardPaste = createClipboardPaste({ platform: process.platform, env: environ });
   let terminalDriver: StdTerminalDriver | null = null;
@@ -476,11 +446,13 @@ export async function main(
   let mcpRuntime: McpRuntime | undefined;
   let skillRuntime: SkillRuntime | undefined;
   let skillDraft: string | undefined;
+  // 保存已成功创建的资源，确保初始化中途失败时也能进入统一清理流程。
   let runtimeForCleanup: AgentSession | undefined;
   let composedForCleanup: SessionRuntime | undefined;
   const unsubscribers: Array<() => void> = [];
   try {
     try {
+      // 优先恢复指定会话，其次继续最近会话，否则创建新会话。
       if (args.resumeSessionId !== null) {
         await sessionController.resume(args.resumeSessionId);
       } else if (args.continueSession) {
@@ -509,6 +481,7 @@ export async function main(
       terminalUi.state.model = config.model;
     }
 
+    // 先加载技能，再将技能工具与图片、文件、Bash 工具装入同一注册表。
     skillRuntime = await createSkillRuntime({ configPath, projectRoot: instructionRoot,
       home: getHomeDirectory({ env: environ }), report: message => {
         if (runtimeForCleanup) runtimeForCleanup.publishNotice(message);
@@ -518,6 +491,7 @@ export async function main(
       createReadImageTool({ store: attachmentRuntime.store, projectRoot,
         pathOptions: { env: environ, shellPath: () => resolveBashPath({ shellPath, env: environ }) },
         resolveReference: id => {
+          // 从当前会话历史解析图片引用，使恢复会话中的附件仍可被读取。
           for (const entry of sessionController.history?.entries() ?? []) {
             if (!("message" in entry.payload) || !("attachments" in entry.payload.message)) continue;
             for (const block of entry.payload.message.attachments ?? []) if (block.type === "image" && block.ref.id === id) return block.ref;
@@ -532,6 +506,7 @@ export async function main(
       } }),
       createBashToolDefinition({ projectRoot, shellPath, env: environ }),
     ]);
+    // 命令对象依赖会话运行时，因此先注入转发回调，待命令装配完成后再绑定。
     let commandDispatcher: CommandHandler | undefined;
     let runtimeInitialized = false;
     const composedRuntime = createSessionRuntime({
@@ -542,6 +517,7 @@ export async function main(
       tools: toolRegistry,
       skills: skillRuntime.session,
       skillInputFailed: (input) => {
+        // 技能输入失败时保留原文：TUI 回填编辑器，纯文本模式允许空行重试。
         terminalUi?.setComposerText(input);
         if (!terminalUi) {
           skillDraft = input;
@@ -560,6 +536,7 @@ export async function main(
           if (transcript.length > 0) {
             terminalUi?.replaceTranscript(transcript);
           } else if (runtimeInitialized) {
+            // 初始化期间不重复显示欢迎内容；后续切换到空历史时才重置界面。
             resetEmptySessionTranscript(terminalUi);
           }
         },
@@ -580,10 +557,8 @@ export async function main(
     if (plainSink !== null) {
       const underlyingInput = inputFn;
       const underlyingSecretInput = secretInputFn;
-      // Setup/command prompts go through the event pipeline in plain mode so
-      // they interleave with task output. The Python original also flushed the
-      // bus here; TS delivery is microtask-driven and catches up at the next
-      // await.
+      // 纯文本模式的提问通过事件管线输出，与任务消息共享输出通道。
+      // 底层输入函数接收空提示，避免重复打印；事件投递由微任务推进。
       const plainInput = async (prompt: string): Promise<string> => {
         if (prompt) {
           runtime.publishNotice(prompt);
@@ -611,12 +586,14 @@ export async function main(
     const refreshContextUsage = (): void => composedRuntime.refreshContextUsage();
     refreshContextUsage();
 
+    // MCP 与内置工具共用注册表，工具变化时同步刷新上下文用量。
     mcpRuntime = await createMcpRuntime({ configPath, projectRoot, version: VERSION, registry: toolRegistry,
       presenter: commandPresenter, env: environ, toolsChanged: refreshContextUsage });
 
     const refreshSessionView = (): void => composedRuntime.refreshSession();
 
     const clipboardRunner = createClipboardRunner(environ);
+    // 装配会话命令，将模型选择、会话切换和剪贴板操作接入当前运行时与界面。
     const commands = new SessionCommands({
       agent,
       selector,
@@ -647,6 +624,7 @@ export async function main(
       onSessionChanged: refreshSessionView,
       homeDirectory: getHomeDirectory({ env: environ }),
       onModelSelected: (selection) => {
+        // 模型切换同时更新运行时路由、本地配置快照、界面能力和上下文用量。
         composedRuntime.switchModel({
           provider: selection.config.provider,
           model: selection.config.model,
@@ -674,6 +652,7 @@ export async function main(
 
     commands.registry.register(createMcpCommand(mcpRuntime, commandPresenter));
     await skillRuntime.attachCommands(commands.registry);
+    // 将运行时事件投影为终端事件，交给 TUI 或纯文本输出器显示。
     const projector = new EventProjector();
     unsubscribers.push(
       runtime.eventBus.subscribe((event) => {
@@ -689,6 +668,7 @@ export async function main(
     if (terminalUi !== null) {
       terminalUi.setCommandRegistry(commands.registry);
       terminalUi.setCancelCallback(() => {
+        // 取消键优先关闭 MCP 授权交互，否则按当前会话状态路由取消意图。
         if (mcpRuntime?.cancelAuthorization()) return;
         const action = routeHumanIntent(
           makeCancelIntent("keyboard", "editor"),
@@ -719,6 +699,7 @@ export async function main(
     };
     commandDispatcher = handleCommand;
 
+    // 按终端能力选择输入循环；循环启动后再启动 MCP，以便呈现授权提示。
     let cleanShutdown = false;
     const startMcp = () => { void mcpRuntime?.start().catch(() => commandPresenter.notice({ text: "MCP startup failed", tone: "error" })); };
     if (terminalUi !== null && terminalDriver !== null) {
@@ -747,12 +728,15 @@ export async function main(
       startMcp();
       cleanShutdown = await running;
     }
+    // 渲染失败需要作为错误上报，不能当作用户正常退出。
     const renderError = terminalUi?.renderError ?? null;
     if (renderError !== null) {
       throw new Error(`Terminal rendering failed: ${errorMessage(renderError)}`, { cause: renderError });
     }
     return cleanShutdown ? 0 : 1;
   } finally {
+    // 先取消授权并停止任务，再退订事件、关闭 MCP、技能及会话等资源。
+    // 嵌套 finally 确保某一步关闭失败后，后续资源仍会尝试释放。
     mcpRuntime?.cancelAuthorization();
     try { if (runtimeForCleanup && runtimeForCleanup.state !== SessionState.Stopped) await runtimeForCleanup.close({ wait: true, timeoutMs: 10_000 }); }
     finally {
@@ -774,10 +758,12 @@ export async function main(
   }
 }
 
+/** 会话数据默认保存在用户目录下的 .laohuang/sessions。 */
 function defaultSessionsRoot(environ: Record<string, string | undefined>): string {
   return join(getHomeDirectory({ env: environ }), ".laohuang", "sessions");
 }
 
+/** 补齐服务商和模型选择，完成所需认证；用户取消选择时返回 null。 */
 export async function runInitialModelSelection(options: {
   readonly selector: ModelSelector;
   readonly presenter: PlainCommandPresenter;
@@ -842,6 +828,7 @@ export async function runInitialModelSelection(options: {
   });
 }
 
+/** 返回 true 表示可用，false 表示认证未完成，字符串表示服务商或模型失效。 */
 async function validateConfiguredSelection(options: {
   readonly config: Config;
   readonly catalog: ModelCatalog;
@@ -870,6 +857,7 @@ async function validateConfiguredSelection(options: {
   return true;
 }
 
+/** 将认证层的提问格式转换为命令展示层的统一提示格式。 */
 function presenterAuthPrompts(
   presenter: CommandPresenter,
   provider: string,
