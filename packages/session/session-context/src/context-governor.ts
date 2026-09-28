@@ -88,6 +88,8 @@ export class ContextBudgetError extends Error {
   }
 }
 
+class NoCompactionAvailableError extends Error {}
+
 export class ContextGovernor {
   readonly #builder: ContextBuilder;
   readonly #estimator: TokenEstimator;
@@ -109,7 +111,16 @@ export class ContextGovernor {
       if (tokens > calculated.hardInputLimit) throw new ContextBudgetError("context exceeds hard input limit");
       return { built, messages: built.messages, compacted: false, tokens };
     }
-    const result = await this.compact({ ...input, trigger: "automatic" });
+    let result: CompactionResult;
+    try {
+      result = await this.compact({ ...input, trigger: "automatic" });
+    } catch (error) {
+      if (!(error instanceof NoCompactionAvailableError)) throw error;
+      if (tokens > calculated.hardInputLimit) {
+        throw new ContextBudgetError("context exceeds hard input limit with no earlier messages to compact");
+      }
+      return { built, messages: built.messages, compacted: false, tokens };
+    }
     const entries = [...input.entries, result.entry];
     built = this.#builder.build({ ...input, entries });
     tokens = this.measure({ ...input, entries }, built);
@@ -121,9 +132,19 @@ export class ContextGovernor {
 
   async compact(input: ManualCompactionInput): Promise<CompactionResult> {
     const calculated = calculateModelBudget({ budget: input.budget, policy: input.policy });
+    const built = this.#builder.build(input);
+    const activeCompaction = input.entries.find((entry): entry is CompactionEntry =>
+      entry.id === built.activeCompactionId && entry.entryType === "compaction"
+    );
+    const activeSourceEntryIds = new Set(built.sourceEntryIds);
+    const projectedEntries = activeCompaction === undefined
+      ? input.entries
+      : input.entries.filter((entry) =>
+          entry.id !== activeCompaction.id && activeSourceEntryIds.has(entry.id)
+        );
     const plan = selectCompactionPlan({
       protectedFromSeq: input.protectedFromSeq,
-      entries: input.entries,
+      entries: projectedEntries,
       // A search preflight reserves the pending call/result/definition unit.
       // Keep the latest completed unit and summarize older units to make room.
       retainTokens: input.reserveTokens === undefined ? calculated.retainTokens : 1,
@@ -134,24 +155,18 @@ export class ContextGovernor {
       if (input.trigger === "provider_overflow") {
         throw new ContextBudgetError("No earlier messages to compact after provider overflow.");
       }
+      throw new NoCompactionAvailableError();
     }
-    const summarizedFromSeq = plan.summarizedEntries[0]?.seq ?? 1;
-    const summarizedThroughSeq = plan.summarizedEntries.at(-1)?.seq ?? Math.max(0, summarizedFromSeq - 1);
-    const built = this.#builder.build(input);
-    const activeCompaction = input.entries.find(entry => entry.id === built.activeCompactionId);
+    const summarizedFromSeq = activeCompaction?.payload.summarizedFromSeq ?? plan.summarizedEntries[0]?.seq ?? 1;
+    const summarizedThroughSeq = plan.summarizedEntries.at(-1)?.seq ??
+      activeCompaction?.payload.summarizedThroughSeq ?? Math.max(0, summarizedFromSeq - 1);
     const messagesBefore = built.messages;
     const tokensBefore = this.#estimator.estimateMessages(messagesBefore)
       + this.#estimator.estimateTools(input.projectTools?.(messagesBefore) ?? input.tools);
-    const summary = plan.summarizedEntries.length === 0
-      ? {
-          summary: "No prior conversation needed compaction.",
-          inputTokens: 0,
-          outputTokens: 0,
-        }
-      : await this.#summarize({
-          serialized: serializeConversation(plan.summarizedEntries),
-          maxSummaryTokens: input.policy.maxSummaryTokens,
-        });
+    const summary = await this.#summarize({
+      serialized: serializeCompactionInput(activeCompaction?.payload.summary, plan.summarizedEntries),
+      maxSummaryTokens: input.policy.maxSummaryTokens,
+    });
     const payload: CompactionPayload = {
       summary: summary.summary,
       summarizedFromSeq,
@@ -208,6 +223,15 @@ export class ContextGovernor {
       toolsFingerprint: fingerprintContextPart(tools),
     }).totalTokens + (input.reserveTokens ?? 0);
   }
+}
+
+function serializeCompactionInput(
+  previousSummary: string | undefined,
+  entries: readonly SessionEntry[],
+): string {
+  const conversation = serializeConversation(entries);
+  if (previousSummary === undefined) return conversation;
+  return `<previous_summary>\n${previousSummary}\n</previous_summary>\n${conversation}`;
 }
 
 export function calculateModelBudget(input: {

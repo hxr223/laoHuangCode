@@ -206,7 +206,7 @@ test("context governor keeps old context if summary fails and supersedes old che
     entries: [
       ...entries,
       {
-        ...base(3),
+        ...base(4),
         entryType: "compaction",
         payload: {
           summary: "old",
@@ -230,7 +230,118 @@ test("context governor keeps old context if summary fails and supersedes old che
     policy: { ...defaultPolicy(), retainTokens: 1 },
     trigger: "manual",
   });
-  assert.equal(result.entry.payload.supersedesCompactionId, "e3");
+  assert.equal(result.entry.payload.supersedesCompactionId, "e4");
+});
+
+test("a second compaction summarizes the active projection and carries the previous summary forward", async () => {
+  let serialized = "";
+  const governor = new ContextGovernor({
+    summarize: async (input) => {
+      serialized = input.serialized;
+      return { summary: "next summary", inputTokens: 20, outputTokens: 3 };
+    },
+    appendCompaction: (payload) => ({
+      ...base(7),
+      entryType: "compaction",
+      payload,
+    }) as SessionEntry,
+  });
+  const previousCompaction = {
+    ...base(5),
+    entryType: "compaction",
+    payload: {
+      summary: "previous summary",
+      summarizedFromSeq: 2,
+      summarizedThroughSeq: 2,
+      retainedFromSeq: 3,
+      tokensBefore: 80,
+      retainedTokens: 20,
+      summaryInputTokens: 10,
+      summaryOutputTokens: 2,
+      provider: "pi-ai",
+      model: "gpt-test",
+      trigger: "automatic",
+    },
+  } as SessionEntry;
+
+  const result = await governor.compact({
+    entries: [
+      system(1, "system"),
+      user(2, "already represented by the previous summary"),
+      user(3, `previously retained and now old ${"a".repeat(100)}`),
+      user(4, `previously retained tail ${"b".repeat(100)}`),
+      previousCompaction,
+      user(6, `latest message ${"c".repeat(100)}`),
+    ],
+    currentProvider: "pi-ai",
+    currentModel: "gpt-test",
+    tools: [],
+    budget: { contextWindow: 1_000, maxOutputTokens: 100 },
+    policy: { ...defaultPolicy(), retainTokens: 20 },
+    trigger: "provider_overflow",
+  });
+
+  assert.match(serialized, /previous summary/);
+  assert.match(serialized, /previously retained and now old/);
+  assert.doesNotMatch(serialized, /already represented by the previous summary/);
+  assert.doesNotMatch(serialized, /latest message/);
+  assert.equal(result.entry.payload.summarizedFromSeq, 2);
+  assert.equal(result.entry.payload.summarizedThroughSeq, 4);
+  assert.equal(result.entry.payload.retainedFromSeq, 6);
+  assert.equal(result.entry.payload.retainedTokens, 20);
+  assert.equal(result.entry.payload.supersedesCompactionId, "e5");
+});
+
+test("automatic compaction keeps the active projection when nothing else can be summarized", async () => {
+  let summaries = 0;
+  let compactions = 0;
+  const governor = new ContextGovernor({
+    summarize: async () => {
+      summaries++;
+      return { summary: "unused", inputTokens: 1, outputTokens: 1 };
+    },
+    appendCompaction: (payload) => {
+      compactions++;
+      return { ...base(5), entryType: "compaction", payload } as SessionEntry;
+    },
+  });
+
+  const prepared = await governor.prepare({
+    entries: [
+      system(1, "system"),
+      user(2, "already summarized"),
+      user(3, "only retained message"),
+      {
+        ...base(4),
+        entryType: "compaction",
+        payload: {
+          summary: "previous summary",
+          summarizedFromSeq: 2,
+          summarizedThroughSeq: 2,
+          retainedFromSeq: 3,
+          tokensBefore: 50,
+          retainedTokens: 20,
+          summaryInputTokens: 10,
+          summaryOutputTokens: 2,
+          provider: "pi-ai",
+          model: "gpt-test",
+          trigger: "automatic",
+        },
+      } as SessionEntry,
+    ],
+    currentProvider: "pi-ai",
+    currentModel: "gpt-test",
+    tools: [],
+    budget: { contextWindow: 100, maxOutputTokens: 20 },
+    policy: { ...defaultPolicy(), thresholdRatio: 0.1, retainTokens: 20 },
+  });
+
+  assert.equal(prepared.compacted, false);
+  assert.ok(prepared.messages.some((message) =>
+    message.role === "user" && message.content === "<conversation_summary>\nprevious summary\n</conversation_summary>"
+  ));
+  assert.equal(summaries, 0);
+  assert.equal(compactions, 0);
 });
 
 test("context governor forces provider-overflow compaction and retries only once", async () => {
@@ -289,6 +400,56 @@ test("provider overflow without earlier messages does not write a no-op checkpoi
       tools: [],
       budget: { contextWindow: 1_000, maxOutputTokens: 100 },
       policy: defaultPolicy(),
+    }),
+    /No earlier messages to compact after provider overflow/,
+  );
+  assert.equal(summaries, 0);
+  assert.equal(compactions, 0);
+});
+
+test("provider overflow after compaction stops when the active projection has nothing else to summarize", async () => {
+  let summaries = 0;
+  let compactions = 0;
+  const governor = new ContextGovernor({
+    summarize: async () => {
+      summaries++;
+      return { summary: "unused", inputTokens: 1, outputTokens: 1 };
+    },
+    appendCompaction: (payload) => {
+      compactions++;
+      return { ...base(5), entryType: "compaction", payload } as SessionEntry;
+    },
+  });
+
+  await assert.rejects(
+    governor.recoverAfterOverflow({
+      entries: [
+        system(1, "system"),
+        user(2, "already summarized"),
+        user(3, "only retained message"),
+        {
+          ...base(4),
+          entryType: "compaction",
+          payload: {
+            summary: "previous summary",
+            summarizedFromSeq: 2,
+            summarizedThroughSeq: 2,
+            retainedFromSeq: 3,
+            tokensBefore: 50,
+            retainedTokens: 20,
+            summaryInputTokens: 10,
+            summaryOutputTokens: 2,
+            provider: "pi-ai",
+            model: "gpt-test",
+            trigger: "automatic",
+          },
+        } as SessionEntry,
+      ],
+      currentProvider: "pi-ai",
+      currentModel: "gpt-test",
+      tools: [],
+      budget: { contextWindow: 1_000, maxOutputTokens: 100 },
+      policy: { ...defaultPolicy(), retainTokens: 20 },
     }),
     /No earlier messages to compact after provider overflow/,
   );
