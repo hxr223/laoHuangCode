@@ -204,6 +204,25 @@ export function createSessionRuntime(
           hardInputLimit: selectedModel.contextWindow - selectedModel.maxTokens,
         };
       },
+      recoverAfterOverflow: async ({ tools, projectTools }) => {
+        const history = activeHistory(options.sessionController);
+        const prepared = await createGovernor(history).recoverAfterOverflow({
+          protectedFromSeq: attachmentTurnStart,
+          entries: history.entries(),
+          currentProvider: route.provider,
+          currentModel: route.model,
+          tools,
+          projectTools,
+          budget: modelBudget(selectedModel),
+          policy: defaultContextPolicy(),
+        });
+        return {
+          messages: prepared.messages,
+          contextTokens: prepared.tokens,
+          contextWindow: selectedModel.contextWindow,
+          hardInputLimit: selectedModel.contextWindow - selectedModel.maxTokens,
+        };
+      },
     },
   });
   const classifier = new SmallModelSemanticClassifier({

@@ -13,11 +13,12 @@ import type {
 } from "@laohuang/llm";
 import {
   AgentStepRunner,
+  type AgentContextGovernor,
   type AgentStepRunnerContext,
 } from "../packages/core/agent-runtime/src/core/agent-step-runner.ts";
 import { HistoryCommitter, type ConversationHistoryLike } from "../packages/core/agent-runtime/src/core/history-committer.ts";
 import { RepeatToolPolicy } from "../packages/core/agent-runtime/src/core/repeat-tool-policy.ts";
-import { ModelRuntime } from "@laohuang/llm";
+import { ModelError, ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
 
 class TestCancelToken {
@@ -91,18 +92,7 @@ function createRunner(options: {
   messages: ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
   adapter: ModelAdapter;
   context?: AgentStepRunnerContext | null;
-  contextGovernor?: {
-    prepare(input: {
-      messages: readonly ModelRequest["messages"][number][];
-      tools: readonly unknown[];
-      provider: string;
-      model: string;
-    }): Promise<{
-      messages: readonly ModelRequest["messages"][number][];
-      contextTokens?: number;
-      contextWindow?: number;
-    }>;
-  } | null;
+  contextGovernor?: AgentContextGovernor | null;
   executeTool?: () => Promise<ToolResult>;
   getReasoningEffort?: () => ReasoningEffort;
   emit?: (eventType: string, payload: Record<string, unknown>) => void;
@@ -341,3 +331,45 @@ test("usage is persisted only after the assistant commit succeeds", async () => 
     }
   }
 });
+
+for (const scenario of [
+  { name: "a second overflow", kind: "context_overflow", hadDelta: false, expectedCalls: 2, expectedRecoveries: 1 },
+  { name: "output has started", kind: "context_overflow", hadDelta: true, expectedCalls: 1, expectedRecoveries: 0 },
+  { name: "the error is unrelated", kind: "authentication", hadDelta: false, expectedCalls: 1, expectedRecoveries: 0 },
+] as const) {
+  test(`overflow recovery stops when ${scenario.name}`, async () => {
+    const messages = [{ role: "system", content: "system" }] as ModelRequest["messages"] extends readonly (infer T)[] ? T[] : never;
+    const requests: ModelRequest[] = [];
+    const events: string[] = [];
+    let recoveries = 0;
+    const runner = createRunner({
+      messages,
+      adapter: {
+        name: "failing-model",
+        async runAttempt(request) {
+          requests.push(request);
+          throw new ModelError("request rejected", { kind: scenario.kind, hadDelta: scenario.hadDelta });
+        },
+      },
+      contextGovernor: {
+        async prepare(input) { return { messages: input.messages }; },
+        async recoverAfterOverflow() {
+          recoveries++;
+          return { messages: [{ role: "user", content: "recovered context" }] };
+        },
+      },
+      emit: (kind) => events.push(kind),
+    });
+
+    await assert.rejects(runner.run(), /Model request failed: request rejected/);
+    assert.equal(requests.length, scenario.expectedCalls);
+    assert.equal(recoveries, scenario.expectedRecoveries);
+    assert.equal(events.filter((kind) => kind === "model_retry_scheduled").length, scenario.expectedRecoveries);
+    assert.equal(events.filter((kind) => kind === "model_request").length, scenario.expectedCalls);
+    assert.equal(messages.some((message) => message.role === "assistant"), false);
+    if (scenario.expectedRecoveries === 1) {
+      assert.notEqual(requests[0]?.requestId, requests[1]?.requestId);
+      assert.deepEqual(requests[1]?.messages, [{ role: "user", content: "recovered context" }]);
+    }
+  });
+}

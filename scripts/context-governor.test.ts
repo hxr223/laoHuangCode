@@ -246,12 +246,12 @@ test("context governor forces provider-overflow compaction and retries only once
   await assert.rejects(
     governor.completeWithOverflowRecovery(
       {
-        entries: [system(1, "system"), user(2, "hello")],
+        entries: [system(1, "system"), user(2, "old"), user(3, "hello")],
         currentProvider: "pi-ai",
         currentModel: "gpt-test",
         tools: [],
         budget: { contextWindow: 1_000, maxOutputTokens: 100 },
-        policy: defaultPolicy(),
+        policy: { ...defaultPolicy(), retainTokens: 1 },
       },
       async () => {
         calls += 1;
@@ -265,6 +265,35 @@ test("context governor forces provider-overflow compaction and retries only once
   );
   assert.equal(calls, 2);
   assert.equal(compactions, 1);
+});
+
+test("provider overflow without earlier messages does not write a no-op checkpoint", async () => {
+  let summaries = 0;
+  let compactions = 0;
+  const governor = new ContextGovernor({
+    summarize: async () => {
+      summaries++;
+      return { summary: "unused", inputTokens: 1, outputTokens: 1 };
+    },
+    appendCompaction: (payload) => {
+      compactions++;
+      return { ...base(3), entryType: "compaction", payload } as SessionEntry;
+    },
+  });
+
+  await assert.rejects(
+    governor.recoverAfterOverflow({
+      entries: [system(1, "system"), user(2, "current")],
+      currentProvider: "pi-ai",
+      currentModel: "gpt-test",
+      tools: [],
+      budget: { contextWindow: 1_000, maxOutputTokens: 100 },
+      policy: defaultPolicy(),
+    }),
+    /No earlier messages to compact after provider overflow/,
+  );
+  assert.equal(summaries, 0);
+  assert.equal(compactions, 0);
 });
 
 function defaultPolicy() {
