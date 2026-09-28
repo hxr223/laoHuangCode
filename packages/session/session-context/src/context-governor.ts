@@ -129,8 +129,11 @@ export class ContextGovernor {
       retainTokens: input.reserveTokens === undefined ? calculated.retainTokens : 1,
       estimator: this.#estimator,
     });
-    if (input.trigger === "manual" && plan.summarizedEntries.length === 0) {
-      throw new Error("No messages to compact in current history.");
+    if (plan.summarizedEntries.length === 0) {
+      if (input.trigger === "manual") throw new Error("No messages to compact in current history.");
+      if (input.trigger === "provider_overflow") {
+        throw new ContextBudgetError("No earlier messages to compact after provider overflow.");
+      }
     }
     const summarizedFromSeq = plan.summarizedEntries[0]?.seq ?? 1;
     const summarizedThroughSeq = plan.summarizedEntries.at(-1)?.seq ?? Math.max(0, summarizedFromSeq - 1);
@@ -178,9 +181,13 @@ export class ContextGovernor {
         throw error;
       }
     }
-    const compaction = await this.compact({ ...input, trigger: "provider_overflow" });
-    prepared = await this.prepare({ ...input, entries: [...input.entries, compaction.entry] });
+    prepared = await this.recoverAfterOverflow(input);
     return await send(prepared);
+  }
+
+  async recoverAfterOverflow(input: PrepareContextInput): Promise<PreparedContext> {
+    const compaction = await this.compact({ ...input, trigger: "provider_overflow" });
+    return this.prepare({ ...input, entries: [...input.entries, compaction.entry] });
   }
 
   private measure(input: PrepareContextInput, built: BuiltContext): number {

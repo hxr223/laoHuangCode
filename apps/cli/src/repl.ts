@@ -1,6 +1,5 @@
 /** REPL and terminal-loop helpers for the laohuang CLI. */
 
-import { AgentError } from "@laohuang/agent-runtime";
 import {
   makeFollowUpIntent,
   makePromptIntent,
@@ -24,12 +23,10 @@ import {
   type SubmitOptions,
 } from "@laohuang/tui";
 
-import type { InputFn as PromptFn } from "./model-selection.ts";
 import type { CommandPresenter } from "./command-presentation.ts";
 import { StdinPrompts } from "./stdin-prompts.ts";
 
-// REPL-facing input stays liberal (sync or async); the model selector and
-// session commands require the stricter async `PromptFn` contract.
+// REPL-facing input accepts either synchronous or asynchronous implementations.
 export type InputFn = (prompt: string) => string | Promise<string>;
 export type OutputFn = (message: string) => void;
 
@@ -94,133 +91,6 @@ export function supportsTerminalUI(options: TerminalSupportOptions = {}): boolea
 }
 
 // ---------------------------------------------------------------------------
-// Legacy single-agent REPL (mirrors Python cli.run_repl)
-// ---------------------------------------------------------------------------
-
-export interface ReplAgentLike {
-  run(text: string): string | Promise<string>;
-}
-
-export interface ReplUiLike {
-  showWelcome(): void;
-  prompt(): string | Promise<string>;
-  showGoodbye(): void;
-  showInterrupted(options?: { operation?: boolean }): void;
-  showError(message: string): void;
-  showAssistant(response: string): void;
-  write(message: string): void;
-  thinking?(): { close(): void } | null;
-}
-
-export async function runRepl(
-  agent: ReplAgentLike,
-  options: {
-    commandHandler?: ((command: string) => boolean | Promise<boolean>) | undefined;
-    inputFn?: ((prompt: string) => string | Promise<string>) | undefined;
-    outputFn?: OutputFn | undefined;
-    ui?: ReplUiLike | undefined;
-  } = {},
-): Promise<void> {
-  const inputFn = options.inputFn ?? defaultInputFn;
-  const outputFn = options.outputFn ?? ((message) => console.log(message));
-  const ui = options.ui ?? null;
-
-  if (ui !== null) {
-    ui.showWelcome();
-  } else {
-    outputFn("laoHuangCode is ready. Type /help for commands or /exit to quit.");
-  }
-
-  for (;;) {
-    let userInput: string;
-    try {
-      userInput = (await (ui !== null ? ui.prompt() : inputFn("\nyou> "))).trim();
-    } catch (error) {
-      if (isEofError(error)) {
-        if (ui !== null) {
-          ui.showGoodbye();
-        } else {
-          outputFn("\nGoodbye.");
-        }
-        return;
-      }
-      if (isInterruptedError(error)) {
-        if (ui !== null) {
-          ui.showInterrupted();
-        } else {
-          outputFn("\nInterrupted. Type /exit to quit.");
-        }
-        continue;
-      }
-      throw error;
-    }
-
-    if (userInput === "/exit") {
-      if (ui !== null) {
-        ui.showGoodbye();
-      } else {
-        outputFn("Goodbye.");
-      }
-      return;
-    }
-    if (!userInput) {
-      continue;
-    }
-    if (userInput.startsWith("/")) {
-      if (
-        options.commandHandler !== undefined &&
-        (await options.commandHandler(userInput))
-      ) {
-        continue;
-      }
-      const message = `Unknown command: ${userInput.split(/\s/)[0] ?? userInput}`;
-      if (ui !== null) {
-        ui.write(message);
-      } else {
-        outputFn(message);
-      }
-      continue;
-    }
-
-    let response: string;
-    try {
-      if (ui !== null && typeof ui.thinking === "function") {
-        const thinking = ui.thinking();
-        try {
-          response = await agent.run(userInput);
-        } finally {
-          thinking?.close();
-        }
-      } else {
-        response = await agent.run(userInput);
-      }
-    } catch (error) {
-      if (error instanceof AgentError) {
-        if (ui !== null) {
-          ui.showError(error.message);
-        } else {
-          outputFn(`\nError: ${error.message}`);
-        }
-      } else if (isInterruptedError(error)) {
-        if (ui !== null) {
-          ui.showInterrupted({ operation: true });
-        } else {
-          outputFn("\nOperation interrupted.");
-        }
-      } else {
-        throw error;
-      }
-      continue;
-    }
-    if (ui !== null) {
-      ui.showAssistant(response);
-    } else {
-      outputFn(`\nlaoHuangCode> ${response}`);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Session REPLs (mirrors Python cli.run_session_repl / run_plain_session_repl)
 // ---------------------------------------------------------------------------
 
@@ -239,13 +109,9 @@ export interface SessionReplSession {
 export interface SessionUiLike {
   renderError?: unknown;
   showWelcome?(): void;
-  showGoodbye?(): void;
-  prompt?: unknown;
   run?(onSubmit: (text: string, options?: SubmitOptions) => void): void | Promise<void>;
   requestExit?(): void;
   close?(): void;
-  startEventRenderer?(): void;
-  stopEventRenderer?(): void;
   flushEventRenderer?(): void;
 }
 
@@ -397,73 +263,7 @@ export async function runSessionRepl(
     runUi?: ((onSubmit: (text: string, options?: SubmitOptions) => void) => void | Promise<void>) | undefined;
   },
 ): Promise<boolean> {
-  if (options.runUi !== undefined || typeof options.ui.run === "function") {
-    return runPersistentSessionRepl(session, options);
-  }
-  return runClassicSessionRepl(session, options);
-}
-
-async function runClassicSessionRepl(
-  session: SessionReplSession,
-  options: {
-    commandHandler?: CommandHandler | undefined;
-    presenter: CommandPresenter;
-    suggestCommand: CommandSuggester;
-    ui: SessionUiLike;
-  },
-): Promise<boolean> {
-  const { commandHandler, presenter, suggestCommand, ui } = options;
-  ui.startEventRenderer?.();
-  ui.showWelcome?.();
-  let cleanShutdown = false;
-  try {
-    for (;;) {
-      let userInput: string;
-      try {
-        const prompt = ui.prompt;
-        if (typeof prompt !== "function") {
-          throw new Error("Classic session UI requires a prompt function.");
-        }
-        userInput = await (prompt as (this: SessionUiLike) => string | Promise<string>).call(ui);
-        if (!/^\s*\/skill:/.test(userInput)) userInput = userInput.trim();
-      } catch (error) {
-        if (isEofError(error)) {
-          break;
-        }
-        if (isInterruptedError(error)) {
-          presentNotice(presenter, "Interrupted.", "warning");
-          continue;
-        }
-        throw error;
-      }
-      const keepGoing = await handleSessionInput(
-        session,
-        commandHandler,
-        presenter,
-        suggestCommand,
-        userInput,
-      );
-      if (!keepGoing) {
-        break;
-      }
-    }
-  } finally {
-    cleanShutdown = await session.close({ wait: true, timeoutMs: 10_000 });
-    if (cleanShutdown) {
-      await session.eventBus.flush();
-      ui.flushEventRenderer?.();
-    }
-    ui.stopEventRenderer?.();
-  }
-  if (cleanShutdown) {
-    ui.showGoodbye?.();
-  } else {
-    presenter.notice({
-      text: "Task worker did not stop before the shutdown timeout.",
-      tone: "error",
-    });
-  }
-  return cleanShutdown;
+  return runPersistentSessionRepl(session, options);
 }
 
 interface Coordinator {
@@ -766,20 +566,4 @@ export async function runTerminalUi(
   // the CLI starts the loop itself with the driver's stdin stream.
   loop.start(onSubmit);
   await loop.run(driver.inputStream as unknown as LoopInputSource);
-}
-
-/**
- * Route setup/command questions through the running terminal UI loop
- * (mirrors the Python original's `input_fn = terminal_ui.prompt` and
- * `session_secret_input_fn = terminal_ui.prompt_secret`). The loop's ask()
- * coordinates the question with its editor, so no pause/resume is needed —
- * and nothing reads fd 0 behind the driver's raw-mode stream.
- */
-export function terminalUiPrompts(
-  ui: Pick<TerminalUI, "prompt" | "promptSecret">,
-): { input: PromptFn; secretInput: PromptFn } {
-  return {
-    input: (prompt) => ui.prompt(prompt),
-    secretInput: (prompt) => ui.promptSecret(prompt),
-  };
 }

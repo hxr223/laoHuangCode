@@ -3,11 +3,13 @@ import { randomUUID } from "node:crypto";
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import {
   ModelRuntime,
+  ModelError,
   ModelStreamCancelled,
   ModelStreamError,
   modelErrorKind,
   type AssistantModelMessage,
   type ModelMessage,
+  type ModelResult,
   type ReasoningEffort,
   type ModelUsage,
   type TextContentBlock,
@@ -39,21 +41,26 @@ export interface AgentStepRunnerContext extends HistoryCommitContext {
   safePoint?(): PendingInputBatchLike | null | undefined;
 }
 
+export interface AgentContextRequest {
+  readonly messages: readonly ModelMessage[];
+  readonly tools: readonly ToolSpec[];
+  readonly provider: string;
+  readonly model: string;
+  readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
+  readonly reserveTokens?: number;
+  readonly pendingToolCall?: boolean;
+}
+
+export interface AgentPreparedContext {
+  readonly messages: readonly ModelMessage[];
+  readonly contextTokens?: number;
+  readonly contextWindow?: number;
+  readonly hardInputLimit?: number;
+}
+
 export interface AgentContextGovernor {
-  prepare(input: {
-    readonly messages: readonly ModelMessage[];
-    readonly tools: readonly ToolSpec[];
-    readonly provider: string;
-    readonly model: string;
-    readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
-    readonly reserveTokens?: number;
-    readonly pendingToolCall?: boolean;
-  }): Promise<{
-    readonly messages: readonly ModelMessage[];
-    readonly contextTokens?: number;
-    readonly contextWindow?: number;
-    readonly hardInputLimit?: number;
-  }>;
+  prepare(input: AgentContextRequest): Promise<AgentPreparedContext>;
+  recoverAfterOverflow?(input: AgentContextRequest): Promise<AgentPreparedContext>;
 }
 
 export interface AgentStepRunnerOptions {
@@ -137,7 +144,7 @@ export class AgentStepRunner {
       }
       modelRound += 1;
       modelRequests += 1;
-      const requestId = modelRound === 1 && this.options.requestId !== null
+      let requestId = modelRound === 1 && this.options.requestId !== null
         ? this.options.requestId
         : randomUUID();
       this.options.onRequestId(requestId);
@@ -175,91 +182,131 @@ export class AgentStepRunner {
             throw error;
           }
         }, () => history.snapshot().map(message => message.role === "system" || message.role === "user" ? message : {}));
-      let selected = select(history.snapshot());
-      if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
-      let prepared: { messages: readonly ModelMessage[]; contextTokens?: number; contextWindow?: number; hardInputLimit?: number } = { messages: history.snapshot() };
-      for (let attempt = 0; attempt < 3; attempt++) {
-        prepared = await this.options.contextGovernor?.prepare({
-          messages: history.snapshot(), tools: selected.view.definitions,
-          provider: this.options.provider, model: this.options.model,
-          projectTools: messages => select(messages).view.definitions,
-        }) ?? { messages: history.snapshot() };
-        history.retain(prepared.messages);
-        selected = select(prepared.messages);
-        const resources = await this.options.resources?.prepareContext(prepared.messages, cancelToken?.signal) ?? [];
-        if (!selected.announcement && resources.length === 0) break;
-        if (attempt === 2) throw this.options.createError("Resource catalog cannot fit the retained context.");
+      const prepareRequest = async () => {
+        let selected = select(history.snapshot());
         if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
-        for (const message of resources) {
-          history.commitSkillContext(message);
-          this.options.resources?.committed([message]);
+        let prepared: AgentPreparedContext = { messages: history.snapshot() };
+        for (let attempt = 0; attempt < 3; attempt++) {
+          prepared = await this.options.contextGovernor?.prepare({
+            messages: history.snapshot(), tools: selected.view.definitions,
+            provider: this.options.provider, model: this.options.model,
+            projectTools: messages => select(messages).view.definitions,
+          }) ?? { messages: history.snapshot() };
+          history.retain(prepared.messages);
+          selected = select(prepared.messages);
+          const resources = await this.options.resources?.prepareContext(prepared.messages, cancelToken?.signal) ?? [];
+          if (!selected.announcement && resources.length === 0) break;
+          if (attempt === 2) throw this.options.createError("Resource catalog cannot fit the retained context.");
+          if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
+          for (const message of resources) {
+            history.commitSkillContext(message);
+            this.options.resources?.committed([message]);
+          }
         }
-      }
-      remainingTokens = prepared.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
-        : Math.max(0, prepared.hardInputLimit - (prepared.contextTokens ?? 0) - 1024);
-      const tools = selected.view;
-      const definitions = tools.definitions;
-      const requestMessages = [...prepared.messages];
-      this.emit("model_request", {
-        round: modelRound,
-        request_id: requestId,
-        message_count: requestMessages.length,
-        tool_rounds: toolRounds,
-        model_requests: modelRequests,
-        total_tokens: totalTokens,
-        ...(prepared.contextTokens === undefined ? {} : { context_tokens: prepared.contextTokens }),
-        ...(prepared.contextWindow === undefined ? {} : { context_window: prepared.contextWindow }),
-      });
-
-      let result;
-      try {
-        const modelRequestOpened = context?.modelRequestOpened;
-        result = await this.options.modelRuntime.complete({
-          provider: this.options.provider,
-          model: this.options.model,
-          ...(this.options.baseUrl === null ? {} : { baseUrl: this.options.baseUrl }),
-          messages: requestMessages,
-          tools: definitions,
-          reasoningEffort: this.options.getReasoningEffort(),
-          requestId,
-          cancelToken,
-          isRequestActive: this.options.isRequestActive,
-          onDelta: (kind, payload) => {
-            this.emit(kind, { round: modelRound, request_id: requestId, ...payload });
-          },
-          onRequestOpened: () => {
-            if (modelRequestOpened?.call(context) === false) return false;
-            this.options.resources?.committed(pendingResourceInputs);
-            pendingResourceInputs = [];
-            return true;
-          },
+        remainingTokens = prepared.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
+          : Math.max(0, prepared.hardInputLimit - (prepared.contextTokens ?? 0) - 1024);
+        return { selected, prepared };
+      };
+      let { selected, prepared } = await prepareRequest();
+      let tools = selected.view;
+      let definitions = tools.definitions;
+      let requestMessages = [...prepared.messages];
+      let result: ModelResult;
+      for (let overflowAttempt = 0; ; overflowAttempt++) {
+        const attemptRequestId = requestId;
+        const attemptRound = modelRound;
+        this.emit("model_request", {
+          round: attemptRound,
+          request_id: attemptRequestId,
+          message_count: requestMessages.length,
+          tool_rounds: toolRounds,
+          model_requests: modelRequests,
+          total_tokens: totalTokens,
+          ...(prepared.contextTokens === undefined ? {} : { context_tokens: prepared.contextTokens }),
+          ...(prepared.contextWindow === undefined ? {} : { context_window: prepared.contextWindow }),
         });
-      } catch (error) {
-        if (error instanceof ModelStreamCancelled) {
-          this.emit("model_response_aborted", {
-            round: modelRound,
-            request_id: requestId,
-            reason: errorMessage(error),
+        try {
+          const modelRequestOpened = context?.modelRequestOpened;
+          result = await this.options.modelRuntime.complete({
+            provider: this.options.provider,
+            model: this.options.model,
+            ...(this.options.baseUrl === null ? {} : { baseUrl: this.options.baseUrl }),
+            messages: requestMessages,
+            tools: definitions,
+            reasoningEffort: this.options.getReasoningEffort(),
+            requestId: attemptRequestId,
+            cancelToken,
+            isRequestActive: this.options.isRequestActive,
+            onDelta: (kind, payload) => {
+              this.emit(kind, { round: attemptRound, request_id: attemptRequestId, ...payload });
+            },
+            onRequestOpened: () => {
+              if (modelRequestOpened?.call(context) === false) return false;
+              this.options.resources?.committed(pendingResourceInputs);
+              pendingResourceInputs = [];
+              return true;
+            },
           });
-          throw this.options.createCancelled(errorMessage(error), error);
+          break;
+        } catch (error) {
+          if (error instanceof ModelStreamCancelled) {
+            this.emit("model_response_aborted", {
+              round: attemptRound,
+              request_id: attemptRequestId,
+              reason: errorMessage(error),
+            });
+            throw this.options.createCancelled(errorMessage(error), error);
+          }
+          const errorPayload = {
+            round: attemptRound,
+            request_id: attemptRequestId,
+            error: errorMessage(error),
+          };
+          if (error instanceof ModelStreamError && error.hadDelta) {
+            this.emit("model_response_aborted", errorPayload);
+            this.options.emitLegacy("model_error", errorPayload);
+          } else {
+            this.emit("model_error", errorPayload);
+          }
+          if (overflowAttempt === 0 && error instanceof ModelError &&
+            error.kind === "context_overflow" && !error.hadDelta &&
+            this.options.contextGovernor?.recoverAfterOverflow !== undefined) {
+            this.raiseIfCancelled();
+            const recovered = await this.options.contextGovernor.recoverAfterOverflow({
+              messages: history.snapshot(), tools: definitions,
+              provider: this.options.provider, model: this.options.model,
+              projectTools: messages => select(messages).view.definitions,
+            });
+            this.raiseIfCancelled();
+            history.retain(recovered.messages);
+            remainingTokens = Number.POSITIVE_INFINITY;
+            preflightCompacted = false;
+            ({ selected, prepared } = await prepareRequest());
+            this.raiseIfCancelled();
+            tools = selected.view;
+            definitions = tools.definitions;
+            requestMessages = [...prepared.messages];
+            this.emit("model_retry_scheduled", {
+              round: attemptRound,
+              request_id: attemptRequestId,
+              attempt: 2,
+              max_attempts: 2,
+              delay_ms: 0,
+              error_kind: "context_overflow",
+            });
+            modelRound += 1;
+            modelRequests += 1;
+            requestId = randomUUID();
+            this.options.onRequestId(requestId);
+            continue;
+          }
+          let message = `Model request failed: ${errorMessage(error)}`;
+          if (this.options.provider && modelErrorKind(error) === "authentication") {
+            message += `\nAuthentication failed for ${this.options.provider}. ` +
+              `Run /login ${this.options.provider} to update your API key.`;
+          }
+          throw this.options.createError(message, error);
         }
-        const errorPayload = {
-          round: modelRound,
-          request_id: requestId,
-          error: errorMessage(error),
-        };
-        if (error instanceof ModelStreamError && error.hadDelta) {
-          this.emit("model_response_aborted", errorPayload);
-          this.options.emitLegacy("model_error", errorPayload);
-        } else {
-          this.emit("model_error", errorPayload);
-        }
-        let message = `Model request failed: ${errorMessage(error)}`;
-        if (this.options.provider && modelErrorKind(error) === "authentication") {
-          message += `\nAuthentication failed for ${this.options.provider}. ` +
-            `Run /login ${this.options.provider} to update your API key.`;
-        }
-        throw this.options.createError(message, error);
       }
 
       const toolCalls = toolCallsOf(result.message);

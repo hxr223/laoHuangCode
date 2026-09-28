@@ -12,6 +12,7 @@ import type {
   ModelRequest,
   ModelResult,
 } from "@laohuang/llm";
+import { ModelError } from "@laohuang/llm";
 import { ToolRegistry, type ToolAdapterDefinition } from "@laohuang/tools";
 
 import { createSessionRuntime } from "../apps/cli/src/create-session-runtime.ts";
@@ -347,6 +348,58 @@ test("automatic compaction publishes unknown before the next main request", asyn
     composed.refreshContextUsage();
     assert.equal(usage.at(-1), 18);
     history.entries = entries;
+  } finally {
+    await composed.session.close({ timeoutMs: 1_000 });
+    await composed.close();
+  }
+});
+
+test("provider overflow compacts history and retries the main request once", async (t) => {
+  const { root, controller } = await fixture(t);
+  const requests: ModelRequest[] = [];
+  const adapter: ModelAdapter = {
+    name: "overflow-fixture",
+    async runAttempt(request) {
+      requests.push(request);
+      request.onRequestOpened?.();
+      const mainRequests = requests.filter((candidate) => candidate.reasoningEffort !== "off");
+      if (request.reasoningEffort !== "off" && mainRequests.length === 3) {
+        throw new ModelError("maximum context length exceeded", { kind: "context_overflow", hadDelta: false });
+      }
+      return {
+        requestId: request.requestId ?? "",
+        finishReason: "stop",
+        usage: { inputTokens: 20, outputTokens: 2 },
+        message: {
+          role: "assistant", provider: request.provider, model: request.model,
+          content: [{ type: "text", text: request.reasoningEffort === "off" ? "Earlier work summary." : "done" }],
+        },
+      };
+    },
+  };
+  const composed = createSessionRuntime({
+    modelAdapter: adapter, catalog: new FakeCatalog(),
+    route: { provider: "test", model: "model-a", baseUrl: null },
+    tools: new ToolRegistry([]), sessionController: controller,
+    projectRoot: root, startupCwd: root, version: "9.8.7",
+  });
+  try {
+    await composed.agent.run("A".repeat(7_000));
+    await composed.agent.run("B".repeat(7_000));
+    assert.equal(await composed.agent.run("current question"), "done");
+
+    const mainRequests = requests.filter((request) => request.reasoningEffort !== "off");
+    const summaries = requests.filter((request) => request.reasoningEffort === "off");
+    assert.equal(mainRequests.length, 4);
+    assert.equal(summaries.length, 1);
+    assert.notEqual(mainRequests[2]?.requestId, mainRequests[3]?.requestId);
+    assert.ok(mainRequests[3]?.messages.some((message) => message.role === "user" &&
+      message.content === "<conversation_summary>\nEarlier work summary.\n</conversation_summary>"));
+    assert.ok(mainRequests[3]?.messages.some((message) => message.role === "user" && message.content === "current question"));
+    assert.ok(!mainRequests[3]?.messages.some((message) => message.role === "user" && message.content === "A".repeat(7_000)));
+    const compactions = controller.history!.entries().filter((entry) => entry.entryType === "compaction");
+    assert.equal(compactions.length, 1);
+    assert.equal(compactions[0]?.payload.trigger, "provider_overflow");
   } finally {
     await composed.session.close({ timeoutMs: 1_000 });
     await composed.close();
