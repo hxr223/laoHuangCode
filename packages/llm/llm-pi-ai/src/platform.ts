@@ -14,6 +14,7 @@ import {
 import {
   defaultProviderAuthContext,
   getSupportedThinkingLevels,
+  isModelType,
   type Api,
   type AuthEvent,
   type AuthPrompt,
@@ -127,8 +128,11 @@ function isEligibleProvider(
   provider: Provider,
   excludedProviderIds: ReadonlySet<string>,
 ): boolean {
+  const allModels = provider.getAllModels?.() ?? provider.getModels();
   return provider.auth.apiKey?.login !== undefined &&
-    !excludedProviderIds.has(provider.id);
+    !excludedProviderIds.has(provider.id) &&
+    // Empty dynamic catalogs remain eligible; operation-only catalogs do not.
+    (allModels.length === 0 || allModels.some(model => isModelType(model, "chat")));
 }
 
 class PiAiCatalog implements ModelCatalog {

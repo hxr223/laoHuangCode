@@ -202,6 +202,20 @@ test("foreign or malformed replay degrades to visible provider-neutral content",
   ]);
 });
 
+test("tool replay preserves nested JSON arguments and rejects invalid values", () => {
+  const route = { provider: "deepseek", model: "deepseek-flash" };
+  const restore = (argumentsJson: string) => toPiAssistant({
+    role: "assistant", ...route,
+    content: [{ type: "tool-call", call: { id: "c1", name: "read", arguments: argumentsJson } }],
+  }, route);
+  assert.deepEqual(restore('{"nested":[null,true,42,{"path":"a.txt"}]}').content[0]?.arguments,
+    { nested: [null, true, 42, { path: "a.txt" }] });
+  for (const invalid of ["broken", "null", "[]", "42", '{"nested":[{"number":1e400}]}']) {
+    assert.throws(() => restore(invalid),
+      (error: unknown) => error instanceof ModelError && error.kind === "protocol");
+  }
+});
+
 function zeroUsage(): AssistantMessage["usage"] {
   return {
     input: 0,

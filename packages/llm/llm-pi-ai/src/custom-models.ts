@@ -1,5 +1,6 @@
 import {
   createProvider, envApiKeyAuth,
+  isModelType,
   type Api, type Model, type MutableModels, type Provider, type ProviderStreams,
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
@@ -114,11 +115,23 @@ function customProvider(id: string, config: CustomProvider, base?: Provider): Pr
     baseUrl: config.baseUrl ?? base?.baseUrl,
     headers: { ...base?.headers, ...config.headers },
     getModels,
+    getAllModels: () => [
+      ...getModels(),
+      ...(base?.getAllModels?.() ?? []).filter(model => !isModelType(model, "chat")),
+    ],
     // Keep provider-owned refresh/cache logic; getModels reapplies user overrides afterwards.
     ...(base?.filterModels === undefined ? {} : {
       filterModels: (models, credential) => {
         const available = new Set(base.filterModels!(models, credential).map(model => model.id));
         return models.filter(model => available.has(model.id) || additions.has(model.id));
+      },
+    }),
+    ...(base?.filterAllModels === undefined ? {} : {
+      filterAllModels: (models, credential) => {
+        const available = new Set(base.filterAllModels!(models, credential)
+          .map(model => `${model.type ?? "chat"}:${model.id}`));
+        return models.filter(model => available.has(`${model.type ?? "chat"}:${model.id}`) ||
+          (isModelType(model, "chat") && additions.has(model.id)));
       },
     }),
     stream: (model, context, options) => dispatch(model).stream(model, context, options),

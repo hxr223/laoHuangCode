@@ -12,7 +12,7 @@ test("real CLI composition loads MCP, handles management commands and exits with
   const fixture = await startMcpFixture({ protocol: "modern", transport: "http" });
   const configPath = join(root, "config.json");
   const credentialsPath = join(root, "credentials.json");
-  new ConfigManager(configPath).configure({ name: "offline", provider: "deepseek", model: "deepseek-v4-flash" });
+  new ConfigManager(configPath).configure({ name: "offline", provider: "deepseek", model: "deepseek-flash" });
   await new CredentialStore(credentialsPath).modify("deepseek", async () => ({ type: "api_key", key: "offline-placeholder" }));
   await writeFile(join(root, "mcp.json"), JSON.stringify({ version: 1, servers: { local: fixture.config } }));
   const commands = ["/mcp reconnect local", "/mcp status", "/exit"];

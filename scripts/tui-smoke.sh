@@ -37,7 +37,7 @@ if [[ "$INTERACTIVE_SMOKE" == "1" ]]; then
   mkdir -p "$SMOKE_CONFIG_ROOT/laohuang"
   chmod 700 "$SMOKE_CONFIG_ROOT/laohuang"
   printf '%s\n' \
-    '{"version":1,"active_profile":"default","profiles":{"default":{"provider":"deepseek","model":"deepseek-v4-flash","base_url":null}}}' \
+    '{"version":1,"active_profile":"default","profiles":{"default":{"provider":"deepseek","model":"deepseek-flash","base_url":null}}}' \
     > "$SMOKE_CONFIG_ROOT/laohuang/config.json"
   printf '%s\n' \
     '{"version":2,"providers":{"deepseek":{"type":"api_key","key":"offline-smoke-placeholder"}}}' \

@@ -59,10 +59,13 @@ laohuang config --profile relay --provider my-relay --model MODEL_ID_ACCEPTED_BY
 - `thinkingLevelMap` maps `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`
   to provider effort strings; `null` disables a level. Missing levels use SDK
   defaults. `/effort` uses the resulting capabilities.
-- `compat` accepts protocol-specific pi-ai 0.85.1 compatibility fields, such as
+- `compat` accepts protocol-specific pi-ai 1.0.0 compatibility fields, such as
   `supportsDeveloperRole`, `maxTokensField`, `thinkingFormat` for completions,
   or `forceAdaptiveThinking` for Anthropic. Unknown fields and incompatible
   protocol/field combinations are rejected.
+- The older `deferredToolsMode` (completions) and `supportsToolReferences`
+  (Anthropic) fields are still accepted by configuration validation, but pi-ai
+  1.0.0 no longer uses them. They do not enable those transport capabilities.
 - Capabilities describe the model; declaring image input does not add an image
   attachment workflow to the CLI. Existing application input limitations still
   apply. New models default to zero pricing unless `cost` is supplied.
@@ -82,6 +85,10 @@ and `/login`. No remote catalog service is added. Successful reloads update the
 same SDK registry used by both the selector and request adapter. Provider-owned
 catalog refreshes retain the custom overlay. No custom definition is written to
 the catalog cache. Identical files do not re-register providers.
+
+Chat overlays update both SDK chat and all-model lookups. Built-in image and
+classifier entries keep their own metadata and availability filters; they are
+not exposed as chat models in the CLI.
 
 Invalid reloads report an error and retain the last valid catalog. Correct the
 file and retry. At startup, invalid definitions stop startup with a configuration

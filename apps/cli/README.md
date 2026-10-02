@@ -33,7 +33,7 @@ npm install -g laohuang
 ```bash
 laohuang --help
 laohuang --version
-laohuang config set --provider deepseek --model deepseek-v4-flash
+laohuang config set --provider deepseek --model deepseek-flash
 laohuang doctor
 laohuang update
 ```
@@ -42,9 +42,10 @@ Run `laohuang` in a project directory to start an interactive session. The CLI
 loads local project instructions, uses saved provider profiles, and keeps file
 and shell tool execution rooted in the current project.
 
-Model providers come from the installed pi-ai API-key catalog. In pi-ai 0.83.0
-the product exposes 35 available API-key providers, excluding Amazon Bedrock,
-Google Vertex, OAuth-only providers, and OpenAI Codex. Use `/providers` to see
+Model providers come from the installed pi-ai API-key catalog. In pi-ai 1.0.0
+the product exposes 38 available chat API-key providers, excluding Amazon Bedrock,
+Google Vertex, OAuth-only providers, OpenAI Codex, and operation-only catalogs.
+`deepseek-flash` is the built-in DeepSeek V4.1 Flash model. Use `/providers` to see
 available, configured, and verified status independently.
 
 `/login <provider>` stores API-key credentials, `/logout <provider>` removes

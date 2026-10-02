@@ -1,6 +1,6 @@
 {
   "name": "laohuang",
-  "version": "0.9.6",
+  "version": "0.9.7",
   "description": "A terminal coding agent CLI with a provider-neutral model runtime.",
   "type": "module",
   "bin": {
@@ -24,7 +24,7 @@
     "sharp": "0.35.4",
     "@modelcontextprotocol/client": "2.0.0",
     "koffi": "3.2.1",
-    "@earendil-works/pi-ai": "0.85.1"
+    "@earendil-works/pi-ai": "1.0.0"
   },
   "devDependencies": {
     "@laohuang/attachment": "0.0.0",

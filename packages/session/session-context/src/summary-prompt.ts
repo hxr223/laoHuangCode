@@ -1,2 +1,2 @@
 export const COMPACTION_SYSTEM_PROMPT =
-  "Summarize the conversation for continuation. Preserve user goals, explicit constraints, completed work, modified files, architectural decisions, tool outcomes, failures, current TODOs, and concrete state needed to continue. Do not include credentials. Do not invent results.";
+  "Summarize the conversation for continuation. If the input contains <previous_summary>, merge and update it with the newer conversation instead of discarding it. Preserve user goals, explicit constraints, completed work, modified files, architectural decisions, tool outcomes, failures, current TODOs, and concrete state needed to continue. Do not include credentials. Do not invent results.";

@@ -64,12 +64,14 @@ export const completionsCompat = partial(Type.Object({
   thinkingTokenBudgetField: Type.Union([Type.Literal("thinking_token_budget"), Type.Literal("thinking_budget"), Type.Literal("thinking_budget_tokens")]),
   supportsThinkingTokenBudget: Type.Boolean(), supportsOpenAIGrammarTools: Type.Boolean(),
   supportsStrictMode: Type.Boolean(), cacheControlFormat: Type.Literal("anthropic"),
+  supportsMidConvoSystemMessages: Type.Boolean(), supportsMidConvoToolAdditions: Type.Boolean(),
   sendSessionAffinityHeaders: Type.Boolean(), deferredToolsMode: Type.Literal("kimi"),
   sessionAffinityFormat: affinity, supportsLongCacheRetention: Type.Boolean(), vllmPriority: Type.Number(),
 }, { additionalProperties: false }));
 
 export const responsesCompat = partial(Type.Object({
   supportsDeveloperRole: Type.Boolean(), sessionAffinityFormat: affinity,
+  supportsMidConvoSystemMessages: Type.Boolean(),
   supportsLongCacheRetention: Type.Boolean(), supportsStrictMode: Type.Boolean(),
   supportsOpenAIGrammarTools: Type.Boolean(), supportsAdditionalTools: Type.Boolean(),
   supportsToolSearch: Type.Boolean(), supportsExplicitPromptCacheMode: Type.Boolean(),
@@ -82,6 +84,8 @@ export const anthropicCompat = partial(Type.Object({
   supportsTemperature: Type.Boolean(), forceAdaptiveThinking: Type.Boolean(),
   allowEmptySignature: Type.Boolean(), supportsStrictTools: Type.Boolean(),
   supportsMidConvoEffort: Type.Boolean(), supportsToolReferences: Type.Boolean(),
+  supportsMidConvoSystemMessages: Type.Boolean(), supportsMidConvoToolChanges: Type.Boolean(),
+  sessionAffinityFormat: Type.Literal("openrouter"),
   allowedFallbackModels: Type.Array(Type.Object({ provider: text, model: text, cost }, { additionalProperties: false })),
 }, { additionalProperties: false }));
 
