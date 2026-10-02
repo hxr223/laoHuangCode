@@ -3,10 +3,11 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { requiresRelease, validateRecoveryMetadata } from "./release-control.mjs";
 
-test("release control: only an explicit infrastructure allowlist skips publishing", () => {
-  assert.equal(requiresRelease([".github/workflows/release.yml", "scripts/release-control.test.ts"]), false);
+test("release control: only an explicit allowlist skips publishing", () => {
+  assert.equal(requiresRelease(["CONTEXT.md"]), false);
+  assert.equal(requiresRelease(["CONTEXT.md", ".github/workflows/release.yml", "scripts/release-control.mjs", "scripts/release-control.test.ts"]), false);
   for (const file of ["apps/cli/src/main.ts", "package-lock.json", "scripts/build-standalone.mjs", "packages/fs/tool-fs/src/read-image.ts", "unknown"]) {
-    assert.equal(requiresRelease([".github/workflows/release.yml", file]), true);
+    assert.equal(requiresRelease(["CONTEXT.md", ".github/workflows/release.yml", file]), true);
   }
 });
 

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
-// Only release orchestration changes may land without publishing a new version.
+// These repository files may land without publishing a new version.
 const infrastructureFiles = new Set([
   ".github/workflows/ci.yml",
   ".github/workflows/release.yml",
@@ -10,6 +10,7 @@ const infrastructureFiles = new Set([
   "scripts/release-control.mjs",
   "scripts/release-control.test.ts",
   "INSTALLING.md",
+  "CONTEXT.md",
 ]);
 
 export function requiresRelease(files) {
