@@ -1,6 +1,11 @@
 import { ModelError } from "@laohuang/llm";
 import type {
   Api,
+  AnyModel,
+  ClassifierApi,
+  ClassifierModel,
+  ImageApi,
+  ImageModel,
   Model as PiModel,
   ModelsStore,
   ModelsStoreEntry,
@@ -32,7 +37,10 @@ export class PiModelsStore implements ModelsStore {
       return undefined;
     }
     return {
-      models: entry.models.map((model) => restoreModel(providerId, model)),
+      models: entry.models.flatMap((model) => {
+        const restored = restoreModel(providerId, model);
+        return restored === undefined ? [] : [restored];
+      }),
       ...(entry.lastModified === undefined ? {} : { lastModified: entry.lastModified }),
       ...(entry.checkedAt === undefined ? {} : { checkedAt: entry.checkedAt }),
       ...(entry.etag === undefined ? {} : { etag: entry.etag }),
@@ -53,13 +61,15 @@ export class PiModelsStore implements ModelsStore {
   }
 }
 
-function restoreModel(providerId: string, model: Record<string, unknown>): PiModel<Api> {
+function restoreModel(providerId: string, model: Record<string, unknown>): AnyModel | undefined {
+  const type = model["type"] ?? "chat";
+  if (type !== "chat" && type !== "image" && type !== "classifier") return undefined;
   const id = readString(model, "id", providerId);
   const name = readString(model, "name", providerId);
-  const api = readString(model, "api", providerId) as Api;
+  const api = readString(model, "api", providerId);
   const provider = readString(model, "provider", providerId);
   const input = model["input"];
-  if (!Array.isArray(input) || !input.every((item) => typeof item === "string")) {
+  if (!Array.isArray(input) || !input.every((item) => item === "text" || item === "image")) {
     throw new ModelError(`stored model for '${providerId}' has invalid input`, {
       kind: "protocol",
     });
@@ -70,6 +80,20 @@ function restoreModel(providerId: string, model: Record<string, unknown>): PiMod
       kind: "protocol",
     });
   }
+  const common = { ...model, id, name, api, provider, input, cost,
+    baseUrl: readString(model, "baseUrl", providerId) };
+  if (type === "image") {
+    const output = model["output"];
+    if (!Array.isArray(output) || !output.includes("image") ||
+      !output.every(item => item === "text" || item === "image")) {
+      throw new ModelError(`stored model for '${providerId}' has invalid output`, { kind: "protocol" });
+    }
+    return { ...common, type, api: api as ImageApi, output } as ImageModel<ImageApi>;
+  }
+  const contextWindow = readPositiveNumber(model, "contextWindow", providerId);
+  if (type === "classifier") {
+    return { ...common, type, api: api as ClassifierApi, contextWindow } as ClassifierModel<ClassifierApi>;
+  }
   const reasoning = model["reasoning"];
   if (typeof reasoning !== "boolean") {
     throw new ModelError(`stored model for '${providerId}' has invalid reasoning`, {
@@ -77,15 +101,13 @@ function restoreModel(providerId: string, model: Record<string, unknown>): PiMod
     });
   }
   return {
-    ...model,
-    id,
-    name,
-    api,
-    provider,
+    ...common,
+    type,
+    api: api as Api,
     reasoning,
     input,
     cost,
-    contextWindow: readPositiveNumber(model, "contextWindow", providerId),
+    contextWindow,
     maxTokens: readPositiveNumber(model, "maxTokens", providerId),
   } as PiModel<Api>;
 }

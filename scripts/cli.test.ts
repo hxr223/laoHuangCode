@@ -60,8 +60,8 @@ const providerInfos: readonly ModelProviderInfo[] = [
 ];
 const modelInfos: readonly ModelInfo[] = [{
   provider: "deepseek",
-  id: "deepseek-v4-flash",
-  name: "DeepSeek V4 Flash",
+  id: "deepseek-flash",
+  name: "DeepSeek V4.1 Flash",
   api: "openai-completions",
   reasoning: false,
   input: ["text"],
@@ -241,7 +241,7 @@ test("main propagates terminal render failures after terminal and session cleanu
     new ConfigManager(configPath).configure({
       name: "offline",
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
     });
     await new CredentialStore(credentialsPath).modify("deepseek", async () => ({
       type: "api_key",
@@ -606,7 +606,7 @@ test("startup model selection uses the plain presenter and shared selector servi
   const selection = await runInitialModelSelection({ selector, presenter, providerAuth: auth });
 
   assert.equal(selection?.config.provider, "deepseek");
-  assert.equal(selection?.config.model, "deepseek-v4-flash");
+  assert.equal(selection?.config.model, "deepseek-flash");
   assert.deepEqual(auth.ensureConfiguredCalls.filter((call) => call.promptIfMissing), [
     { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
     { provider: "deepseek", promptIfMissing: true, hasPrompts: true },
@@ -648,7 +648,7 @@ test("first start collects provider key and model in the terminal", async () => 
     assert.ok(!outputs.join("\n").includes("terminal-secret"));
     assert.equal(
       new ConfigManager(configPath).listProfiles()[0]!.model,
-      "deepseek-v4-flash",
+      "deepseek-flash",
     );
   });
 });
@@ -711,7 +711,7 @@ test("configured deepseek profile starts interactive cli", async () => {
     new ConfigManager(configPath).configure({
       name: "deepseek",
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       baseUrl: "https://api.deepseek.com",
     });
     const outputs: string[] = [];
@@ -745,7 +745,7 @@ test("user can list profiles and switch the active one", async () => {
     manager.configure({
       name: "flash",
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       baseUrl: "https://api.deepseek.com",
     });
     manager.configure({
@@ -783,7 +783,7 @@ test("doctor reports resolved runtime configuration", async () => {
     new ConfigManager(configPath).configure({
       name: "deepseek",
       provider: "deepseek",
-      model: "deepseek-v4-flash",
+      model: "deepseek-flash",
       baseUrl: "https://api.deepseek.com",
     });
     await new CredentialStore(credentialsPath).modify("deepseek", async () => ({
@@ -804,7 +804,7 @@ test("doctor reports resolved runtime configuration", async () => {
     assert.equal(status, 0);
     const report = outputs.join("\n");
     assert.ok(report.includes("Provider: deepseek"));
-    assert.ok(report.includes("Model: deepseek-v4-flash"));
+    assert.ok(report.includes("Model: deepseek-flash"));
     assert.ok(report.includes("API key: configured"));
   });
 });

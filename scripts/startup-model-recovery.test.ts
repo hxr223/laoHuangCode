@@ -48,7 +48,7 @@ for (const scenario of ["model", "provider", "cancel", "interrupt", "eof", "pipe
       assert.ok(output.some(line => line.includes("Please reconfigure profile 'work'")));
     }
     if (scenario === "model" || scenario === "provider") {
-      assert.equal(manager.resolve().model, "deepseek-v4-flash");
+      assert.equal(manager.resolve().model, "deepseek-flash");
       assert.equal(manager.resolve().profile, "work");
       assert.equal(manager.resolve().baseUrl, scenario === "model" ? "https://relay.example/v1" : null);
       assert.equal(manager.listProfiles().find(profile => profile.name === "other")?.model, "deepseek-v4-pro");

@@ -15,7 +15,7 @@ for (const available of [true, false]) {
       if (available) symlinkSync(resolveBashPath(), shellPath);
       const configPath = join(directory, "config.json");
       new ConfigManager(configPath).configure({
-        name: "default", provider: "deepseek", model: "deepseek-v4-flash", baseUrl: "https://api.deepseek.com",
+        name: "default", provider: "deepseek", model: "deepseek-flash", baseUrl: "https://api.deepseek.com",
       });
       const config = JSON.parse(readFileSync(configPath, "utf8"));
       writeFileSync(configPath, JSON.stringify({ ...config, shell_path: shellPath }));

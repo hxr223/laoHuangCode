@@ -8,18 +8,19 @@ const EXPECTED = [
   "ant-ling", "anthropic", "azure-openai-responses", "baseten", "cerebras",
   "cloudflare-ai-gateway", "cloudflare-workers-ai", "deepseek", "fireworks",
   "github-copilot", "google", "groq", "huggingface", "kimi-coding",
-  "minimax", "minimax-cn", "mistral", "moonshotai", "moonshotai-cn",
+  "meta", "minimax", "minimax-cn", "mistral", "moonshotai", "moonshotai-cn",
   "nvidia", "openai", "opencode", "opencode-go", "openrouter",
   "qwen-token-plan", "qwen-token-plan-cn", "qwen-token-plan-individual", "radius", "together",
   "vercel-ai-gateway", "xai", "xiaomi", "xiaomi-token-plan-ams",
   "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "zai", "zai-coding-cn",
 ];
 
-test("pi-ai 0.85.1 api-key provider snapshot matches the product contract", () => {
+test("pi-ai 1.0.0 chat api-key provider snapshot matches the product contract", () => {
   const models = builtinModels();
   assert.deepEqual(eligibleProviderIds(models, EXCLUDED), EXPECTED);
-  assert.equal(EXPECTED.length, 37);
+  assert.equal(EXPECTED.length, 38);
   assert.ok(!EXPECTED.includes("openai-codex"));
+  assert.ok(!EXPECTED.includes("typesafe"));
 });
 
 test("eligible static providers expose only integrated pi-ai API families", () => {
@@ -39,4 +40,16 @@ test("eligible static providers expose only integrated pi-ai API families", () =
       assert.ok(allowedApis.has(model.api), `${providerId}/${model.id}: ${model.api}`);
     }
   }
+});
+
+test("built-in DeepSeek Flash exposes V4.1 metadata without a custom definition", () => {
+  const models = builtinModels();
+  const flash = models.getModel("deepseek", "deepseek-flash");
+  assert.ok(flash);
+  assert.equal(flash.name, "DeepSeek V4.1 Flash");
+  assert.equal(flash.reasoning, true);
+  assert.deepEqual(flash.input, ["text", "image"]);
+  assert.equal(flash.contextWindow, 1_000_000);
+  assert.equal(flash.maxTokens, 384_000);
+  assert.equal(models.getModel("deepseek", "deepseek-v4-flash"), undefined);
 });

@@ -7,6 +7,8 @@ import { ModelError } from "@laohuang/llm";
 import type {
   Api,
   AssistantMessage,
+  JsonObject,
+  JsonValue,
   StopReason,
   TextContent,
   ThinkingContent,
@@ -289,7 +291,7 @@ function parseReplayBlock(
   return undefined;
 }
 
-function parseToolArguments(raw: string): Record<string, unknown> {
+function parseToolArguments(raw: string): JsonObject {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -304,7 +306,19 @@ function parseToolArguments(raw: string): Record<string, unknown> {
       kind: "protocol",
     });
   }
-  return parsed as Record<string, unknown>;
+  if (!Object.values(parsed).every(isJsonValue)) {
+    throw new ModelError("tool-call arguments contain invalid JSON values", {
+      kind: "protocol",
+    });
+  }
+  return parsed as JsonObject;
+}
+
+function isJsonValue(value: unknown): value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(isJsonValue);
+  return isRecord(value) && Object.values(value).every(isJsonValue);
 }
 
 function zeroUsage(): AssistantMessage["usage"] {

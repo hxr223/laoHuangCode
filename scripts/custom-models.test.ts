@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import test from "node:test";
-import { createModels, createProvider, envApiKeyAuth, type Model } from "@earendil-works/pi-ai";
+import { createModels, createProvider, envApiKeyAuth, type Model, type ImageModel, type ClassifierModel } from "@earendil-works/pi-ai";
 import { ConfigManager, CredentialStore, ModelCatalogStore } from "@laohuang/local-config";
 import { CustomModelsStore } from "../packages/storage/local-config/src/custom-models.ts";
 import { createPiAiPlatform } from "../packages/llm/llm-pi-ai/src/platform.ts";
@@ -90,24 +90,24 @@ test("environment key reference is resolved without storing it", async t => {
 
 test("built-in models merge by ID, retain capabilities, and revert when config is removed", async t => {
   const f = await fixture(t, { providers: { deepseek: {
-    models: [{ id: "deepseek-v4-flash", name: "My Flash" }, {
-      ...definition("deepseek-flash"), api: "openai-completions", reasoning: true, input: ["text", "image"],
+    models: [{ id: "deepseek-flash", name: "My Flash" }, {
+      ...definition("custom-flash"), api: "openai-completions", reasoning: true, input: ["text", "image"],
       thinkingLevelMap: { minimal: null, medium: null, low: "low", high: "high", max: "max", xhigh: null },
       compat: { thinkingFormat: "deepseek", supportsDeveloperRole: false },
     }],
   } } });
-  assert.equal(f.platform.catalog.listModels("deepseek").length, 4);
-  assert.equal(f.platform.catalog.getModel("deepseek", "deepseek-v4-flash")?.name, "My Flash");
-  assert.equal(f.platform.catalog.getModel("deepseek", "deepseek-v4-flash")?.reasoning, true);
-  assert.deepEqual(f.platform.catalog.getModel("deepseek", "deepseek-flash")?.input, ["text", "image"]);
+  assert.equal(f.platform.catalog.listModels("deepseek").length, 3);
+  assert.equal(f.platform.catalog.getModel("deepseek", "deepseek-flash")?.name, "My Flash");
+  assert.equal(f.platform.catalog.getModel("deepseek", "deepseek-flash")?.reasoning, true);
+  assert.deepEqual(f.platform.catalog.getModel("deepseek", "custom-flash")?.input, ["text", "image"]);
   assert.equal(f.platform.catalog.getProvider("deepseek")?.verified, false);
   await f.platform.catalog.refresh("deepseek");
-  assert.ok(f.platform.catalog.getModel("deepseek", "deepseek-flash"));
+  assert.ok(f.platform.catalog.getModel("deepseek", "custom-flash"));
   await rm(f.path);
   await f.platform.catalog.reload!();
-  assert.equal(f.platform.catalog.listModels("deepseek").length, 3);
+  assert.equal(f.platform.catalog.listModels("deepseek").length, 2);
   assert.equal(f.platform.catalog.getProvider("deepseek")?.verified, true);
-  assert.equal(f.platform.catalog.getModel("deepseek", "deepseek-v4-flash")?.name, "DeepSeek V4 Flash");
+  assert.equal(f.platform.catalog.getModel("deepseek", "deepseek-flash")?.name, "DeepSeek V4.1 Flash");
 });
 
 test("reload is atomic, recovers after errors, and removes deleted providers", async t => {
@@ -152,7 +152,7 @@ test("dynamic refresh keeps user overrides and adds newly discovered models", as
   let current = [baseModel];
   const base = createProvider({ id: "dynamic", auth: { apiKey: envApiKeyAuth("key", []) }, models: [baseModel],
     api: { stream: noStream, streamSimple: noStream } });
-  models.setProvider({ ...base, getModels: () => current, refreshModels: async context => {
+  models.setProvider({ ...base, getModels: () => current, getAllModels: () => current, refreshModels: async context => {
     await context.publish({ update: () => { current = [baseModel, { ...baseModel, id: "discovered" }]; } });
   } });
   let document: unknown = { providers: { dynamic: { models: [{ id: "dynamic-model", name: "Override" }] } } };
@@ -185,6 +185,55 @@ test("model command reloads definitions before resolving new provider, and login
   await writeFile(f.path, "broken");
   assert.equal((await commands.execute("/model")).status, "error");
   assert.equal(agent.provider, "new-relay");
+});
+
+test("custom chat overlays keep all-model lookup and typed availability filters synchronized", async () => {
+  const chat: Model<"openai-completions"> = {
+    ...definition("chat"), provider: "mixed", name: "Chat", api: "openai-completions",
+    baseUrl: "https://mixed.example/v1", input: ["text"], reasoning: false,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+  };
+  const image: ImageModel<"openai-images"> = {
+    ...chat, type: "image", id: "shared", api: "openai-images", output: ["image"],
+  };
+  const classifier: ClassifierModel<"typesafe-system-one"> = {
+    ...chat, type: "classifier", id: "shared", api: "typesafe-system-one",
+  };
+  const models = createModels();
+  const noStream = () => { throw new Error("no requests in catalog test"); };
+  models.setProvider(createProvider({ id: "mixed", baseUrl: chat.baseUrl, auth: { apiKey: envApiKeyAuth("key", []) },
+    models: [chat, image, classifier], api: { stream: noStream, streamSimple: noStream },
+    filterAllModels: entries => entries.filter(model => model.type === "image" || model.id === "chat"),
+  }));
+  const registry = new CustomModelRegistry(models, new Set(), async () => ({ providers: { mixed: {
+    models: [{ id: "chat", name: "Override" }, { ...definition("shared"), api: "openai-completions" }],
+  } } }));
+  await registry.reload();
+  assert.equal(models.getModel("mixed", "chat")?.name, "Override");
+  assert.equal(models.getModelOfType("chat", "mixed", "chat")?.name, "Override");
+  assert.ok(models.getModelOfType("chat", "mixed", "shared"));
+  assert.deepEqual(models.getModelOfType("image", "mixed", "shared"), image);
+  assert.deepEqual(models.getModelOfType("classifier", "mixed", "shared"), classifier);
+  await models.login("mixed", "api_key", { prompt: async () => "fake-key", notify: () => {} });
+  assert.deepEqual((await models.getAllAvailable("mixed")).map(model => `${model.type ?? "chat"}:${model.id}`).sort(),
+    ["chat:chat", "chat:shared", "image:shared"]);
+});
+
+test("new protocol compatibility fields are accepted only for their native API", async t => {
+  const f = await fixture(t, { providers: { relay: { baseUrl: "https://relay.example/v1", models: [
+    { ...definition("completions"), api: "openai-completions",
+      compat: { supportsMidConvoSystemMessages: true, supportsMidConvoToolAdditions: true } },
+    { ...definition("responses"), api: "openai-responses", compat: { supportsMidConvoSystemMessages: true } },
+    { ...definition("anthropic"), api: "anthropic-messages", compat: {
+      supportsMidConvoSystemMessages: true, supportsMidConvoToolChanges: true, sessionAffinityFormat: "openrouter",
+    } },
+  ] } } });
+  assert.equal(f.platform.catalog.listModels("relay").length, 3);
+  await writeFile(f.path, JSON.stringify({ providers: { relay: { ...provider(),
+    compat: { supportsMidConvoToolChanges: true },
+  } } }));
+  await assert.rejects(f.platform.catalog.reload!(), /invalid compat/);
+  assert.equal(f.platform.catalog.listModels("relay").length, 3);
 });
 
 test("CLI config and doctor accept a custom provider without making model calls", async t => {
