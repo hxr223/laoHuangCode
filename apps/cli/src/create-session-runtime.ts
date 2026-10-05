@@ -1,4 +1,5 @@
 import { CodingAgent } from "@laohuang/agent-runtime";
+import { validatePiToolArguments } from "@laohuang/llm-pi-ai";
 import type { AttachmentStore } from "@laohuang/attachment";
 import type { SkillSession } from "@laohuang/tool-skill";
 import {
@@ -168,6 +169,7 @@ export function createSessionRuntime(
     modelAdapter: adapter,
     model: route.model,
     tools: options.tools,
+    validateToolArguments: validatePiToolArguments,
     prepareTools: options.prepareTools,
     cliName: "laohuang",
     cliVersion: options.version,

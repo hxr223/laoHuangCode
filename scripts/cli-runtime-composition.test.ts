@@ -43,6 +43,59 @@ const models: readonly ModelInfo[] = [
   },
 ];
 
+test("CLI runtime injects SDK validation and lets the model correct a rejected call", async (t) => {
+  const { root, controller } = await fixture(t);
+  const executed: Record<string, unknown>[] = [];
+  const requests: ModelRequest[] = [];
+  const adapter: ModelAdapter = {
+    name: "validation-fixture",
+    async runAttempt(request) {
+      requests.push(request);
+      const round = requests.length;
+      if (round === 2) {
+        const result = request.messages.at(-1);
+        assert.ok(result?.role === "tool-result" && result.isError);
+        assert.equal(result.toolCallId, "call-1");
+        assert.match(result.content, /limit/);
+        assert.equal(executed.length, 0);
+      }
+      if (round === 3) {
+        const result = request.messages.at(-1);
+        assert.ok(result?.role === "tool-result" && !result.isError);
+        assert.equal(result.toolCallId, "call-2");
+      }
+      return {
+        requestId: request.requestId ?? "",
+        finishReason: round < 3 ? "tool-calls" : "stop",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        message: { role: "assistant", provider: request.provider, model: request.model, content: round < 3
+          ? [{ type: "tool-call", call: { id: `call-${round}`, name: "inspect", arguments: JSON.stringify({ limit: round === 1 ? "wrong" : "20" }) } }]
+          : [{ type: "text", text: "done" }] },
+      };
+    },
+  };
+  const composed = createSessionRuntime({
+    modelAdapter: adapter, catalog: new FakeCatalog(), route: { provider: "test", model: "model-a", baseUrl: null },
+    tools: new ToolRegistry([{
+      spec: { name: "inspect", description: "Inspect fixture", promptGuidelines: [], parameters: {
+        type: "object", required: ["limit"], properties: { limit: { type: "integer", minimum: 1 } },
+      } },
+      execute: args => { executed.push(args); return { ok: true, content: "fixture" }; },
+    }]),
+    sessionController: controller, projectRoot: root, startupCwd: root, version: "test",
+  });
+  try {
+    assert.equal(await composed.agent.run("inspect"), "done");
+    assert.deepEqual(executed, [{ limit: 20 }]);
+    assert.equal(requests.length, 3);
+    const results = controller.history!.entries().filter(entry => entry.entryType === "tool_result");
+    assert.equal(results.length, 2);
+  } finally {
+    await composed.session.close({ timeoutMs: 1000 });
+    await composed.close();
+  }
+});
+
 class FakeCatalog implements ModelCatalog {
   listProviders(): readonly ModelProviderInfo[] {
     return [

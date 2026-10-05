@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -262,7 +263,7 @@ test("agent-to-Bash context forwards rejected publication and commits the failed
       };
     },
   };
-  const agent = new CodingAgent({ provider: "offline", model: "offline", modelAdapter: adapter,
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, provider: "offline", model: "offline", modelAdapter: adapter,
     tools: new ToolRegistry([createBashToolDefinition({ projectRoot: process.cwd(), bashTimeoutSeconds: 5 })]),
   });
   assert.equal(await agent.run("run local fixture", {

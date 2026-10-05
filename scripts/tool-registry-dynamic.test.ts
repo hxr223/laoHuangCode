@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
@@ -42,7 +43,7 @@ test("tool runtime executes the request snapshot and forwards cancellation signa
     observed = ctx.signal;
     return { ok: true, content: "snapshot" };
   } }]).snapshot();
-  const result = await new ToolRuntime(registry).execute({ registry: snapshot,
+  const result = await new ToolRuntime(registry, { validateToolArguments: validatePiToolArguments }).execute({ registry: snapshot,
     toolCalls: [{ id: "1", name: "a", arguments: "{}" }], executionMode: "parallel", cancelToken: token });
   assert.equal(result.results[0]?.content, "snapshot");
   assert.equal(observed, token.signal);

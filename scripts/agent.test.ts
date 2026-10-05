@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -391,6 +392,7 @@ test("model can switch without losing conversation history", async (t) => {
   );
   const events: CollectedEvent[] = [];
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "old-model",
     provider: "openai",
@@ -421,6 +423,7 @@ test("user receives a direct model response", async (t) => {
   const directory = tempDir(t);
   const client = fakeClient(new FakeMessage({ content: "Hello from the model" }));
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -443,6 +446,7 @@ test("agent executes a tool and returns the follow-up response", async (t) => {
   );
   const events: Array<[string, Record<string, unknown>, ToolResult]> = [];
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -484,6 +488,7 @@ test("agent does not limit tool rounds or model requests", async (t) => {
     new FakeMessage({ content: "Finished after 21 tool rounds." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -523,6 +528,7 @@ test("repeated tool calls add a reminder and continue with tools available", asy
     new FakeMessage({ content: "Changed approach and finished." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -579,6 +585,7 @@ test("repeated tool counter resets after a different result", async (t) => {
   );
   const events: CollectedEvent[] = [];
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -601,6 +608,7 @@ test("default runtime does not stop tools after 100k accumulated tokens", async 
     new FakeMessage({ content: "Finished after the tool call." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -626,6 +634,7 @@ test("default runtime does not stop tools after 300 elapsed seconds", async (t) 
     new FakeMessage({ content: "Finished after the tool call." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -653,6 +662,7 @@ test("multiple tool calls run in returned order", async (t) => {
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -695,6 +705,7 @@ test("tool batch executes concurrently and returns source order", async (t) => {
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -738,6 +749,7 @@ test("global sequential mode runs tool calls one by one", async (t) => {
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -773,6 +785,7 @@ test("one sequential tool forces the whole batch to run sequentially", async (t)
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -806,6 +819,7 @@ test("completion events are live while messages stay source ordered", async (t) 
     new FakeMessage({ content: "Finished." }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -833,6 +847,7 @@ test("consecutive user turns share conversation history", async (t) => {
     new FakeMessage({ content: "Second answer" }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -862,6 +877,7 @@ test("api failures become actionable agent errors", async (t) => {
   const completions = new FailingCompletions();
   const client = { chat: { completions } };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -882,6 +898,7 @@ test("authentication failures point to provider login", async (t) => {
   const directory = tempDir(t);
   const client = { chat: { completions: new AuthenticationFailingCompletions() } };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "deepseek-v4-flash",
     provider: "deepseek",
@@ -912,6 +929,7 @@ test("events group batch tool calls under one model round", async (t) => {
     new FakeMessage({ content: "Done" }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -953,6 +971,7 @@ test("events distinguish consecutive user turns", async (t) => {
     new FakeMessage({ content: "Second" }),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -1002,6 +1021,7 @@ test("agent preserves reasoning for tool round then strips on switch", async (t)
   const completions = new FakeStreamCompletions([first, second]);
   const client = { chat: { completions } };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "deepseek-reasoner",
     provider: "deepseek",
@@ -1041,6 +1061,7 @@ test("failed attempt is not committed to agent history", async (t) => {
     },
   };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "model",
     provider: "openai",
@@ -1079,6 +1100,7 @@ test("cancel at history commit boundary discards assistant", async (t) => {
     commitIfActive: () => false,
   };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "model",
     provider: "openai",
@@ -1117,6 +1139,7 @@ test("agent publishes canonical model events", async (t) => {
   ]);
   const client = { chat: { completions: new FakeStreamCompletions([stream]) } };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "model",
     provider: "openai",
@@ -1163,6 +1186,7 @@ test("cancelled tool batch keeps history pairs", async (t) => {
   const token = new CancelToken();
   const client = { chat: { completions: new FakeStreamCompletions([stream]) } };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "model",
     provider: "openai",

@@ -5,6 +5,7 @@ import type {
   ToolExecutionMode,
   ToolRegistryLike,
   ToolResult,
+  ToolSpec,
 } from "./index.ts";
 
 export interface ToolRuntimeRequest {
@@ -37,16 +38,30 @@ export type ToolExecutionContextFactory = (
   cancelToken: CancelToken | null,
 ) => ToolExecutionContextLike;
 
+export type ToolArgumentValidator = (
+  tool: ToolSpec,
+  toolCall: ToolCall,
+  args: Record<string, unknown>,
+) => Record<string, unknown>;
+
 /** Owns tool-call argument decoding, scheduling, and cooperative cancellation. */
 export class ToolRuntime {
   private readonly tools: ToolRegistryLike;
   private readonly createExecutionContext: ToolExecutionContextFactory;
+  private readonly validateArguments: ToolArgumentValidator;
 
   constructor(
     tools: ToolRegistryLike,
-    options: { createExecutionContext?: ToolExecutionContextFactory } = {},
+    options: {
+      validateToolArguments: ToolArgumentValidator;
+      createExecutionContext?: ToolExecutionContextFactory;
+    },
   ) {
+    if (typeof options?.validateToolArguments !== "function") {
+      throw new Error("Tool argument validator is required");
+    }
     this.tools = tools;
+    this.validateArguments = options.validateToolArguments;
     this.createExecutionContext = options.createExecutionContext ??
       ((_, cancelToken) => ({
         signal: cancelToken?.signal,
@@ -58,6 +73,7 @@ export class ToolRuntime {
 
   async execute(request: ToolRuntimeRequest): Promise<ToolBatchResult> {
     const registry = request.registry ?? this.tools;
+    const definitions = new Map(registry.definitions.map(tool => [tool.name, tool]));
     interface Prepared extends ToolRuntimeToolEvent {}
 
     const results: Array<ToolResult | undefined> = new Array<ToolResult | undefined>(
@@ -70,7 +86,7 @@ export class ToolRuntime {
       if (toolCall === undefined) {
         continue;
       }
-      let args: Record<string, unknown>;
+      let args: Record<string, unknown> = { _raw: toolCall.arguments };
       let result: ToolResult | undefined;
       try {
         const decoded: unknown = JSON.parse(toolCall.arguments);
@@ -78,8 +94,10 @@ export class ToolRuntime {
           throw new Error("Tool arguments must be a JSON object");
         }
         args = decoded as Record<string, unknown>;
+        const tool = definitions.get(toolCall.name);
+        if (tool === undefined) throw new Error(`Unknown tool: ${toolCall.name}`);
+        args = this.validateArguments(tool, toolCall, args);
       } catch (error) {
-        args = { _raw: toolCall.arguments };
         result = { ok: false, error: errorMessage(error) };
       }
       const event: ToolRuntimeToolEvent = {

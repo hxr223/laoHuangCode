@@ -33,6 +33,7 @@ import {
 } from "@laohuang/llm";
 import type {
   ToolExecutionContextLike,
+  ToolArgumentValidator,
   ToolExecutionMode,
   ToolRegistryLike,
   ToolResult,
@@ -118,6 +119,7 @@ export interface CodingAgentOptions {
   modelAdapter: ModelAdapter;
   model: string;
   tools: AgentToolRegistry;
+  validateToolArguments: ToolArgumentValidator;
   repeatToolReminderThresholds?: readonly number[];
   onToolEvent?: ToolEventCallback | null;
   onAgentEvent?: AgentEventCallback | null;
@@ -215,6 +217,7 @@ export class CodingAgent {
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
+      validateToolArguments: options.validateToolArguments,
       createExecutionContext: (toolCallId, cancelToken) =>
         makeToolContext(this.activeContext, toolCallId, cancelToken),
     });

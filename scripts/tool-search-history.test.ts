@@ -7,7 +7,7 @@ import { CodingAgent } from "../packages/core/agent-runtime/src/index.ts";
 import { ToolRegistry, ToolSelection, type ToolAdapterDefinition } from "../packages/core/tools/src/index.ts";
 import { ConversationHistory, ContextBuilder, ContextGovernor, DefaultTokenEstimator } from "@laohuang/session-context";
 import { createSessionJournal, readSessionFile } from "@laohuang/session-store";
-import { toPiContext } from "../packages/llm/llm-pi-ai/src/index.ts";
+import { validatePiToolArguments, toPiContext } from "../packages/llm/llm-pi-ai/src/index.ts";
 import type { ModelRequest, ModelResult } from "@laohuang/llm";
 
 function registry(schemaSize = 0) {
@@ -40,7 +40,7 @@ test("search loads once, projects schema only into wire tools, and survives jour
   const state = session();
   const tools = registry();
   const requests: ModelRequest[] = [];
-  const agent = new CodingAgent({ tools, provider: "test", model: "test", conversationHistory: state.history,
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, tools, provider: "test", model: "test", conversationHistory: state.history,
     modelAdapter: { name: "fake", runAttempt: async request => {
       requests.push(request);
       if (requests.length === 1) return reply(request, "tool_search", { query: "remote_0", limit: 1 });
@@ -76,7 +76,7 @@ test("compaction retains call/result/definitions together, then unloads when tha
   const state = session();
   const tools = registry();
   let round = 0;
-  const agent = new CodingAgent({ tools, provider: "test", model: "test", conversationHistory: state.history,
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, tools, provider: "test", model: "test", conversationHistory: state.history,
     modelAdapter: { name: "fake", runAttempt: async request => ++round === 1 ? reply(request, "tool_search", { query: "remote_0", limit: 1 }) : reply(request) } });
   agent.messages = [...state.build()];
   const governor = new ContextGovernor({ summarize: async () => ({ summary: "used remote_0", inputTokens: 1, outputTokens: 1 }), appendCompaction: p => state.history.appendCompaction(p) });
@@ -104,7 +104,7 @@ for (const schemaSize of [26000, 90000]) {
     let round = 0, preflights = 0;
     const requests: ModelRequest[] = [];
     const governor = new ContextGovernor({ summarize: async () => ({ summary: "summary", inputTokens: 1, outputTokens: 1 }), appendCompaction: p => state.history.appendCompaction(p) });
-    const agent = new CodingAgent({ tools, provider: "test", model: "test", conversationHistory: state.history,
+    const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, tools, provider: "test", model: "test", conversationHistory: state.history,
       contextGovernor: { prepare: async input => {
         const entries = state.history.entries();
         const pending = input.pendingToolCall ? [...entries].reverse().find(e => e.entryType === "assistant_message") : undefined;

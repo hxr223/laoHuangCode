@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -161,6 +162,7 @@ test("agent history starts with the built system prompt", async (t) => {
     },
   };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter,
     model: "test-model",
     provider: "openai",
@@ -200,6 +202,7 @@ test("agent refreshes model runtime facts after model switch", async (t) => {
     },
   };
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter,
     model: "deepseek-v4-flash",
     provider: "deepseek",

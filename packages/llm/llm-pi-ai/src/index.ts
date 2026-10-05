@@ -6,3 +6,4 @@ export * from "./models-store-bridge.ts";
 export * from "./platform.ts";
 export * from "./replay.ts";
 export * from "./stream.ts";
+export * from "./tool-validation.ts";
