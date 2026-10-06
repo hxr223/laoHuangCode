@@ -316,6 +316,7 @@ test("shared runtime prepares deferred tools, persists search and restores only 
   }));
   const requests: ModelRequest[] = [];
   const usage: Array<number | null> = [];
+  const warnings: string[][] = [];
   const adapter: ModelAdapter = {
     name: "dynamic-fixture",
     runAttempt: async (request) => {
@@ -347,7 +348,10 @@ test("shared runtime prepares deferred tools, persists search and restores only 
     projectRoot: root,
     startupCwd: root,
     version: "9.8.7",
-    presentation: { contextUsageChanged: (value) => usage.push(value.contextTokens) },
+    presentation: {
+      contextUsageChanged: (value) => usage.push(value.contextTokens),
+      toolStateWarning: names => warnings.push([...names]),
+    },
   });
   try {
     assert.equal(await composed.agent.run("use remote_0"), "done");
@@ -372,7 +376,17 @@ test("shared runtime prepares deferred tools, persists search and restores only 
       ...definition, spec: { ...definition.spec, description: `${definition.spec.description} updated` },
     })));
     await composed.agent.run("check updated catalog");
-    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), ["tool_search"]);
+    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), ["remote_0", "tool_search"]);
+    const changed = controller.history?.entries().filter((entry) => entry.entryType === "tool_definitions").at(-1);
+    assert.deepEqual(changed?.entryType === "tool_definitions" ? changed.payload.message.toolsRemoved?.map(tool => tool.name) : [], ["remote_0"]);
+    assert.deepEqual(changed?.entryType === "tool_definitions" ? changed.payload.message.toolDefinitions?.map(tool => tool.spec.name) : [], ["remote_0"]);
+
+    registry.removeOwner("mcp:fixture");
+    await composed.agent.run("check missing tool");
+    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), []);
+    assert.deepEqual(warnings, [["remote_0"]]);
+    await composed.agent.run("check warning once");
+    assert.deepEqual(warnings, [["remote_0"]]);
   } finally {
     await composed.session.close({ timeoutMs: 1_000 });
     await composed.close();

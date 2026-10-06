@@ -47,8 +47,6 @@ export interface AgentContextRequest {
   readonly provider: string;
   readonly model: string;
   readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
-  readonly reserveTokens?: number;
-  readonly pendingToolCall?: boolean;
 }
 
 export interface AgentPreparedContext {
@@ -94,6 +92,7 @@ export interface AgentStepRunnerOptions {
   injectBaselineInstructions(cancelToken: CancelToken | null): void;
   discoverForTouchedPaths(touchedPaths: readonly string[]): void;
   onToolEvent(name: string, args: Record<string, unknown>, result: ToolResult): void;
+  onToolStateWarning?(missingNames: readonly string[]): void;
   createError(message: string, cause?: unknown): Error;
   createCancelled(message: string, cause?: unknown): Error;
 }
@@ -150,61 +149,41 @@ export class AgentStepRunner {
       this.options.onRequestId(requestId);
       const registry = this.options.getTools();
       const selection = this.options.selection ?? new ToolSelection();
-      let remainingTokens = Number.POSITIVE_INFINITY;
-      let preflightCompacted = false;
-      const select = (messages: readonly ModelMessage[]) => selection.prepare(registry,
-        messages.map(message => message.role === "system" || message.role === "user" ? message : {}),
-        async (pending, resultBytes) => {
-          const snapshot = history.snapshot();
-          const assistant = snapshot.at(-1);
-          const reserve = Math.ceil((resultBytes + Buffer.byteLength(JSON.stringify(assistant ?? {}), "utf8")) / 4);
-          const cost = reserve + pending.reduce((sum, { spec: { name, description, parameters } }) => sum + Math.ceil(Buffer.byteLength(JSON.stringify({ name, description, parameters }), "utf8") / 4) + 8, 0);
-          if (cost <= remainingTokens) return true;
-          if (preflightCompacted || !this.options.contextGovernor) return false;
-          preflightCompacted = true;
-          if (assistant?.role !== "assistant") return false;
-          // The current call has no result yet. Compact only its completed prefix,
-          // reserving space for the whole pending call/result/definition unit.
-          try {
-            const projectTools = (retained: readonly ModelMessage[]) => selection.prepare(registry,
-              [...retained.map(message => message.role === "system" || message.role === "user" ? message : {}), { toolDefinitions: pending }]).view.definitions;
-            const compacted = await this.options.contextGovernor.prepare({
-              messages: snapshot.slice(0, -1), tools: projectTools(snapshot), projectTools,
-              provider: this.options.provider, model: this.options.model, pendingToolCall: true,
-              reserveTokens: reserve + 1024,
-            });
-            history.retain([...compacted.messages, assistant]);
-            remainingTokens = compacted.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
-              : Math.max(0, compacted.hardInputLimit - (compacted.contextTokens ?? 0)) + cost;
-            return cost <= remainingTokens;
-          } catch (error) {
-            if (error instanceof Error && error.name === "ContextBudgetError") return false;
-            throw error;
-          }
-        }, () => history.snapshot().map(message => message.role === "system" || message.role === "user" ? message : {}));
+      const select = () => selection.prepare(registry);
+      const synchronizeSelection = () => {
+        const planned = select();
+        if (planned.update.toolsAdded.length > 0 || planned.update.toolsRemoved.length > 0) {
+          history.commitToolState(planned.update);
+        }
+        if (planned.announcement) {
+          history.commitToolCatalog({ role: "user", ...planned.announcement });
+        }
+        selection.apply(planned.update);
+        if (planned.missing.length > 0) this.options.onToolStateWarning?.(planned.missing);
+        return select();
+      };
       const prepareRequest = async () => {
-        let selected = select(history.snapshot());
-        if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
+        let selected = synchronizeSelection();
         let prepared: AgentPreparedContext = { messages: history.snapshot() };
         for (let attempt = 0; attempt < 3; attempt++) {
           prepared = await this.options.contextGovernor?.prepare({
             messages: history.snapshot(), tools: selected.view.definitions,
             provider: this.options.provider, model: this.options.model,
-            projectTools: messages => select(messages).view.definitions,
+            projectTools: () => select().view.definitions,
           }) ?? { messages: history.snapshot() };
           history.retain(prepared.messages);
-          selected = select(prepared.messages);
+          selected = select();
           const resources = await this.options.resources?.prepareContext(prepared.messages, cancelToken?.signal) ?? [];
           if (!selected.announcement && resources.length === 0) break;
           if (attempt === 2) throw this.options.createError("Resource catalog cannot fit the retained context.");
-          if (selected.announcement) history.commitToolContext({ role: "user", ...selected.announcement });
+          if (selected.announcement || selected.update.toolsAdded.length > 0 || selected.update.toolsRemoved.length > 0) {
+            selected = synchronizeSelection();
+          }
           for (const message of resources) {
             history.commitSkillContext(message);
             this.options.resources?.committed([message]);
           }
         }
-        remainingTokens = prepared.hardInputLimit === undefined ? Number.POSITIVE_INFINITY
-          : Math.max(0, prepared.hardInputLimit - (prepared.contextTokens ?? 0) - 1024);
         return { selected, prepared };
       };
       let { selected, prepared } = await prepareRequest();
@@ -275,12 +254,10 @@ export class AgentStepRunner {
             const recovered = await this.options.contextGovernor.recoverAfterOverflow({
               messages: history.snapshot(), tools: definitions,
               provider: this.options.provider, model: this.options.model,
-              projectTools: messages => select(messages).view.definitions,
+              projectTools: () => select().view.definitions,
             });
             this.raiseIfCancelled();
             history.retain(recovered.messages);
-            remainingTokens = Number.POSITIVE_INFINITY;
-            preflightCompacted = false;
             ({ selected, prepared } = await prepareRequest());
             this.raiseIfCancelled();
             tools = selected.view;
@@ -367,12 +344,16 @@ export class AgentStepRunner {
         onToolResult: (event) => this.completeToolEvent(event, modelRound),
       })).results;
       const repeated = repeatToolPolicy.record(toolCalls, toolResults);
+      const current = new Map(this.options.getTools().definitions.map(spec => [spec.name, toolVersion(spec)]));
+      const pending = selected.pending().filter(tool => current.get(tool.spec.name) === tool.version);
+      if (pending.length) {
+        const update = { toolsAdded: pending, toolsRemoved: [] };
+        history.commitToolState(update);
+        selection.apply(update);
+      }
       history.commitToolResults(toolCalls, toolResults);
       this.options.resources?.committed(history.snapshot().slice(-toolResults.length));
       this.raiseIfCancelled();
-      const current = new Map(this.options.getTools().definitions.map(spec => [spec.name, toolVersion(spec)]));
-      const pending = selected.pending().filter(tool => current.get(tool.spec.name) === tool.version);
-      if (pending.length) history.commitToolContext({ role: "system", content: "", toolDefinitions: pending });
       const touchedPaths: string[] = [];
       for (const toolResult of toolResults) {
         const touched = touchedPathOf(toolResult);

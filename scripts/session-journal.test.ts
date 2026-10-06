@@ -102,6 +102,42 @@ test("session schema rejects wrong session id and non-increasing seq", () => {
   );
 });
 
+test("session schema validates tool deltas and compaction tool snapshots", () => {
+  const spec = {
+    name: "remote_search",
+    description: "search remote data",
+    parameters: { type: "object" },
+    promptGuidelines: [],
+    catalog: { source: "mcp:test", originalName: "search", binding: "stable", exposure: "deferred" },
+  };
+  const active = { version: "v1", activation: "search", spec };
+  const delta = {
+    ...userEntry(1),
+    entryType: "tool_definitions",
+    payload: { message: { role: "system", content: "", toolDefinitions: [active], toolsRemoved: [{ name: "old", version: "v0" }] } },
+  };
+  const compaction = {
+    ...userEntry(2),
+    entryType: "compaction",
+    payload: {
+      summary: "summary", summarizedFromSeq: 1, summarizedThroughSeq: 1, retainedFromSeq: 2,
+      tokensBefore: 10, retainedTokens: 2, summaryInputTokens: 3, summaryOutputTokens: 1,
+      provider: "test", model: "test", trigger: "manual",
+      toolState: { catalog: { mode: "deferred", tools: { remote_search: "v1" } }, activeTools: [active] },
+    },
+  };
+  assert.doesNotThrow(() => parseSessionItem(delta));
+  assert.doesNotThrow(() => parseSessionItem(compaction));
+  assert.throws(() => parseSessionItem({
+    ...delta,
+    payload: { message: { ...delta.payload.message, toolDefinitions: [{ ...active, activation: "invalid" }] } },
+  }), /tool activation/);
+  assert.throws(() => parseSessionItem({
+    ...compaction,
+    payload: { ...compaction.payload, toolState: { ...compaction.payload.toolState, activeTools: [{ version: "v1", spec }] } },
+  }), /tool activation/);
+});
+
 test("project keys include basename and canonical root hash", () => {
   const left = projectKeyForRoot("/tmp/work/project");
   const right = projectKeyForRoot("/tmp/other/project");

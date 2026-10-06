@@ -190,7 +190,7 @@ export class ConversationHistory {
     });
   }
 
-  appendToolDefinitions(input: { readonly message: SystemModelMessage }): SessionEntry {
+  appendToolState(input: { readonly message: SystemModelMessage }): SessionEntry {
     return this.append({ entryType: "tool_definitions", payload: input });
   }
 

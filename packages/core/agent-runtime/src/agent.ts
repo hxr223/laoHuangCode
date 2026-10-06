@@ -139,6 +139,8 @@ export interface CodingAgentOptions {
   conversationHistory?: ConversationHistoryLike | null;
   contextGovernor?: AgentContextGovernor | null;
   prepareTools?: (signal?: AbortSignal) => Promise<void>;
+  toolSelection?: ToolSelection;
+  onToolStateWarning?: (missingNames: readonly string[]) => void;
 }
 
 /** Execution context handed to every tool call in a batch. */
@@ -174,7 +176,7 @@ export class CodingAgent {
   private modelRuntime: ModelRuntime;
   private reasoningEffort: ReasoningEffort;
   private readonly toolRuntime: ToolRuntime;
-  private readonly selection = new ToolSelection();
+  private readonly selection: ToolSelection;
   readonly tools: AgentToolRegistry;
   readonly repeatToolReminderThresholds: readonly number[];
   readonly toolExecution: ToolExecutionMode;
@@ -195,12 +197,14 @@ export class CodingAgent {
   private readonly contextGovernor: AgentContextGovernor | null;
   private readonly prepareTools: CodingAgentOptions["prepareTools"];
   private readonly resources: CodingAgentOptions["resources"];
+  private readonly onToolStateWarning: CodingAgentOptions["onToolStateWarning"];
 
   constructor(options: CodingAgentOptions) {
     this.repeatToolReminderThresholds = normalizeReminderThresholds(
       options.repeatToolReminderThresholds ?? [3, 5, 8],
     );
     this.model = options.model;
+    this.selection = options.toolSelection ?? new ToolSelection();
     this.tools = options.tools;
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
@@ -214,6 +218,7 @@ export class CodingAgent {
     this.contextGovernor = options.contextGovernor ?? null;
     this.prepareTools = options.prepareTools;
     this.resources = options.resources;
+    this.onToolStateWarning = options.onToolStateWarning;
     this.modelRuntime = new ModelRuntime(this.adapter);
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
@@ -319,6 +324,7 @@ export class CodingAgent {
         onToolEvent: (name, args, result) => {
           this.onToolEvent?.(name, args, result);
         },
+        onToolStateWarning: this.onToolStateWarning,
         createError: (message, cause) => new AgentError(message, { cause }),
         createCancelled: (message, cause) => new AgentCancelled(message, { cause }),
       });

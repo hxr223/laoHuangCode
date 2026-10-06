@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 import type { ModelCatalog, ModelMessage, ModelPlatform } from "@laohuang/llm";
 import { ContextUsage, type BuildContextInput } from "@laohuang/session-context";
-import { projectTranscript } from "@laohuang/session-store";
+import { projectTranscript, type SessionEntry } from "@laohuang/session-store";
 import { createPiAiPlatform } from "@laohuang/llm-pi-ai";
 import { ConfigManager, CustomModelsStore, CredentialStore, ModelCatalogStore, defaultConfigPath, type Config } from "@laohuang/local-config";
 import { EventProjector, makeCancelIntent } from "@laohuang/runtime-protocol";
@@ -529,19 +529,24 @@ export async function main(
       projectRoot: instructionRoot,
       startupCwd: process.cwd(),
       version: VERSION,
-      presentation: terminalUi === null ? undefined : {
-        sessionChanged: (sessionId) => terminalUi?.setSessionId(sessionId),
-        historyChanged: (entries) => {
-          const transcript = projectTranscript(entries);
-          if (transcript.length > 0) {
-            terminalUi?.replaceTranscript(transcript);
-          } else if (runtimeInitialized) {
-            // 初始化期间不重复显示欢迎内容；后续切换到空历史时才重置界面。
-            resetEmptySessionTranscript(terminalUi);
-          }
-        },
-        contextUsageChanged: ({ contextTokens, contextWindow }) =>
-          terminalUi?.setContextUsage(contextTokens, contextWindow),
+      presentation: {
+        toolStateWarning: (names) => runtimeForCleanup?.publishNotice(
+          `Previously active tools are no longer available and were removed: ${names.join(", ")}`,
+        ),
+        ...(terminalUi === null ? {} : {
+          sessionChanged: (sessionId: string) => terminalUi?.setSessionId(sessionId),
+          historyChanged: (entries: readonly SessionEntry[]) => {
+            const transcript = projectTranscript(entries);
+            if (transcript.length > 0) {
+              terminalUi?.replaceTranscript(transcript);
+            } else if (runtimeInitialized) {
+              // 初始化期间不重复显示欢迎内容；后续切换到空历史时才重置界面。
+              resetEmptySessionTranscript(terminalUi);
+            }
+          },
+          contextUsageChanged: ({ contextTokens, contextWindow }: { contextTokens: number | null; contextWindow: number }) =>
+            terminalUi?.setContextUsage(contextTokens, contextWindow),
+        }),
       },
       commandDispatcher: (command) =>
         commandDispatcher?.(command) ?? { status: "not_found", command },
