@@ -1,6 +1,6 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import type { AttachmentContent } from "@laohuang/attachment";
-import type { LoadedTool, ToolCatalogState, ToolCall, ToolSpec } from "@laohuang/tools";
+import type { LoadedTool, ToolCatalogState, ToolCall, ToolReference, ToolSpec } from "@laohuang/tools";
 
 /** Raised when a streamed model response is incomplete or invalid. */
 export class ModelStreamError extends Error {
@@ -42,6 +42,7 @@ export interface SystemModelMessage {
   readonly role: "system";
   readonly content: string;
   readonly toolDefinitions?: readonly LoadedTool[];
+  readonly toolsRemoved?: readonly ToolReference[];
 }
 
 export interface UserModelMessage {

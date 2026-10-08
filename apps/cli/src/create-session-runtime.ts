@@ -1,4 +1,5 @@
 import { CodingAgent } from "@laohuang/agent-runtime";
+import { validatePiToolArguments } from "@laohuang/llm-pi-ai";
 import type { AttachmentStore } from "@laohuang/attachment";
 import type { SkillSession } from "@laohuang/tool-skill";
 import {
@@ -13,6 +14,7 @@ import {
   COMPACTION_SYSTEM_PROMPT,
   ContextBuilder,
   ContextGovernor,
+  projectToolSelectionState,
   type CompactionResult,
   type ConversationHistory,
 } from "@laohuang/session-context";
@@ -36,6 +38,7 @@ export interface SessionRuntimePresentation {
     readonly contextTokens: number | null;
     readonly contextWindow: number;
   }): void;
+  toolStateWarning?(missingNames: readonly string[]): void;
 }
 
 export interface CreateSessionRuntimeOptions {
@@ -104,8 +107,8 @@ export function createSessionRuntime(
   const activeConversationHistory = {
     appendSkillContext: (input: Parameters<ConversationHistory["appendSkillContext"]>[0]) =>
       activeHistory(options.sessionController).appendSkillContext(input),
-    appendToolDefinitions: (input: Parameters<ConversationHistory["appendToolDefinitions"]>[0]) =>
-      activeHistory(options.sessionController).appendToolDefinitions(input),
+    appendToolState: (input: Parameters<ConversationHistory["appendToolState"]>[0]) =>
+      activeHistory(options.sessionController).appendToolState(input),
     appendToolCatalog: (input: Parameters<ConversationHistory["appendToolCatalog"]>[0]) =>
       activeHistory(options.sessionController).appendToolCatalog(input),
     appendUser: (input: Parameters<ConversationHistory["appendUser"]>[0]) =>
@@ -150,6 +153,7 @@ export function createSessionRuntime(
       },
     });
 
+  const toolSelection = new ToolSelection();
   const agent = new CodingAgent({
     resources: {
       prepareInput: async (input, signal, inputs) => {
@@ -168,7 +172,10 @@ export function createSessionRuntime(
     modelAdapter: adapter,
     model: route.model,
     tools: options.tools,
+    validateToolArguments: validatePiToolArguments,
     prepareTools: options.prepareTools,
+    toolSelection,
+    onToolStateWarning: names => options.presentation?.toolStateWarning?.(names),
     cliName: "laohuang",
     cliVersion: options.version,
     provider: route.provider,
@@ -177,23 +184,20 @@ export function createSessionRuntime(
     startupCwd: options.startupCwd,
     conversationHistory: activeConversationHistory,
     contextGovernor: {
-      prepare: async ({ tools, projectTools, reserveTokens, pendingToolCall }) => {
+      prepare: async ({ tools, projectTools }) => {
         const history = options.sessionController.history;
         if (history === null) {
           return { messages: [], contextTokens: 0, contextWindow: 0, hardInputLimit: 0 };
         }
         const entries = history.entries();
-        const pendingAssistant = pendingToolCall
-          ? [...entries].reverse().find((entry) => entry.entryType === "assistant_message")
-          : undefined;
         const prepared = await createGovernor(history).prepare({
           protectedFromSeq: attachmentTurnStart,
-          entries: entries.filter((entry) => entry !== pendingAssistant),
+          entries,
           currentProvider: route.provider,
           currentModel: route.model,
           tools,
           projectTools,
-          reserveTokens,
+          toolState: toolSelection.snapshot(),
           budget: modelBudget(selectedModel),
           policy: defaultContextPolicy(),
         });
@@ -213,6 +217,7 @@ export function createSessionRuntime(
           currentModel: route.model,
           tools,
           projectTools,
+          toolState: toolSelection.snapshot(),
           budget: modelBudget(selectedModel),
           policy: defaultContextPolicy(),
         });
@@ -239,10 +244,7 @@ export function createSessionRuntime(
     journal: () => options.sessionController.currentJournal,
   });
 
-  const projectTools = (messages: readonly ModelMessage[]) => new ToolSelection().prepare(
-    options.tools,
-    messages.map((message) => message.role === "system" || message.role === "user" ? message : {}),
-  ).view.definitions;
+  const projectTools = (_messages: readonly ModelMessage[]) => toolSelection.prepare(options.tools).view.definitions;
 
   const refreshContextUsage = (): void => {
     const notify = options.presentation?.contextUsageChanged;
@@ -270,6 +272,7 @@ export function createSessionRuntime(
     options.skills?.selectSession(sessionId);
     options.presentation?.sessionChanged?.(sessionId);
     let entries = history.entries();
+    toolSelection.restore(projectToolSelectionState(entries));
     if (entries.length === 0) {
       const system = agent.messages.find(
         (message: ModelMessage) => message.role === "system",
@@ -300,6 +303,7 @@ export function createSessionRuntime(
       currentModel: route.model,
       tools: options.tools.definitions,
       projectTools,
+      toolState: toolSelection.snapshot(),
       budget: modelBudget(selectedModel),
       policy: defaultContextPolicy(),
       trigger: "manual",

@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
@@ -117,7 +118,7 @@ function createRunner(options: {
     provider: "openai",
     baseUrl: null,
     modelRuntime: new ModelRuntime(options.adapter),
-    toolRuntime: new ToolRuntime(registry),
+    toolRuntime: new ToolRuntime(registry, { validateToolArguments: validatePiToolArguments }),
     getTools: () => registry,
     toolExecution: "parallel",
     history: committer,

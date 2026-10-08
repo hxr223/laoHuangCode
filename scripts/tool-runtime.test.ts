@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import assert from "node:assert/strict";
 import { promises as fs } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,8 +26,10 @@ function call(
 }
 
 class StubTools implements ToolRegistryLike {
-  readonly definitions = [];
-  readonly orderedSpecs = [];
+  readonly definitions = ["read", "write", "slow", "fast"].map(name => ({
+    name, description: name, parameters: { type: "object" }, promptGuidelines: [],
+  }));
+  readonly orderedSpecs = this.definitions;
   readonly executed: string[] = [];
   private readonly executeFn: (
     name: string,
@@ -63,7 +66,7 @@ class StubTools implements ToolRegistryLike {
 
 test("returns a paired failure for malformed tool arguments", async () => {
   const tools = new StubTools(() => ({ ok: true }));
-  const runtime = new ToolRuntime(tools);
+  const runtime = new ToolRuntime(tools, { validateToolArguments: validatePiToolArguments });
 
   const batch = await runtime.execute({
     toolCalls: [call("call-1", "read", "not json")],
@@ -84,7 +87,7 @@ test("returns concurrent tool results in model call order", async () => {
     }
     return { ok: true, content: name };
   });
-  const runtime = new ToolRuntime(tools);
+  const runtime = new ToolRuntime(tools, { validateToolArguments: validatePiToolArguments });
 
   const batch = await runtime.execute({
     toolCalls: [
@@ -109,7 +112,7 @@ test("serializes a batch containing a write", async () => {
     order.push(`${name}:finish`);
     return { ok: true };
   });
-  const runtime = new ToolRuntime(tools);
+  const runtime = new ToolRuntime(tools, { validateToolArguments: validatePiToolArguments });
 
   await runtime.execute({
     toolCalls: [
@@ -128,6 +131,7 @@ test("passes cancellation through to running bash tools", async (t) => {
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const token = new CancelToken();
   const runtime = new ToolRuntime(createTestToolRegistry(directory), {
+    validateToolArguments: validatePiToolArguments,
     createExecutionContext: (toolCallId, cancelToken) =>
       new ToolExecutionContext({ toolCallId, cancelToken }),
   });
@@ -173,7 +177,7 @@ test("marks tools not started after cancellation as cancelled", async () => {
     }
     return { ok: true, content: name };
   });
-  const runtime = new ToolRuntime(tools);
+  const runtime = new ToolRuntime(tools, { validateToolArguments: validatePiToolArguments });
 
   const batch = await runtime.execute({
     toolCalls: [

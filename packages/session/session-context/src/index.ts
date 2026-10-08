@@ -5,3 +5,4 @@ export * from "./token-estimator.ts";
 export * from "./summary-prompt.ts";
 export * from "./compaction.ts";
 export * from "./context-governor.ts";
+export * from "./tool-state.ts";

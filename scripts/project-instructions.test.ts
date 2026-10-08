@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -334,6 +335,7 @@ test("first request order is system, user, then baseline reminder", async (t) =>
   writeInstructions(root, "AGENTS.md", "Always run tests.");
   const client = fakeClient(new FakeMessage("answer one"));
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -364,6 +366,7 @@ test("baseline is injected once across two run turns", async (t) => {
     new FakeMessage("answer two"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -391,6 +394,7 @@ test("no instruction files means no injected message", async (t) => {
   const root = tempDir(t);
   const client = fakeClient(new FakeMessage("answer"));
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -413,6 +417,7 @@ test("agent without instruction options injects nothing", async (t) => {
   writeInstructions(root, "AGENTS.md", "Always run tests.");
   const client = fakeClient(new FakeMessage("answer"));
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -452,6 +457,7 @@ test("successful read discovers descendant instructions after tool results", asy
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -491,6 +497,7 @@ test("successful edit also discovers descendant instructions", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -530,6 +537,7 @@ test("one reminder covers the root-to-dir chain broad to specific", async (t) =>
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -567,6 +575,7 @@ test("bash never triggers discovery", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -598,6 +607,7 @@ test("failed and out-of-root file operations yield no discovery", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -633,6 +643,7 @@ test("cancelled tool operations yield no discovery", async (t) => {
     ]),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -657,6 +668,7 @@ test("scopes loaded by the baseline are not re-injected", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -698,6 +710,7 @@ test("a scope discovered once is not re-injected on later touches", async (t) =>
     new FakeMessage("two"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",
@@ -746,6 +759,7 @@ test("touched absolute path never appears in serialized history", async (t) => {
     new FakeMessage("done"),
   );
   const agent = new CodingAgent({
+    validateToolArguments: validatePiToolArguments,
     modelAdapter: fakeModelAdapter(client),
     model: "test-model",
     provider: "openai",

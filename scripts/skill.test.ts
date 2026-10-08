@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, writeFile, rm, symlink, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -214,7 +215,7 @@ test("Agent loads skills as tools, announces between pairs, and rejects explicit
     }
     return { requestId: request.requestId!, message: { role: "assistant", provider: "fake", model: "fake", content: requests.length === 1 ? [{ type: "tool-call", call: { id: "call", name: "skill", arguments: JSON.stringify({ name: "review" }) } }] : [{ type: "text", text: "done" }] }, finishReason: requests.length === 1 ? "tool-calls" : "stop", usage: { inputTokens: 0, outputTokens: 0 } };
   } };
-  const agent = new CodingAgent({ modelAdapter: adapter, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills });
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: adapter, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills });
   await assert.rejects(agent.run("/skill:missing")); assert.equal(requests.length, 0); assert.equal(agent.messages.length, 1);
   await agent.run("review changes"); assert.equal(requests.length, 2);
   assert.equal(requests[0]!.messages.filter(message => message.role === "user" && message.skillContext?.kind === "catalog").length, 1);
@@ -267,14 +268,14 @@ test("Agent restores a compacted Skill catalog and bounds an impossible context 
     return { requestId: request.requestId!, message: { role: "assistant", provider: "fake", model: "fake", content: [{ type: "text", text: "done" }] }, finishReason: "stop", usage: { inputTokens: 0, outputTokens: 0 } };
   } };
   const dropCatalog = (messages: readonly ModelMessage[]) => messages.filter(message => !(message.role === "user" && message.skillContext?.kind === "catalog"));
-  const agent = new CodingAgent({ modelAdapter: model, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills,
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: model, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills,
     contextGovernor: { prepare: async ({ messages }) => ({ messages: ++preparation === 1 ? dropCatalog(messages) : messages }) } });
   await agent.run("review"); assert.equal(preparation, 2); assert.equal(calls, 1);
-  const impossible = new CodingAgent({ modelAdapter: model, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills,
+  const impossible = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: model, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills,
     contextGovernor: { prepare: async ({ messages }) => ({ messages: dropCatalog(messages) }) } });
   await assert.rejects(impossible.run("review"), /cannot fit/); assert.equal(calls, 1);
   const token = new CancelToken();
-  const cancelled = new CodingAgent({ modelAdapter: model, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills,
+  const cancelled = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: model, model: "fake", provider: "fake", tools: new ToolRegistry([skills.tool]), resources: skills,
     contextGovernor: { prepare: async ({ messages }) => { token.cancel("before request"); return { messages }; } } });
   await assert.rejects(cancelled.run("/skill:review", null, { cancelToken: token })); assert.equal(calls, 1);
   await put(join(root, "review.md"), document("review", "changed")); watcher.emit(join(root, "review.md"));

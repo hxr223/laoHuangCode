@@ -43,6 +43,59 @@ const models: readonly ModelInfo[] = [
   },
 ];
 
+test("CLI runtime injects SDK validation and lets the model correct a rejected call", async (t) => {
+  const { root, controller } = await fixture(t);
+  const executed: Record<string, unknown>[] = [];
+  const requests: ModelRequest[] = [];
+  const adapter: ModelAdapter = {
+    name: "validation-fixture",
+    async runAttempt(request) {
+      requests.push(request);
+      const round = requests.length;
+      if (round === 2) {
+        const result = request.messages.at(-1);
+        assert.ok(result?.role === "tool-result" && result.isError);
+        assert.equal(result.toolCallId, "call-1");
+        assert.match(result.content, /limit/);
+        assert.equal(executed.length, 0);
+      }
+      if (round === 3) {
+        const result = request.messages.at(-1);
+        assert.ok(result?.role === "tool-result" && !result.isError);
+        assert.equal(result.toolCallId, "call-2");
+      }
+      return {
+        requestId: request.requestId ?? "",
+        finishReason: round < 3 ? "tool-calls" : "stop",
+        usage: { inputTokens: 1, outputTokens: 1 },
+        message: { role: "assistant", provider: request.provider, model: request.model, content: round < 3
+          ? [{ type: "tool-call", call: { id: `call-${round}`, name: "inspect", arguments: JSON.stringify({ limit: round === 1 ? "wrong" : "20" }) } }]
+          : [{ type: "text", text: "done" }] },
+      };
+    },
+  };
+  const composed = createSessionRuntime({
+    modelAdapter: adapter, catalog: new FakeCatalog(), route: { provider: "test", model: "model-a", baseUrl: null },
+    tools: new ToolRegistry([{
+      spec: { name: "inspect", description: "Inspect fixture", promptGuidelines: [], parameters: {
+        type: "object", required: ["limit"], properties: { limit: { type: "integer", minimum: 1 } },
+      } },
+      execute: args => { executed.push(args); return { ok: true, content: "fixture" }; },
+    }]),
+    sessionController: controller, projectRoot: root, startupCwd: root, version: "test",
+  });
+  try {
+    assert.equal(await composed.agent.run("inspect"), "done");
+    assert.deepEqual(executed, [{ limit: 20 }]);
+    assert.equal(requests.length, 3);
+    const results = controller.history!.entries().filter(entry => entry.entryType === "tool_result");
+    assert.equal(results.length, 2);
+  } finally {
+    await composed.session.close({ timeoutMs: 1000 });
+    await composed.close();
+  }
+});
+
 class FakeCatalog implements ModelCatalog {
   listProviders(): readonly ModelProviderInfo[] {
     return [
@@ -263,6 +316,7 @@ test("shared runtime prepares deferred tools, persists search and restores only 
   }));
   const requests: ModelRequest[] = [];
   const usage: Array<number | null> = [];
+  const warnings: string[][] = [];
   const adapter: ModelAdapter = {
     name: "dynamic-fixture",
     runAttempt: async (request) => {
@@ -294,7 +348,10 @@ test("shared runtime prepares deferred tools, persists search and restores only 
     projectRoot: root,
     startupCwd: root,
     version: "9.8.7",
-    presentation: { contextUsageChanged: (value) => usage.push(value.contextTokens) },
+    presentation: {
+      contextUsageChanged: (value) => usage.push(value.contextTokens),
+      toolStateWarning: names => warnings.push([...names]),
+    },
   });
   try {
     assert.equal(await composed.agent.run("use remote_0"), "done");
@@ -319,7 +376,17 @@ test("shared runtime prepares deferred tools, persists search and restores only 
       ...definition, spec: { ...definition.spec, description: `${definition.spec.description} updated` },
     })));
     await composed.agent.run("check updated catalog");
-    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), ["tool_search"]);
+    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), ["remote_0", "tool_search"]);
+    const changed = controller.history?.entries().filter((entry) => entry.entryType === "tool_definitions").at(-1);
+    assert.deepEqual(changed?.entryType === "tool_definitions" ? changed.payload.message.toolsRemoved?.map(tool => tool.name) : [], ["remote_0"]);
+    assert.deepEqual(changed?.entryType === "tool_definitions" ? changed.payload.message.toolDefinitions?.map(tool => tool.spec.name) : [], ["remote_0"]);
+
+    registry.removeOwner("mcp:fixture");
+    await composed.agent.run("check missing tool");
+    assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.name), []);
+    assert.deepEqual(warnings, [["remote_0"]]);
+    await composed.agent.run("check warning once");
+    assert.deepEqual(warnings, [["remote_0"]]);
   } finally {
     await composed.session.close({ timeoutMs: 1_000 });
     await composed.close();

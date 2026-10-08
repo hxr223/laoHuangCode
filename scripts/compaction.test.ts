@@ -24,11 +24,12 @@ test("compaction cut points never split tool call and tool result semantic units
   assert.equal(plan.retainedFromSeq, 2);
 });
 
-test("new tool definitions are retained with their producing call and result", () => {
+test("tool state entries are excluded from compaction conversation units", () => {
   const definition: SessionEntry = { ...base(4), kind: "entry", entryType: "tool_definitions", payload: { message: { role: "system", content: "", toolDefinitions: [] } } };
   const plan = selectCompactionPlan({ entries: [user(1, "old"), assistantTool(2, "search"), toolResult(3, "search"), definition], retainTokens: 1, estimator: new DefaultTokenEstimator() });
-  assert.deepEqual(plan.retainedEntries.map(entry => entry.seq), [2, 3, 4]);
+  assert.deepEqual(plan.retainedEntries.map(entry => entry.seq), [2, 3]);
   assert.deepEqual(plan.summarizedEntries.map(entry => entry.seq), [1]);
+  assert.equal([...plan.retainedEntries, ...plan.summarizedEntries].some(entry => entry.seq === 4), false);
 });
 
 function base(seq: number): Omit<SessionEntry, "entryType" | "payload"> {

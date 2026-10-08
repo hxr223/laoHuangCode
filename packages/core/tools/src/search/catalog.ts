@@ -6,15 +6,29 @@ export interface LoadedTool {
   readonly spec: ToolSpec;
 }
 
+export interface ActiveTool extends LoadedTool {
+  readonly activation: "baseline" | "search";
+}
+
+export interface ToolReference {
+  readonly name: string;
+  readonly version?: string;
+}
+
 export interface ToolCatalogState {
   readonly mode: "full" | "deferred";
   readonly tools: Readonly<Record<string, string>>;
 }
 
-/** Structure supplied by the history owner; this package does not import LLM types. */
-export interface ToolSelectionRecord {
-  readonly toolDefinitions?: readonly LoadedTool[];
-  readonly toolCatalog?: ToolCatalogState;
+export interface ToolSelectionSnapshot {
+  readonly catalog: ToolCatalogState | null;
+  readonly activeTools: readonly ActiveTool[];
+}
+
+export interface ToolStateUpdate {
+  readonly catalog?: ToolCatalogState;
+  readonly toolsAdded: readonly ActiveTool[];
+  readonly toolsRemoved: readonly ToolReference[];
 }
 
 export function canonicalToolJson(value: unknown): string {

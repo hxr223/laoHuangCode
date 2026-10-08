@@ -1,33 +1,112 @@
 import type { ToolRegistryLike, ToolSpec } from "../index.ts";
-import { canonicalToolJson, toolSearchText, toolVersion, type LoadedTool, type ToolCatalogState, type ToolSelectionRecord } from "./catalog.ts";
+import {
+  canonicalToolJson,
+  toolSearchText,
+  toolVersion,
+  type ActiveTool,
+  type ToolCatalogState,
+  type ToolSelectionSnapshot,
+  type ToolStateUpdate,
+} from "./catalog.ts";
 import { Bm25Index } from "./bm25.ts";
 import { SEARCH_TOOL_NAME, SEARCH_TOOL_SPEC } from "./search-tool.ts";
 
 export const TOOL_SEARCH_THRESHOLD = 20;
 
-/** Per-agent cache. Loaded state always comes from the retained context, not this cache. */
+/** Per-agent tool loadout. Conversation messages never own active tool state. */
 export class ToolSelection {
   private indexKey = "";
   private index: Bm25Index | undefined;
+  private catalog: ToolCatalogState | null = null;
+  private readonly active = new Map<string, ActiveTool>();
 
-  prepare(registry: ToolRegistryLike, records: readonly ToolSelectionRecord[], canLoad: (tools: readonly LoadedTool[], resultBytes: number) => boolean | Promise<boolean> = () => true,
-    retainedRecords?: () => readonly ToolSelectionRecord[]) {
+  apply(update: ToolStateUpdate): void {
+    if (update.catalog !== undefined) this.catalog = copyCatalog(update.catalog);
+    for (const removed of update.toolsRemoved) {
+      const current = this.active.get(removed.name);
+      if (current !== undefined && (removed.version === undefined || current.version === removed.version)) {
+        this.active.delete(removed.name);
+      }
+    }
+    for (const tool of update.toolsAdded) this.active.set(tool.spec.name, copyActiveTool(tool));
+  }
+
+  restore(snapshot: ToolSelectionSnapshot): void {
+    this.catalog = snapshot.catalog === null ? null : copyCatalog(snapshot.catalog);
+    this.active.clear();
+    for (const tool of snapshot.activeTools) this.active.set(tool.spec.name, copyActiveTool(tool));
+  }
+
+  snapshot(): ToolSelectionSnapshot {
+    return {
+      catalog: this.catalog === null ? null : copyCatalog(this.catalog),
+      activeTools: [...this.active.values()].map(copyActiveTool),
+    };
+  }
+
+  prepare(registry: ToolRegistryLike) {
     const all = registry.definitions.filter(spec => spec.name !== SEARCH_TOOL_NAME);
     const deferred = all.filter(spec => spec.catalog?.exposure === "deferred");
     const mode = all.length >= TOOL_SEARCH_THRESHOLD ? "deferred" : "full";
-    const versions = new Map(deferred.map(spec => [spec.name, toolVersion(spec)]));
-    const catalog: ToolCatalogState = { mode, tools: mode === "deferred" ? Object.fromEntries(versions) : {} };
-    let previous: ToolCatalogState | undefined;
-    const loaded = loadedVersions(records, versions);
-    for (const record of records) {
-      if (record.toolCatalog) {
-        previous = record.toolCatalog;
+    const versions = new Map(all.map(spec => [spec.name, toolVersion(spec)]));
+    const catalog: ToolCatalogState = {
+      mode,
+      tools: mode === "deferred"
+        ? Object.fromEntries(deferred.map(spec => [spec.name, versions.get(spec.name)!]))
+        : {},
+    };
+    const current = new Map(all.map(spec => [spec.name, spec]));
+    const desired = new Map<string, ActiveTool>();
+    const toolsAdded: ActiveTool[] = [];
+    const toolsRemoved: { name: string; version?: string }[] = [];
+    const missing: string[] = [];
+    for (const [name, active] of this.active) {
+      const spec = current.get(name);
+      if (spec === undefined) {
+        toolsRemoved.push({ name, version: active.version });
+        missing.push(name);
+        continue;
+      }
+      const baseline = mode === "full" || spec.catalog?.exposure !== "deferred";
+      const version = versions.get(name)!;
+      if (version !== active.version) {
+        toolsRemoved.push({ name, version: active.version });
+        if (baseline || active.activation === "search") {
+          const updated = {
+            spec,
+            version,
+            activation: spec.catalog?.exposure === "deferred" && active.activation === "search"
+              ? "search" as const
+              : "baseline" as const,
+          };
+          desired.set(name, updated);
+          toolsAdded.push(updated);
+        }
+        continue;
+      }
+      if (baseline || active.activation === "search") {
+        desired.set(name, { spec, version, activation: active.activation });
+      } else {
+        toolsRemoved.push({ name, version: active.version });
       }
     }
-    const changed = canonicalToolJson(previous ?? { mode: "full", tools: {} }) !== canonicalToolJson(catalog);
+    for (const spec of all) {
+      const baseline = mode === "full" || spec.catalog?.exposure !== "deferred";
+      if (!baseline || desired.has(spec.name)) continue;
+      const added = { spec, version: versions.get(spec.name)!, activation: "baseline" as const };
+      desired.set(spec.name, added);
+      toolsAdded.push(added);
+    }
+    const catalogChanged = canonicalToolJson(this.catalog ?? { mode: "full", tools: {} }) !== canonicalToolJson(catalog);
+    const update: ToolStateUpdate = {
+      ...(catalogChanged ? { catalog } : {}),
+      toolsAdded,
+      toolsRemoved,
+    };
+    const loaded = new Map([...desired].map(([name, tool]) => [name, tool.version]));
     let announcement: { content: string; toolCatalog: ToolCatalogState } | undefined;
-    if (changed) {
-      const before = previous?.mode === "deferred" && mode === "deferred" ? previous.tools : {};
+    if (catalogChanged) {
+      const before = this.catalog?.mode === "deferred" && mode === "deferred" ? this.catalog.tools : {};
       const added = Object.keys(catalog.tools).filter(name => before[name] !== catalog.tools[name]);
       const removed = Object.keys(before).filter(name => before[name] !== catalog.tools[name]);
       const sections = ["<system-reminder>", mode === "deferred" ? "Use tool_search to search and load tool definitions before calling deferred tools." : "All currently available tool definitions are now directly available."];
@@ -43,9 +122,11 @@ export class ToolSelection {
         this.indexKey = key;
       }
     }
-    const pending = new Map<string, LoadedTool>();
-    let resultBytes = 0;
-    const definitions = mode === "full" ? all : [...all.filter(spec => spec.catalog?.exposure !== "deferred" || loaded.has(spec.name)), SEARCH_TOOL_SPEC];
+    const pending = new Map<string, ActiveTool>();
+    const definitions = [
+      ...all.filter(spec => desired.has(spec.name)),
+      ...(mode === "deferred" ? [SEARCH_TOOL_SPEC] : []),
+    ];
     const visible = new Set(definitions.map(spec => spec.name));
     const index = this.index;
     const view: ToolRegistryLike = {
@@ -62,40 +143,28 @@ export class ToolSelection {
         const matches = (index?.search(query, limit) ?? []).map(name => {
           const spec = deferred.find(tool => tool.name === name)!;
           return { name, description: spec.description.length > 1024 ? `${spec.description.slice(0, 1024)}...[truncated]` : spec.description,
-            source: spec.catalog?.source, status: "not_loaded_budget" };
+            source: spec.catalog?.source, status: "loaded" };
         });
-        resultBytes += Buffer.byteLength(JSON.stringify({ ok: true, matches }), "utf8");
-        const previouslyPending = new Set(pending.keys());
-        // A budget preflight may compact old definitions. Recheck earlier hits
-        // once after it; the agent permits at most one preflight per model step.
-        for (let pass = 0; pass < (retainedRecords ? 2 : 1); pass++) {
-          const retained = retainedRecords ? loadedVersions(retainedRecords(), versions) : loaded;
-          for (const match of matches) {
-            const { name } = match;
-            if (pending.has(name)) { match.status = previouslyPending.has(name) ? "already_loaded" : "loaded"; continue; }
-            if (retained.has(name)) { match.status = "already_loaded"; continue; }
-            if (pass > 0 && match.status === "not_loaded_budget") continue;
-            const spec = deferred.find(tool => tool.name === name)!;
-            const tool = { spec, version: versions.get(name)! };
-            if (await canLoad([...pending.values(), tool], resultBytes)) { pending.set(name, tool); match.status = "loaded"; }
-            else match.status = "not_loaded_budget";
+        for (const match of matches) {
+          const { name } = match;
+          if (pending.has(name) || loaded.has(name)) {
+            match.status = "already_loaded";
+            continue;
           }
+          const spec = deferred.find(tool => tool.name === name)!;
+          pending.set(name, { spec, version: versions.get(name)!, activation: "search" });
         }
         return { ok: true, matches, ...(matches.length ? {} : { content: "No matching tools. Try an exact name, source, or different keywords." }) };
       },
     };
-    return { view, announcement, mode, pending: () => [...pending.values()] };
+    return { view, announcement, mode, update, missing, pending: () => [...pending.values()] };
   }
 }
 
-function loadedVersions(records: readonly ToolSelectionRecord[], versions: ReadonlyMap<string, string>): Map<string, string> {
-  const loaded = new Map<string, string>();
-  for (const record of records) {
-    if (record.toolCatalog?.mode === "deferred") {
-      for (const [name, version] of loaded) if (record.toolCatalog.tools[name] !== version) loaded.delete(name);
-    }
-    for (const tool of record.toolDefinitions ?? []) loaded.set(tool.spec.name, tool.version);
-  }
-  for (const [name, version] of loaded) if (versions.get(name) !== version) loaded.delete(name);
-  return loaded;
+function copyCatalog(catalog: ToolCatalogState): ToolCatalogState {
+  return { mode: catalog.mode, tools: { ...catalog.tools } };
+}
+
+function copyActiveTool(tool: ActiveTool): ActiveTool {
+  return { version: tool.version, spec: tool.spec, activation: tool.activation };
 }

@@ -8,6 +8,7 @@ import type {
   ReasoningEffort,
 } from "@laohuang/llm";
 import { assertAttachmentContent } from "@laohuang/attachment";
+import type { ToolSelectionSnapshot } from "@laohuang/tools";
 import { normalizeSessionTitle } from "./session-metadata.ts";
 
 export type SessionOrigin = "new" | "fork" | "clone" | "import";
@@ -105,6 +106,7 @@ export interface CompactionPayload {
   readonly provider: string;
   readonly model: string;
   readonly trigger: "automatic" | "manual" | "provider_overflow";
+  readonly toolState?: ToolSelectionSnapshot;
 }
 
 export type SessionEntryType =
@@ -389,24 +391,18 @@ export function parseSessionItem(
       if (entryType === "tool_definitions") {
         if (message["role"] !== "system" || !Array.isArray(message["toolDefinitions"])) throw new SessionSchemaError("invalid tool definitions message");
         for (const raw of message["toolDefinitions"]) {
-          const definition = objectOf(raw, "loaded tool");
-          requireString(definition, "version");
-          const spec = objectOf(definition["spec"], "tool spec");
-          requireString(spec, "name");
-          if (typeof spec["description"] !== "string" || !Array.isArray(spec["promptGuidelines"]) || spec["promptGuidelines"].some(value => typeof value !== "string")) throw new SessionSchemaError("invalid tool spec");
-          objectOf(spec["parameters"], "tool parameters");
-          if (spec["catalog"] !== undefined) {
-            const catalog = objectOf(spec["catalog"], "tool catalog metadata");
-            for (const key of ["source", "originalName", "binding"]) requireString(catalog, key);
-            if (catalog["exposure"] !== "direct" && catalog["exposure"] !== "deferred") throw new SessionSchemaError("invalid exposure");
-          }
+          assertStoredTool(raw, true);
         }
+        if (message["toolsRemoved"] !== undefined) assertToolReferences(message["toolsRemoved"]);
       } else {
         if (message["role"] !== "user") throw new SessionSchemaError("invalid catalog message role");
         const catalog = objectOf(message["toolCatalog"], "tool catalog");
         if (catalog["mode"] !== "full" && catalog["mode"] !== "deferred") throw new SessionSchemaError("invalid tool mode");
         for (const version of Object.values(objectOf(catalog["tools"], "tool versions"))) if (typeof version !== "string") throw new SessionSchemaError("invalid tool version");
       }
+    }
+    if (entryType === "compaction" && entryPayload["toolState"] !== undefined) {
+      assertToolSelectionSnapshot(entryPayload["toolState"]);
     }
     return input as unknown as SessionEntry;
   }
@@ -435,6 +431,49 @@ export function parseSessionItem(
     return input as unknown as SessionRecord;
   }
   throw new SessionSchemaError("invalid session item kind");
+}
+
+function assertStoredTool(value: unknown, activationOptional: boolean): void {
+  const definition = objectOf(value, "loaded tool");
+  requireString(definition, "version");
+  const activation = definition["activation"];
+  if ((!activationOptional || activation !== undefined) && activation !== "baseline" && activation !== "search") {
+    throw new SessionSchemaError("invalid tool activation");
+  }
+  const spec = objectOf(definition["spec"], "tool spec");
+  requireString(spec, "name");
+  if (typeof spec["description"] !== "string" || !Array.isArray(spec["promptGuidelines"]) || spec["promptGuidelines"].some(value => typeof value !== "string")) {
+    throw new SessionSchemaError("invalid tool spec");
+  }
+  objectOf(spec["parameters"], "tool parameters");
+  if (spec["catalog"] !== undefined) {
+    const catalog = objectOf(spec["catalog"], "tool catalog metadata");
+    for (const key of ["source", "originalName", "binding"]) requireString(catalog, key);
+    if (catalog["exposure"] !== "direct" && catalog["exposure"] !== "deferred") throw new SessionSchemaError("invalid exposure");
+  }
+}
+
+function assertToolReferences(value: unknown): void {
+  if (!Array.isArray(value)) throw new SessionSchemaError("invalid removed tools");
+  for (const raw of value) {
+    const reference = objectOf(raw, "removed tool");
+    requireString(reference, "name");
+    if (reference["version"] !== undefined) requireString(reference, "version");
+  }
+}
+
+function assertToolSelectionSnapshot(value: unknown): void {
+  const snapshot = objectOf(value, "tool state");
+  const catalog = snapshot["catalog"];
+  if (catalog !== null) {
+    const state = objectOf(catalog, "tool state catalog");
+    if (state["mode"] !== "full" && state["mode"] !== "deferred") throw new SessionSchemaError("invalid tool mode");
+    for (const version of Object.values(objectOf(state["tools"], "tool versions"))) {
+      if (typeof version !== "string") throw new SessionSchemaError("invalid tool version");
+    }
+  }
+  if (!Array.isArray(snapshot["activeTools"])) throw new SessionSchemaError("invalid active tools");
+  for (const tool of snapshot["activeTools"]) assertStoredTool(tool, false);
 }
 
 export function validateSessionItems(

@@ -1,3 +1,4 @@
+import { validatePiToolArguments } from "../packages/llm/llm-pi-ai/src/index.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { CodingAgent, AgentCancelled } from "../packages/core/agent-runtime/src/index.ts";
@@ -31,7 +32,7 @@ test("next model step sees the latest tools and shares its snapshot with governo
     requests.push(request); return response(request, requests.length === 1 ? "first" : undefined);
   } };
   const token = new CancelToken();
-  const agent = new CodingAgent({ modelAdapter: adapter, tools: registry, provider: "test", model: "test",
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: adapter, tools: registry, provider: "test", model: "test",
     contextGovernor: { prepare: async input => { budgets.push(input.tools); return { messages: input.messages }; } } });
   assert.equal(await agent.run("go", null, { cancelToken: token }), "done");
   assert.deepEqual(requests.map(r => r.tools.map(t => t.name)), [["first"], ["second"]]);
@@ -51,7 +52,7 @@ test("a revoked tool returned by an in-flight model request cannot execute its r
     }
     return response(request);
   } };
-  const agent = new CodingAgent({ modelAdapter: adapter, tools: registry, provider: "test", model: "test" });
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: adapter, tools: registry, provider: "test", model: "test" });
   await agent.run("go");
   assert.equal(calls, 0);
   const result = agent.messages.find(message => message.role === "tool-result");
@@ -62,7 +63,7 @@ test("a revoked tool returned by an in-flight model request cannot execute its r
 test("cancelling initial tool preparation commits input but never sends a model request", async () => {
   const token = new CancelToken();
   let called = false;
-  const agent = new CodingAgent({ modelAdapter: { name: "fixture", runAttempt: async request => { called = true; return response(request); } },
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, modelAdapter: { name: "fixture", runAttempt: async request => { called = true; return response(request); } },
     tools: new ToolRegistry([]), provider: "test", model: "test", prepareTools: async signal => {
       assert.equal(signal, token.signal); token.cancel("test"); signal?.throwIfAborted();
     } });
@@ -78,7 +79,7 @@ test("MCP discovery, model call, SDK execution and history form a complete local
     credentials: { read: async () => undefined, write: async () => {}, remove: async () => {} },
     onToolsChanged: (owner, tools) => registry.replaceOwner(owner, tools), onStatus: () => {} });
   let rounds = 0;
-  const agent = new CodingAgent({ tools: registry, model: "test", provider: "test", prepareTools: signal => service.waitUntilReady(signal),
+  const agent = new CodingAgent({ validateToolArguments: validatePiToolArguments, tools: registry, model: "test", provider: "test", prepareTools: signal => service.waitUntilReady(signal),
     modelAdapter: { name: "fixture", runAttempt: async request => {
       if (++rounds === 1) { assert.equal(request.tools.length, 1); return response(request, request.tools[0]!.name); }
       const result = request.messages.find(message => message.role === "tool-result");

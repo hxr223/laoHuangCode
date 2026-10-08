@@ -3,7 +3,7 @@ import {
   modelErrorKind,
   type ModelMessage,
 } from "@laohuang/llm";
-import type { ToolSpec } from "@laohuang/tools";
+import type { ToolSelectionSnapshot, ToolSpec } from "@laohuang/tools";
 import type {
   CompactionEntry,
   CompactionPayload,
@@ -42,7 +42,6 @@ export interface CalculatedModelBudget {
 
 export interface PrepareContextInput {
   readonly protectedFromSeq?: number;
-  readonly reserveTokens?: number;
   readonly projectTools?: (messages: readonly ModelMessage[]) => readonly ToolSpec[];
   readonly entries: readonly SessionEntry[];
   readonly currentProvider: string;
@@ -51,6 +50,7 @@ export interface PrepareContextInput {
   readonly budget: ModelBudget;
   readonly policy: ContextPolicy;
   readonly anchor?: UsageAnchor | null;
+  readonly toolState?: ToolSelectionSnapshot;
 }
 
 export interface PreparedContext {
@@ -145,9 +145,7 @@ export class ContextGovernor {
     const plan = selectCompactionPlan({
       protectedFromSeq: input.protectedFromSeq,
       entries: projectedEntries,
-      // A search preflight reserves the pending call/result/definition unit.
-      // Keep the latest completed unit and summarize older units to make room.
-      retainTokens: input.reserveTokens === undefined ? calculated.retainTokens : 1,
+      retainTokens: calculated.retainTokens,
       estimator: this.#estimator,
     });
     if (plan.summarizedEntries.length === 0) {
@@ -180,6 +178,7 @@ export class ContextGovernor {
       provider: input.currentProvider,
       model: input.currentModel,
       trigger: input.trigger,
+      ...(input.toolState === undefined ? {} : { toolState: input.toolState }),
     };
     return { entry: this.#appendCompaction(payload) };
   }
@@ -221,7 +220,7 @@ export class ContextGovernor {
         built.messages.filter((message, index) => index > 0 && message.role === "user"),
       ),
       toolsFingerprint: fingerprintContextPart(tools),
-    }).totalTokens + (input.reserveTokens ?? 0);
+    }).totalTokens;
   }
 }
 

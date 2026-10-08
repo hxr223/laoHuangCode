@@ -2,13 +2,14 @@ import type { CancelToken } from "@laohuang/runtime-protocol";
 import { randomUUID } from "node:crypto";
 import type { ModelMessage, ModelUsage } from "@laohuang/llm";
 import type { ToolCall, ToolResult } from "@laohuang/tools";
+import type { ToolStateUpdate } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 
 export type HistoryMessage = ModelMessage;
 
 export interface ConversationHistoryLike {
   appendSkillContext?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
-  appendToolDefinitions?(input: { readonly message: Extract<ModelMessage, { role: "system" }> }): unknown;
+  appendToolState?(input: { readonly message: Extract<ModelMessage, { role: "system" }> }): unknown;
   appendToolCatalog?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
   appendUser(input: {
     readonly message: Extract<ModelMessage, { readonly role: "user" }>;
@@ -191,10 +192,21 @@ export class HistoryCommitter {
     this.messages.push(message);
   }
 
-  commitToolContext(message: Extract<ModelMessage, { role: "system" | "user" }>): void {
+  commitToolState(update: ToolStateUpdate): void {
     this.raiseIfCancelled();
-    if (message.role === "system") this.conversationHistory?.appendToolDefinitions?.({ message });
-    else this.conversationHistory?.appendToolCatalog?.({ message });
+    this.conversationHistory?.appendToolState?.({
+      message: {
+        role: "system",
+        content: "",
+        toolDefinitions: update.toolsAdded,
+        toolsRemoved: update.toolsRemoved,
+      },
+    });
+  }
+
+  commitToolCatalog(message: Extract<ModelMessage, { role: "user" }>): void {
+    this.raiseIfCancelled();
+    this.conversationHistory?.appendToolCatalog?.({ message });
     this.messages.push(message);
   }
 
