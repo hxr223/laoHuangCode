@@ -8,7 +8,8 @@ export function createMcpAuthTool(options: { id: string; binding: string; login(
       name: mcpToolName(options.id, "authenticate"),
       description: `Authenticate with MCP server "${options.id}" via OAuth. Takes no arguments. Starts login and immediately shows the user an authorization URL; the user must open it unchanged in their browser and approve access. Waits up to 15 minutes for the callback. On success, reconnects and replaces this synthetic tool with real MCP tools. The user may cancel and retry.`,
       parameters: { type: "object", properties: {}, additionalProperties: false }, promptGuidelines: [],
-      catalog: { source: `mcp:${options.id}`, originalName: "authenticate", binding: `${options.binding}:synthetic-auth`, exposure: "deferred" },
+      exposure: "deferred",
+      catalog: { source: `mcp:${options.id}`, originalName: "authenticate", binding: `${options.binding}:synthetic-auth` },
     },
     executionMode: "sequential",
     execute: async (args, context) => {

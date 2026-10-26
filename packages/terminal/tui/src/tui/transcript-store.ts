@@ -19,6 +19,10 @@ export type RestoredTranscriptItemLike =
       readonly subject: string;
       readonly result: string;
       readonly isError: boolean;
+      readonly executions?: readonly {
+        readonly toolCallId: string; readonly parentToolCallId: string; readonly name: string;
+        readonly arguments: Record<string, unknown>; readonly status: string; readonly durationMs: number; readonly error?: string;
+      }[];
     }
   | { readonly kind: "notice"; readonly text: string; readonly tone: "info" | "warning" | "error" };
 
@@ -56,6 +60,8 @@ export interface ToolTranscriptBlock extends BaseTranscriptBlock {
   stderr: string;
   expanded: boolean;
   outputNote?: string;
+  parentToolCallId?: string;
+  children?: ToolTranscriptBlock[];
 }
 
 export interface NoticeTranscriptBlock extends BaseTranscriptBlock {
@@ -259,6 +265,18 @@ export class TranscriptStore {
         block.stderr = item.isError ? item.result : "";
         block.mutable = false;
         this.append(block);
+        if (item.executions !== undefined) block.children = [];
+        for (const record of item.executions ?? []) {
+          const child = createToolBlock(record.toolCallId, { name: record.name,
+            subject: String(record.arguments.command || record.arguments.path || JSON.stringify(record.arguments)),
+            status: record.status, expanded: this.#toolOutputExpanded });
+          child.parentToolCallId = record.parentToolCallId;
+          child.durationMs = record.durationMs;
+          child.outputNote = record.error;
+          child.mutable = false;
+          (block.children ??= []).push(child);
+          this.#byCorrelation.set(`tool:${child.key}`, child);
+        }
       } else {
         this.append(createNoticeBlock(this.newBlockId(), item.text, item.tone));
       }
@@ -315,18 +333,28 @@ export class TranscriptStore {
     if (kind === "tool.started") {
       this.freezeThinking();
       const args = update.payload.arguments;
-      const subject = isRecord(args) ? String(update.payload.name === "skill" ? args.name ?? "" : args.command || args.path || "") : "";
-      this.append(createToolBlock(correlationId, {
+      const subject = isRecord(args) ? String(update.payload.name === "skill" ? args.name ?? "" : args.command || args.path || (update.payload.parentToolCallId ? JSON.stringify(args) : "")) : "";
+      const block = createToolBlock(correlationId, {
         name: String(update.payload.name ?? "tool"),
         subject,
         status: "running",
         expanded: this.#toolOutputExpanded,
-      }));
+      });
+      const parentId = update.payload.parentToolCallId;
+      if (update.payload.orchestrator === true) block.children = [];
+      if (typeof parentId === "string") {
+        const parent = this.#getOrCreateTool(parentId);
+        block.parentToolCallId = parentId;
+        (parent.children ??= []).push(block);
+        this.#byCorrelation.set(`tool:${correlationId}`, block);
+        touchBlock(parent);
+      } else this.append(block);
       return;
     }
     if (kind === "tool.output_delta") {
       const item = this.#byCorrelation.get(`tool:${correlationId}`);
       if (item?.kind === "tool") {
+        this.#touchParent(item);
         if (update.stream === "stdout") {
           item.stdout = (item.stdout + this.#toolOutputRedactor.redact(
             correlationId,
@@ -348,6 +376,7 @@ export class TranscriptStore {
     if (kind === "tool.output_snapshot") {
       const item = this.#byCorrelation.get(`tool:${correlationId}`);
       if (item?.kind === "tool" && item.mutable && (update.stream === "stdout" || update.stream === "stderr")) {
+        this.#touchParent(item);
         item[update.stream] = redactToolSnapshot(update.text, update.payload.start_mid_line === true);
         if (update.payload.truncated === true) item.outputNote = "Output preview truncated.";
         touchBlock(item);
@@ -356,6 +385,7 @@ export class TranscriptStore {
     }
     if (kind === "tool.finished") {
       const item = this.#getOrCreateTool(correlationId);
+      this.#touchParent(item);
       item.status = String(update.payload.status ?? "completed");
       item.exitCode = typeof update.payload.exit_code === "number"
         ? Math.trunc(update.payload.exit_code)
@@ -368,7 +398,7 @@ export class TranscriptStore {
         if (typeof text === "string") item[stream] = redactToolSnapshot(text, update.payload[`${stream}_start_mid_line`] === true);
       }
       item.outputNote = toolOutputNote(update.payload);
-      if (item.name === "skill" && isRecord(update.payload.result)) {
+      if ((item.name === "skill" || item.children !== undefined || item.parentToolCallId) && isRecord(update.payload.result)) {
         const result = update.payload.result;
         if (typeof result.content === "string") item.stdout = redactToolText(result.content);
         if (typeof result.error === "string") item.outputNote = redactToolText(result.error);
@@ -403,7 +433,7 @@ export class TranscriptStore {
 
   setToolOutputExpanded(expanded: boolean): void {
     this.#toolOutputExpanded = expanded;
-    for (const block of this.#blocks) {
+    for (const block of this.#byCorrelation.values()) {
       if (block.kind === "tool" && block.expanded !== expanded) {
         block.expanded = expanded;
         touchBlock(block);
@@ -413,6 +443,12 @@ export class TranscriptStore {
 
   toolOutputExpanded(): boolean {
     return this.#toolOutputExpanded;
+  }
+
+  #touchParent(block: ToolTranscriptBlock): void {
+    if (!block.parentToolCallId) return;
+    const parent = this.#byCorrelation.get(`tool:${block.parentToolCallId}`);
+    if (parent) touchBlock(parent);
   }
 
   #getOrCreateAssistant(key: string): AssistantTranscriptBlock {

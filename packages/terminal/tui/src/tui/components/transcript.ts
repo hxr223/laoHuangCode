@@ -5,6 +5,7 @@ import { AssistantMessage } from "./messages/assistant-message.ts";
 import { NoticeMessage } from "./messages/notice-message.ts";
 import { ThinkingMessage } from "./messages/thinking-message.ts";
 import { ToolMessage } from "./messages/tool-message.ts";
+import { ToolGroup } from "./messages/tool-group.ts";
 import { UserMessage } from "./messages/user-message.ts";
 import { WelcomeMessage } from "./messages/welcome-message.ts";
 import { HelpView } from "./views/help-view.ts";
@@ -106,7 +107,7 @@ export class Transcript implements TuiComponent {
       case "thinking":
         return new ThinkingMessage(block);
       case "tool":
-        return new ToolMessage(block);
+        return block.children !== undefined ? new ToolGroup(block) : new ToolMessage(block);
       case "notice":
         return new NoticeMessage(block);
       case "welcome":

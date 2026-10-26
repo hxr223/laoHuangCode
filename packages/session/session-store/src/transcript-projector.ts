@@ -1,4 +1,5 @@
 import type { SessionEntry } from "./schema.ts";
+import type { ToolExecutionRecord } from "@laohuang/tools";
 
 export type RestoredTranscriptItem =
   | { readonly kind: "user"; readonly text: string }
@@ -10,6 +11,7 @@ export type RestoredTranscriptItem =
       readonly subject: string;
       readonly result: string;
       readonly isError: boolean;
+      readonly executions?: readonly ToolExecutionRecord[];
     }
   | { readonly kind: "notice"; readonly text: string; readonly tone: "info" | "warning" | "error" };
 
@@ -63,6 +65,7 @@ export function projectTranscript(
         subject: message.toolName === "skill" ? skillNames.get(message.toolCallId) ?? "" : message.toolCallId,
         result,
         isError: entry.payload.message.isError,
+        ...(entry.payload.executions ? { executions: entry.payload.executions } : {}),
       });
     } else if (entry.entryType === "context_reset") {
       items.push({ kind: "notice", text: "Conversation context was cleared.", tone: "info" });

@@ -214,7 +214,7 @@ export class ContextGovernor {
       provider: input.currentProvider,
       model: input.currentModel,
       systemFingerprint: fingerprintContextPart(
-        built.messages.find((message) => message.role === "system") ?? null,
+        built.messages.filter((message) => message.role === "system"),
       ),
       projectInstructionsFingerprint: fingerprintContextPart(
         built.messages.filter((message, index) => index > 0 && message.role === "user"),

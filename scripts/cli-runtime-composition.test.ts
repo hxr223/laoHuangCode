@@ -43,6 +43,38 @@ const models: readonly ModelInfo[] = [
   },
 ];
 
+test("Code Mode uses new-session defaults, preserves session overrides, and restores after compaction", async t => {
+  const { root, controller, adapter } = await fixture(t);
+  const tools = new ToolRegistry([
+    { spec: { name: "codemode", description: "fixture", parameters: { type: "object" }, promptGuidelines: [], exposure: "model-only", executionRole: "orchestrator" }, execute: () => ({ ok: true }) },
+    { spec: { name: "read", description: "read", parameters: { type: "object" }, promptGuidelines: [] }, execute: () => ({ ok: true }) },
+  ]);
+  const composed = createSessionRuntime({ defaultCodeMode: "on", modelAdapter: adapter, catalog: new FakeCatalog(),
+    route: { provider: "test", model: "model-a", baseUrl: null }, tools, sessionController: controller,
+    projectRoot: root, startupCwd: root, version: "test" });
+  try {
+    const original = controller.currentSessionId!;
+    assert.equal(composed.agent.getCodeMode(), "on");
+    composed.setCodeMode("only");
+    await composed.agent.run("old conversation ".repeat(800));
+    await composed.agent.run("middle conversation ".repeat(500));
+    await composed.agent.run("retain this");
+    await composed.compact();
+    await controller.createNew();
+    composed.refreshSession();
+    assert.equal(composed.agent.getCodeMode(), "on");
+    await controller.resume(original);
+    composed.refreshSession();
+    assert.equal(composed.agent.getCodeMode(), "only");
+    await composed.agent.run("continue");
+    assert.deepEqual(adapter.requests.at(-1)?.tools.map(tool => tool.name), ["codemode"]);
+    assert.ok(adapter.requests.at(-1)?.messages.some(message => message.role === "system" && message.toolMode === "only"));
+    const before = controller.history!.entries().length;
+    composed.setCodeMode("only");
+    assert.equal(controller.history!.entries().length, before, "unchanged mode is not appended again");
+  } finally { await composed.session.close({ timeoutMs: 1000 }); await composed.close(); }
+});
+
 test("CLI runtime injects SDK validation and lets the model correct a rejected call", async (t) => {
   const { root, controller } = await fixture(t);
   const executed: Record<string, unknown>[] = [];
@@ -208,7 +240,7 @@ test("two agent turns use the same persisted conversation history", async (t) =>
   );
   assert.deepEqual(
     controller.history?.entries().map((entry) => entry.entryType),
-    ["system_context", "user_message", "assistant_message", "user_message", "assistant_message"],
+    ["system_context", "code_mode", "user_message", "assistant_message", "user_message", "assistant_message"],
   );
 
   assert.equal(await composed.session.close({ timeoutMs: 1_000 }), true);
@@ -310,7 +342,8 @@ test("shared runtime prepares deferred tools, persists search and restores only 
       description: `remote_${index}`,
       parameters: { type: "object" },
       promptGuidelines: [],
-      catalog: { source: "mcp:fixture", originalName: `remote_${index}`, binding: "stable", exposure: "deferred" },
+      exposure: "deferred",
+      catalog: { source: "mcp:fixture", originalName: `remote_${index}`, binding: "stable" },
     },
     execute: () => { executions++; return { ok: true, content: "executed" }; },
   }));

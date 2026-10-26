@@ -108,7 +108,8 @@ test("session schema validates tool deltas and compaction tool snapshots", () =>
     description: "search remote data",
     parameters: { type: "object" },
     promptGuidelines: [],
-    catalog: { source: "mcp:test", originalName: "search", binding: "stable", exposure: "deferred" },
+    exposure: "deferred",
+    catalog: { source: "mcp:test", originalName: "search", binding: "stable" },
   };
   const active = { version: "v1", activation: "search", spec };
   const delta = {

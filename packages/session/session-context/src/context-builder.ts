@@ -1,3 +1,4 @@
+import { codeModeInstructions } from "@laohuang/tools";
 import {
   portableModelMessage,
   projectImageOffloads,
@@ -65,6 +66,9 @@ export class ContextBuilder {
         selected.push({ entryId: entry.id, message });
       }
     }
+    const mode = [...sorted].reverse().find(entry => entry.entryType === "code_mode");
+    if (mode?.entryType === "code_mode") selected.splice(system === null ? 0 : 1, 0, { entryId: mode.id,
+      message: { role: "system", content: codeModeInstructions(mode.payload.mode), toolMode: mode.payload.mode } });
     validateToolPairs(selected);
     const offloaded = new Set(sorted.flatMap(entry => entry.entryType === "image_offload" ? entry.payload.keys : []));
     return {

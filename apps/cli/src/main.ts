@@ -510,6 +510,7 @@ export async function main(
     let commandDispatcher: CommandHandler | undefined;
     let runtimeInitialized = false;
     const composedRuntime = createSessionRuntime({
+      defaultCodeMode: manager.getCodeMode(),
       attachments: attachmentRuntime.store,
       modelAdapter: modelPlatform.adapter,
       catalog: modelPlatform.catalog,

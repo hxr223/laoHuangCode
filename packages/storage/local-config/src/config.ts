@@ -112,6 +112,17 @@ export class ConfigManager {
     return this.readDocument({ optional: true })["shell_path"] as string | undefined;
   }
 
+  getCodeMode(): "off" | "on" | "only" {
+    return (this.readDocument({ optional: true })["codemode"] as "off" | "on" | "only" | undefined) ?? "off";
+  }
+
+  setCodeMode(mode: "off" | "on" | "only"): void {
+    if (mode !== "off" && mode !== "on" && mode !== "only") throw new Error("Invalid Code Mode");
+    const document = this.readDocument({ optional: true });
+    document["codemode"] = mode;
+    this.writeDocument(document);
+  }
+
   getSkillDirs(): readonly string[] {
     return (this.readDocument({ optional: true })["skillDirs"] as string[] | undefined) ?? [];
   }
@@ -213,6 +224,9 @@ export class ConfigManager {
 }
 
 function validateDocument(document: Record<string, unknown>): void {
+  if (document["codemode"] !== undefined && !["off", "on", "only"].includes(String(document["codemode"]))) {
+    throw new Error("Configuration codemode must be off, on, or only");
+  }
   const skillDirs = document["skillDirs"];
   if (skillDirs !== undefined && (!Array.isArray(skillDirs) || skillDirs.some(path => typeof path !== "string" || !path.trim()))) {
     throw new Error("Configuration skillDirs must be an array of non-empty paths");

@@ -8,7 +8,7 @@ import type {
   ReasoningEffort,
 } from "@laohuang/llm";
 import { assertAttachmentContent } from "@laohuang/attachment";
-import type { ToolSelectionSnapshot } from "@laohuang/tools";
+import { isCodeMode, type CodeMode, type ToolExecutionRecord, type ToolSelectionSnapshot } from "@laohuang/tools";
 import { normalizeSessionTitle } from "./session-metadata.ts";
 
 export type SessionOrigin = "new" | "fork" | "clone" | "import";
@@ -83,6 +83,7 @@ export interface AssistantMessagePayload {
 }
 
 export interface ToolResultPayload {
+  readonly executions?: readonly ToolExecutionRecord[];
   readonly message: ToolResultModelMessage;
   readonly requestId: string;
   readonly recovered: boolean;
@@ -110,6 +111,7 @@ export interface CompactionPayload {
 }
 
 export type SessionEntryType =
+  | "code_mode"
   | "context_reset"
   | "image_offload"
   | "skill_context"
@@ -124,6 +126,7 @@ export type SessionEntryType =
   | "compaction";
 
 export type SessionEntry =
+  | (SessionItemBase & { readonly kind: "entry"; readonly entryType: "code_mode"; readonly payload: { readonly mode: CodeMode } })
   | (SessionItemBase & {
       readonly kind: "entry";
       /** Legacy /clear marker: read/replay only, no current command produces it. */
@@ -238,6 +241,7 @@ export interface NewSessionRecord {
 }
 
 const ENTRY_TYPES: ReadonlySet<string> = new Set([
+  "code_mode",
   "context_reset",
   "image_offload",
   "skill_context",
@@ -357,6 +361,17 @@ export function parseSessionItem(
       throw new SessionSchemaError("invalid session entry type");
     }
     const entryPayload = objectOf(input["payload"], "entry payload");
+    if (entryType === "code_mode" && !isCodeMode(entryPayload.mode)) throw new SessionSchemaError("invalid code mode");
+    if (entryType === "tool_result" && entryPayload.executions !== undefined) {
+      if (!Array.isArray(entryPayload.executions)) throw new SessionSchemaError("invalid tool executions");
+      for (const raw of entryPayload.executions) {
+        const execution = objectOf(raw, "tool execution");
+        for (const key of ["toolCallId", "parentToolCallId", "rootToolCallId", "name", "status"]) requireString(execution, key);
+        objectOf(execution.arguments, "tool execution arguments");
+        if (typeof execution.durationMs !== "number" || !Number.isFinite(execution.durationMs) || execution.durationMs < 0) throw new SessionSchemaError("invalid tool duration");
+        if (execution.error !== undefined && typeof execution.error !== "string") throw new SessionSchemaError("invalid tool error");
+      }
+    }
     if (entryType === "context_reset") {
       const boundary = entryPayload.resetThroughSeq;
       if (typeof boundary !== "number" || !Number.isSafeInteger(boundary) || boundary < 0 ||
@@ -446,10 +461,12 @@ function assertStoredTool(value: unknown, activationOptional: boolean): void {
     throw new SessionSchemaError("invalid tool spec");
   }
   objectOf(spec["parameters"], "tool parameters");
+  if (spec.exposure !== undefined && !["direct", "deferred", "codemode", "model-only", "hidden"].includes(String(spec.exposure))) throw new SessionSchemaError("invalid exposure");
+  if (spec.executionRole !== undefined && spec.executionRole !== "orchestrator") throw new SessionSchemaError("invalid execution role");
   if (spec["catalog"] !== undefined) {
     const catalog = objectOf(spec["catalog"], "tool catalog metadata");
     for (const key of ["source", "originalName", "binding"]) requireString(catalog, key);
-    if (catalog["exposure"] !== "direct" && catalog["exposure"] !== "deferred") throw new SessionSchemaError("invalid exposure");
+
   }
 }
 

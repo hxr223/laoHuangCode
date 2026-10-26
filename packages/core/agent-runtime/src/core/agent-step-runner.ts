@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { CancelToken } from "@laohuang/runtime-protocol";
+import { redactEventPayload } from "@laohuang/runtime-protocol";
 import {
   ModelRuntime,
   ModelError,
@@ -16,8 +17,8 @@ import {
   type ToolCallContentBlock,
   type UserModelMessage,
 } from "@laohuang/llm";
-import { touchedPathOf, ToolSelection, toolVersion } from "@laohuang/tools";
-import type { ToolCall, ToolExecutionMode, ToolResult, ToolSpec, ToolRegistryLike } from "@laohuang/tools";
+import { ToolSelection, toolVersion } from "@laohuang/tools";
+import type { CodeMode, ToolCall, ToolExecutionMode, ToolResult, ToolSpec, ToolRegistryLike, ToolExecutionRecord } from "@laohuang/tools";
 import {
   HistoryCommitter,
   type HistoryCommitContext,
@@ -75,6 +76,7 @@ export interface AgentStepRunnerOptions {
   modelRuntime: ModelRuntime;
   toolRuntime: ToolRuntime;
   getTools(): ToolRegistryLike;
+  getCodeMode?(): CodeMode;
   prepareTools?: (signal?: AbortSignal) => Promise<void>;
   toolExecution: ToolExecutionMode;
   history: HistoryCommitter;
@@ -149,7 +151,12 @@ export class AgentStepRunner {
       this.options.onRequestId(requestId);
       const registry = this.options.getTools();
       const selection = this.options.selection ?? new ToolSelection();
-      const select = () => selection.prepare(registry);
+      const codeMode = this.options.getCodeMode?.() ?? "off";
+      if (codeMode !== "off" && !registry.definitions.some(spec => spec.executionRole === "orchestrator" && spec.exposure === "model-only")) {
+        throw this.options.createError("Code Mode orchestration tool is unavailable");
+      }
+      history.setCodeMode(codeMode);
+      const select = () => selection.prepare(registry, codeMode);
       const synchronizeSelection = () => {
         const planned = select();
         if (planned.update.toolsAdded.length > 0 || planned.update.toolsRemoved.length > 0) {
@@ -167,9 +174,9 @@ export class AgentStepRunner {
         let prepared: AgentPreparedContext = { messages: history.snapshot() };
         for (let attempt = 0; attempt < 3; attempt++) {
           prepared = await this.options.contextGovernor?.prepare({
-            messages: history.snapshot(), tools: selected.view.definitions,
+            messages: history.snapshot(), tools: selected.declaredTools,
             provider: this.options.provider, model: this.options.model,
-            projectTools: () => select().view.definitions,
+            projectTools: () => select().declaredTools,
           }) ?? { messages: history.snapshot() };
           history.retain(prepared.messages);
           selected = select();
@@ -187,8 +194,8 @@ export class AgentStepRunner {
         return { selected, prepared };
       };
       let { selected, prepared } = await prepareRequest();
-      let tools = selected.view;
-      let definitions = tools.definitions;
+      let tools = selected.directTools;
+      let definitions = selected.declaredTools;
       let requestMessages = [...prepared.messages];
       let result: ModelResult;
       for (let overflowAttempt = 0; ; overflowAttempt++) {
@@ -254,14 +261,14 @@ export class AgentStepRunner {
             const recovered = await this.options.contextGovernor.recoverAfterOverflow({
               messages: history.snapshot(), tools: definitions,
               provider: this.options.provider, model: this.options.model,
-              projectTools: () => select().view.definitions,
+              projectTools: () => select().declaredTools,
             });
             this.raiseIfCancelled();
             history.retain(recovered.messages);
             ({ selected, prepared } = await prepareRequest());
             this.raiseIfCancelled();
-            tools = selected.view;
-            definitions = tools.definitions;
+            tools = selected.directTools;
+            definitions = selected.declaredTools;
             requestMessages = [...prepared.messages];
             this.emit("model_retry_scheduled", {
               round: attemptRound,
@@ -335,14 +342,27 @@ export class AgentStepRunner {
 
       toolRounds += 1;
       context?.toolsStarted?.();
-      const toolResults = (await this.options.toolRuntime.execute({
+      const executions: ToolExecutionRecord[] = [];
+      const batch = await this.options.toolRuntime.execute({
         registry: tools,
+        callableTools: selected.callableTools,
         toolCalls,
         executionMode: this.options.toolExecution,
         cancelToken,
         onToolStart: (event) => this.startToolEvent(event, modelRound),
-        onToolResult: (event) => this.completeToolEvent(event, modelRound),
-      })).results;
+        onToolResult: (event) => {
+          this.completeToolEvent(event, modelRound);
+          if (event.parentToolCallId) executions.push({
+            toolCallId: event.toolCall.id, parentToolCallId: event.parentToolCallId,
+            rootToolCallId: event.rootToolCallId, name: event.toolCall.name,
+            arguments: safeArguments(event.args),
+            status: event.result.status || (event.result.ok ? "completed" : "failed"),
+            durationMs: Math.round(event.durationMs),
+            ...(event.result.error ? { error: String(redactEventPayload({ error: truncateForEvent(event.result.error) }).error) } : {}),
+          });
+        },
+      });
+      const toolResults = batch.results;
       const repeated = repeatToolPolicy.record(toolCalls, toolResults);
       const current = new Map(this.options.getTools().definitions.map(spec => [spec.name, toolVersion(spec)]));
       const pending = selected.pending().filter(tool => current.get(tool.spec.name) === tool.version);
@@ -351,17 +371,11 @@ export class AgentStepRunner {
         history.commitToolState(update);
         selection.apply(update);
       }
-      history.commitToolResults(toolCalls, toolResults);
+      history.commitToolResults(toolCalls, toolResults, executions,
+        toolCalls.filter(call => tools.definitions.some(spec => spec.name === call.name && spec.executionRole === "orchestrator")).map(call => call.id));
       this.options.resources?.committed(history.snapshot().slice(-toolResults.length));
       this.raiseIfCancelled();
-      const touchedPaths: string[] = [];
-      for (const toolResult of toolResults) {
-        const touched = touchedPathOf(toolResult);
-        if (typeof touched === "string") {
-          touchedPaths.push(touched);
-        }
-      }
-      this.options.discoverForTouchedPaths(touchedPaths);
+      this.options.discoverForTouchedPaths(batch.touchedPaths);
       if (repeated !== null) {
         const content = repeatToolReminder(repeated);
         history.commitReminder(content);
@@ -403,7 +417,8 @@ export class AgentStepRunner {
       ...this.toolEventContext(event, modelRound),
       status: (typeof status === "string" && status) ||
         (event.result["ok"] ? "completed" : "failed"),
-      result: safeResult(event.result),
+      duration_ms: Math.round(event.durationMs),
+      result: event.parentToolCallId ? { ok: event.result.ok, error: event.result.error } : safeResult(event.result),
     });
   }
 
@@ -416,6 +431,9 @@ export class AgentStepRunner {
       index: event.index,
       batch_size: event.batchSize,
       toolCallId: event.toolCall.id,
+      ...(event.parentToolCallId ? { parentToolCallId: event.parentToolCallId } : {}),
+      rootToolCallId: event.rootToolCallId,
+      orchestrator: event.orchestrator,
       name: event.toolCall.name,
     };
   }
@@ -478,7 +496,7 @@ function safeArguments(args: Record<string, unknown>): Record<string, unknown> {
   for (const [key, value] of Object.entries(safe)) {
     result[key] = typeof value === "string" ? truncateForEvent(value) : value;
   }
-  return result;
+  return redactEventPayload(result);
 }
 
 function safeResult(result: ToolResult): Record<string, unknown> {

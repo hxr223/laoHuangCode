@@ -27,8 +27,8 @@ export function createMcpToolAdapters(options: {
     if (names.has(name)) throw new Error("MCP tool name collision");
     names.add(name);
     return {
-      spec: { name, description: tool.description ?? "", parameters: tool.inputSchema, promptGuidelines: [],
-        catalog: { source: `mcp:${server.id}`, originalName: tool.name, exposure: "deferred",
+      spec: { name, description: tool.description ?? "", parameters: tool.inputSchema, promptGuidelines: [], exposure: "deferred",
+        catalog: { source: `mcp:${server.id}`, originalName: tool.name,
           binding: typeof options.binding === "function" ? options.binding(tool) : options.binding ?? createHash("sha256").update(JSON.stringify(server)).digest("hex") } },
       executionMode: server.config.executionMode ?? "sequential",
       execute: async (args, context) => {

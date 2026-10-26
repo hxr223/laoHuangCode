@@ -1,13 +1,14 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import { randomUUID } from "node:crypto";
 import type { ModelMessage, ModelUsage } from "@laohuang/llm";
-import type { ToolCall, ToolResult } from "@laohuang/tools";
+import { codeModeInstructions, type CodeMode, type ToolCall, type ToolResult, type ToolExecutionRecord } from "@laohuang/tools";
 import type { ToolStateUpdate } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 
 export type HistoryMessage = ModelMessage;
 
 export interface ConversationHistoryLike {
+  appendCodeMode?(mode: CodeMode): unknown;
   appendSkillContext?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
   appendToolState?(input: { readonly message: Extract<ModelMessage, { role: "system" }> }): unknown;
   appendToolCatalog?(input: { readonly message: Extract<ModelMessage, { role: "user" }> }): unknown;
@@ -23,6 +24,8 @@ export interface ConversationHistoryLike {
     readonly usage?: ModelUsage;
   }): unknown;
   appendToolResults(input: {
+    readonly executions?: readonly ToolExecutionRecord[];
+    readonly orchestratorCallIds?: readonly string[];
     readonly requestId: string;
     readonly messages: readonly Extract<ModelMessage, { readonly role: "tool-result" }>[];
     readonly recovered: boolean;
@@ -148,6 +151,8 @@ export class HistoryCommitter {
   commitToolResults(
     toolCalls: readonly ToolCall[],
     toolResults: readonly ToolResult[],
+    executions: readonly ToolExecutionRecord[] = [],
+    orchestratorCallIds: readonly string[] = [],
   ): void {
     const messages: Extract<ModelMessage, { readonly role: "tool-result" }>[] = [];
     for (let index = 0; index < toolCalls.length; index += 1) {
@@ -171,6 +176,8 @@ export class HistoryCommitter {
       requestId: "tool-results",
       messages,
       recovered: false,
+      executions,
+      orchestratorCallIds,
     });
     this.messages.push(...messages);
   }
@@ -184,6 +191,16 @@ export class HistoryCommitter {
 
   snapshot(): HistoryMessage[] {
     return [...this.messages];
+  }
+
+  setCodeMode(mode: CodeMode): void {
+    const previous = this.messages.find(message => message.role === "system" && message.toolMode !== undefined);
+    if (previous?.role === "system" && previous.toolMode === mode || previous === undefined && mode === "off") return;
+    this.raiseIfCancelled();
+    this.conversationHistory?.appendCodeMode?.(mode);
+    const retained = this.messages.filter(message => message.role !== "system" || message.toolMode === undefined);
+    retained.splice(retained[0]?.role === "system" ? 1 : 0, 0, { role: "system", content: codeModeInstructions(mode), toolMode: mode });
+    this.retain(retained);
   }
 
   commitSkillContext(message: Extract<ModelMessage, { role: "user" }>): void {

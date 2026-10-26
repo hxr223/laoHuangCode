@@ -41,6 +41,7 @@ export function canonicalToolJson(value: unknown): string {
 export function toolVersion(spec: ToolSpec): string {
   return createHash("sha256").update(canonicalToolJson({
     name: spec.name, description: spec.description, parameters: spec.parameters, catalog: spec.catalog,
+    exposure: spec.exposure, executionRole: spec.executionRole, promptGuidelines: spec.promptGuidelines,
   })).digest("hex");
 }
 

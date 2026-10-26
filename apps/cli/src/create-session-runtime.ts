@@ -20,7 +20,7 @@ import {
 } from "@laohuang/session-context";
 import { AgentSession, SessionRecorder } from "@laohuang/session-runtime";
 import type { SessionEntry } from "@laohuang/session-store";
-import { ToolSelection, type ToolRegistryLike } from "@laohuang/tools";
+import { ToolSelection, type CodeMode, type ToolRegistryLike } from "@laohuang/tools";
 
 import { SessionController } from "./session-controller.ts";
 import { SmallModelSemanticClassifier } from "./semantic-classifier.ts";
@@ -42,6 +42,7 @@ export interface SessionRuntimePresentation {
 }
 
 export interface CreateSessionRuntimeOptions {
+  readonly defaultCodeMode?: CodeMode;
   readonly attachments?: AttachmentStore;
   readonly skills?: SkillSession;
   readonly skillInputFailed?: (input: string, error: unknown) => void;
@@ -61,6 +62,7 @@ export interface CreateSessionRuntimeOptions {
 }
 
 export interface SessionRuntime {
+  setCodeMode(mode: CodeMode): void;
   readonly agent: CodingAgent;
   readonly session: AgentSession;
   readonly classifier: SmallModelSemanticClassifier;
@@ -79,6 +81,7 @@ export function createSessionRuntime(
   let route = { ...options.route };
   let selectedModel = modelInfo(options.catalog, route);
   let attachmentTurnStart: number | undefined;
+  let turnActive = false;
   const adapter: ModelAdapter = {
     name: options.modelAdapter.name,
     runAttempt: request => {
@@ -105,6 +108,11 @@ export function createSessionRuntime(
   const modelRuntime = new ModelRuntime(adapter);
   let releaseAttachments: (() => void) | undefined;
   const activeConversationHistory = {
+    appendCodeMode: (mode: CodeMode) => {
+      const history = activeHistory(options.sessionController);
+      const previous = [...history.entries()].reverse().find(entry => entry.entryType === "code_mode");
+      if (previous?.entryType !== "code_mode" || previous.payload.mode !== mode) history.appendCodeMode(mode);
+    },
     appendSkillContext: (input: Parameters<ConversationHistory["appendSkillContext"]>[0]) =>
       activeHistory(options.sessionController).appendSkillContext(input),
     appendToolState: (input: Parameters<ConversationHistory["appendToolState"]>[0]) =>
@@ -157,6 +165,7 @@ export function createSessionRuntime(
   const agent = new CodingAgent({
     resources: {
       prepareInput: async (input, signal, inputs) => {
+        turnActive = true;
         attachmentTurnStart ??= (options.sessionController.history?.entries().at(-1)?.seq ?? 0) + 1;
         releaseAttachments ??= options.attachments?.protect();
         try { return await options.skills?.prepareInput(input, signal, inputs) ?? { role: "user", content: input }; }
@@ -166,7 +175,11 @@ export function createSessionRuntime(
       committed: messages => options.skills?.committed(messages),
       finishTurn: () => {
         try { options.skills?.finishTurn(); }
-        finally { releaseAttachments?.(); releaseAttachments = undefined; attachmentTurnStart = undefined; }
+        finally {
+          turnActive = false;
+          releaseAttachments?.(); releaseAttachments = undefined; attachmentTurnStart = undefined;
+          activeConversationHistory.appendCodeMode(agent.getCodeMode());
+        }
       },
     },
     modelAdapter: adapter,
@@ -244,7 +257,7 @@ export function createSessionRuntime(
     journal: () => options.sessionController.currentJournal,
   });
 
-  const projectTools = (_messages: readonly ModelMessage[]) => toolSelection.prepare(options.tools).view.definitions;
+  const projectTools = (_messages: readonly ModelMessage[]) => toolSelection.prepare(options.tools, agent.getCodeMode()).declaredTools;
 
   const refreshContextUsage = (): void => {
     const notify = options.presentation?.contextUsageChanged;
@@ -273,6 +286,8 @@ export function createSessionRuntime(
     options.presentation?.sessionChanged?.(sessionId);
     let entries = history.entries();
     toolSelection.restore(projectToolSelectionState(entries));
+    const storedMode = [...entries].reverse().find(entry => entry.entryType === "code_mode");
+    agent.setCodeMode(storedMode?.entryType === "code_mode" ? storedMode.payload.mode : options.defaultCodeMode ?? "off");
     if (entries.length === 0) {
       const system = agent.messages.find(
         (message: ModelMessage) => message.role === "system",
@@ -291,6 +306,7 @@ export function createSessionRuntime(
         }).messages,
       ];
     }
+    if (storedMode === undefined) history.appendCodeMode(agent.getCodeMode());
     options.presentation?.historyChanged?.(entries);
     refreshContextUsage();
   };
@@ -301,7 +317,7 @@ export function createSessionRuntime(
       entries: history.entries(),
       currentProvider: route.provider,
       currentModel: route.model,
-      tools: options.tools.definitions,
+      tools: projectTools(agent.messages),
       projectTools,
       toolState: toolSelection.snapshot(),
       budget: modelBudget(selectedModel),
@@ -321,6 +337,10 @@ export function createSessionRuntime(
   });
 
   const runtime: SessionRuntime = {
+    setCodeMode(mode) {
+      agent.setCodeMode(mode);
+      if (!turnActive) activeConversationHistory.appendCodeMode(mode);
+    },
     agent,
     session,
     classifier,

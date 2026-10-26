@@ -13,7 +13,7 @@ import type { ModelRequest, ModelResult } from "@laohuang/llm";
 function registry(schemaSize = 0) {
   const definition = (name: string, deferred: boolean): ToolAdapterDefinition => ({
     spec: { name, description: name, parameters: { type: "object", properties: { value: { type: "string", description: name === "remote_0" ? "x".repeat(schemaSize) : "value" } } }, promptGuidelines: [],
-      ...(deferred ? { catalog: { source: "mcp:fixture", originalName: name, binding: "stable", exposure: "deferred" as const } } : {}) },
+      ...(deferred ? { exposure: "deferred" as const, catalog: { source: "mcp:fixture", originalName: name, binding: "stable" } } : {}) },
     execute: () => ({ ok: true, content: "executed" }),
   });
   const tools = new ToolRegistry(["read", "write", "edit", "bash"].map(name => definition(name, false)));
@@ -70,7 +70,7 @@ test("search loads once, projects schema only into wire tools, and survives jour
     restoredSelection.restore(projectToolSelectionState(restored.entries()));
     const selection = restoredSelection.prepare(tools);
     assert.equal(selection.announcement, undefined);
-    assert.ok(selection.view.definitions.some(t => t.name === "remote_0"));
+    assert.ok(selection.directTools.definitions.some(t => t.name === "remote_0"));
   } finally { state.close(); }
 });
 
