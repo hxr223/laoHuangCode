@@ -32,6 +32,7 @@ import {
   ToolRuntime,
   type ToolRuntimeToolEvent,
   type ToolRuntimeToolResultEvent,
+  type ToolExecutionContextFactory,
 } from "@laohuang/tools";
 
 export interface AgentStepRunnerContext extends HistoryCommitContext {
@@ -75,6 +76,9 @@ export interface AgentStepRunnerOptions {
   baseUrl: string | null;
   modelRuntime: ModelRuntime;
   toolRuntime: ToolRuntime;
+  createToolContext?: ToolExecutionContextFactory;
+  onToolSettled?(event: ToolRuntimeToolResultEvent): void;
+  flushTouchedPaths?(): void;
   getTools(): ToolRegistryLike;
   getCodeMode?(): CodeMode;
   prepareTools?: (signal?: AbortSignal) => Promise<void>;
@@ -136,6 +140,7 @@ export class AgentStepRunner {
 
     for (;;) {
       this.raiseIfCancelled();
+      this.options.flushTouchedPaths?.();
       for (const message of await this.options.resources?.prepareContext(history.snapshot(), cancelToken?.signal) ?? []) {
         history.commitSkillContext(message);
         this.options.resources?.committed([message]);
@@ -349,6 +354,8 @@ export class AgentStepRunner {
         toolCalls,
         executionMode: this.options.toolExecution,
         cancelToken,
+        createExecutionContext: this.options.createToolContext,
+        onToolSettled: this.options.onToolSettled,
         onToolStart: (event) => this.startToolEvent(event, modelRound),
         onToolResult: (event) => {
           this.completeToolEvent(event, modelRound);

@@ -42,7 +42,7 @@ export interface SessionRuntimePresentation {
 }
 
 export interface CreateSessionRuntimeOptions {
-  readonly defaultCodeMode?: CodeMode;
+  readonly getDefaultCodeMode?: () => CodeMode;
   readonly attachments?: AttachmentStore;
   readonly skills?: SkillSession;
   readonly skillInputFailed?: (input: string, error: unknown) => void;
@@ -287,7 +287,7 @@ export function createSessionRuntime(
     let entries = history.entries();
     toolSelection.restore(projectToolSelectionState(entries));
     const storedMode = [...entries].reverse().find(entry => entry.entryType === "code_mode");
-    agent.setCodeMode(storedMode?.entryType === "code_mode" ? storedMode.payload.mode : options.defaultCodeMode ?? "off");
+    agent.setCodeMode(storedMode?.entryType === "code_mode" ? storedMode.payload.mode : options.getDefaultCodeMode?.() ?? "off");
     if (entries.length === 0) {
       const system = agent.messages.find(
         (message: ModelMessage) => message.role === "system",

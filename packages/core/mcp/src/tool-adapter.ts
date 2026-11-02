@@ -28,6 +28,7 @@ export function createMcpToolAdapters(options: {
     names.add(name);
     return {
       spec: { name, description: tool.description ?? "", parameters: tool.inputSchema, promptGuidelines: [], exposure: "deferred",
+        ...(tool.outputSchema !== undefined ? { outputSchema: tool.outputSchema } : {}),
         catalog: { source: `mcp:${server.id}`, originalName: tool.name,
           binding: typeof options.binding === "function" ? options.binding(tool) : options.binding ?? createHash("sha256").update(JSON.stringify(server)).digest("hex") } },
       executionMode: server.config.executionMode ?? "sequential",

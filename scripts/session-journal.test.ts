@@ -148,6 +148,16 @@ test("project keys include basename and canonical root hash", () => {
   assert.notEqual(left, right);
 });
 
+test("stored tool output declarations accept JSON schemas and reject invalid roots", () => {
+  const entry = (outputSchema: unknown) => ({ ...userEntry(1), entryType: "tool_definitions", payload: {
+    message: { role: "system", content: "", toolDefinitions: [{ version: "v1", spec: {
+      name: "read", description: "read", parameters: { type: "object" }, promptGuidelines: [], outputSchema,
+    } }] },
+  } });
+  for (const schema of [{ type: "string" }, {}, true, false]) assert.deepEqual(parseSessionItem(entry(schema)), entry(schema));
+  for (const schema of [null, [], "string", 1]) assert.throws(() => parseSessionItem(entry(schema)), /output schema/);
+});
+
 test("journal creates private directories and files, appends seq, and closes lock", () => {
   const root = makeTempRoot();
   const journal = createSessionJournal({

@@ -49,7 +49,7 @@ test("Code Mode uses new-session defaults, preserves session overrides, and rest
     { spec: { name: "codemode", description: "fixture", parameters: { type: "object" }, promptGuidelines: [], exposure: "model-only", executionRole: "orchestrator" }, execute: () => ({ ok: true }) },
     { spec: { name: "read", description: "read", parameters: { type: "object" }, promptGuidelines: [] }, execute: () => ({ ok: true }) },
   ]);
-  const composed = createSessionRuntime({ defaultCodeMode: "on", modelAdapter: adapter, catalog: new FakeCatalog(),
+  const composed = createSessionRuntime({ getDefaultCodeMode: () => "on", modelAdapter: adapter, catalog: new FakeCatalog(),
     route: { provider: "test", model: "model-a", baseUrl: null }, tools, sessionController: controller,
     projectRoot: root, startupCwd: root, version: "test" });
   try {

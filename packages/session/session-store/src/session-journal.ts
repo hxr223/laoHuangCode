@@ -17,6 +17,7 @@ import {
   sessionPathForHeader,
 } from "./session-paths.ts";
 import { readSessionFile } from "./session-reader.ts";
+import { assertCodeModeMetadata, mergeCodeModeStore, projectCodeModeStore } from "./codemode-store.ts";
 import type {
   NewSessionEntry,
   NewSessionRecord,
@@ -30,6 +31,7 @@ export interface SessionJournal {
   readonly header: SessionHeader;
   readonly path: string;
   readonly nextSeq: number;
+  readonly closed: boolean;
   appendEntry(input: NewSessionEntry): SessionEntry;
   appendRecord(input: NewSessionRecord): SessionRecord;
   flush(): void;
@@ -67,18 +69,24 @@ class FileSessionJournal implements SessionJournal {
   #lockPath: string;
   #nextSeq: number;
   #closed = false;
+  private codeModeStore: Readonly<Record<string, unknown>>;
 
-  constructor(input: { header: SessionHeader; path: string; nextSeq: number; fd: number; attachments?: AttachmentStore }) {
+  constructor(input: { header: SessionHeader; path: string; nextSeq: number; fd: number; attachments?: AttachmentStore; entries?: readonly SessionEntry[] }) {
     this.attachments = input.attachments;
     this.header = input.header;
     this.path = input.path;
     this.#nextSeq = input.nextSeq;
     this.#fd = input.fd;
     this.#lockPath = `${input.path}.lock`;
+    this.codeModeStore = projectCodeModeStore(input.entries ?? []);
   }
 
   get nextSeq(): number {
     return this.#nextSeq;
+  }
+
+  get closed(): boolean {
+    return this.#closed;
   }
 
   appendEntry(input: NewSessionEntry): SessionEntry {
@@ -89,17 +97,23 @@ class FileSessionJournal implements SessionJournal {
       entryType: input.entryType,
       payload: input.payload,
     } as SessionEntry;
+    if (entry.entryType === "tool_result" && entry.payload.codeMode !== undefined) assertCodeModeMetadata(entry.payload.codeMode, !entry.payload.message.isError && !entry.payload.recovered);
+    const writes = entry.entryType === "tool_result" ? entry.payload.codeMode?.storeWrites : undefined;
+    const nextStore = writes ? mergeCodeModeStore(this.codeModeStore, writes) : this.codeModeStore;
     const message = "message" in entry.payload ? entry.payload.message : undefined;
     const attachments = message && "attachments" in message ? message.attachments : undefined;
-    if (attachments?.length) {
-      for (const attachment of attachments) assertAttachmentContent(attachment);
+    const internal = entry.entryType === "tool_result" ? entry.payload.codeMode?.internalAttachments : undefined;
+    const owned = [...attachments ?? [], ...internal ?? []];
+    if (owned.length) {
+      for (const attachment of owned) assertAttachmentContent(attachment);
       if (!this.attachments) throw new Error("Attachment persistence requires an attachment store");
-      if (!("attachmentKey" in message!) || !message!.attachmentKey) throw new Error("Attachment message requires an occurrence key");
-      this.attachments.commit(attachments.map(block => block.ref), () => {
+      if (attachments?.length && (!("attachmentKey" in message!) || !message!.attachmentKey)) throw new Error("Attachment message requires an occurrence key");
+      this.attachments.commit(owned.map(block => block.ref), () => {
         this.writeItem(entry);
         this.flush();
       });
     } else this.writeItem(entry);
+    this.codeModeStore = nextStore;
     if (entry.entryType === "compaction") {
       this.flush();
     }
@@ -189,6 +203,7 @@ export function createSessionJournal(options: CreateSessionJournalOptions): Sess
       nextSeq: replay.lastSeq + 1,
       fd,
       attachments: options.attachments,
+      entries: replay.items.filter(item => item.kind === "entry"),
     });
   } catch (error) {
     releaseLock(lockPath);

@@ -1,7 +1,7 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import { randomUUID } from "node:crypto";
 import type { ModelMessage, ModelUsage } from "@laohuang/llm";
-import { codeModeInstructions, type CodeMode, type ToolCall, type ToolResult, type ToolExecutionRecord } from "@laohuang/tools";
+import { codeModeInstructions, codeModeMetadataOf, type CodeModeResultMetadata, type CodeMode, type ToolCall, type ToolResult, type ToolExecutionRecord } from "@laohuang/tools";
 import type { ToolStateUpdate } from "@laohuang/tools";
 import type { PendingInputBatchLike } from "@laohuang/runtime-protocol";
 
@@ -24,6 +24,7 @@ export interface ConversationHistoryLike {
     readonly usage?: ModelUsage;
   }): unknown;
   appendToolResults(input: {
+    readonly codeModeByCallId?: Readonly<Record<string, CodeModeResultMetadata>>;
     readonly executions?: readonly ToolExecutionRecord[];
     readonly orchestratorCallIds?: readonly string[];
     readonly requestId: string;
@@ -155,6 +156,7 @@ export class HistoryCommitter {
     orchestratorCallIds: readonly string[] = [],
   ): void {
     const messages: Extract<ModelMessage, { readonly role: "tool-result" }>[] = [];
+    const codeMode: [string, CodeModeResultMetadata][] = [];
     for (let index = 0; index < toolCalls.length; index += 1) {
       const call = toolCalls[index];
       const result = toolResults[index];
@@ -162,6 +164,8 @@ export class HistoryCommitter {
         continue;
       }
       const { attachmentContent: attachments, ...textResult } = result;
+      const metadata = codeModeMetadataOf(result);
+      if (metadata) codeMode.push([call.id, metadata]);
       const message: Extract<ModelMessage, { readonly role: "tool-result" }> = {
         role: "tool-result",
         toolCallId: call.id,
@@ -178,6 +182,7 @@ export class HistoryCommitter {
       recovered: false,
       executions,
       orchestratorCallIds,
+      ...(codeMode.length ? { codeModeByCallId: Object.fromEntries(codeMode) } : {}),
     });
     this.messages.push(...messages);
   }

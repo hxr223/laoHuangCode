@@ -19,7 +19,7 @@ import type {
   UserMessageEntry,
   InstructionFileRecord,
 } from "@laohuang/session-store";
-import type { CodeMode, ToolExecutionRecord } from "@laohuang/tools";
+import type { CodeMode, CodeModeResultMetadata, ToolExecutionRecord } from "@laohuang/tools";
 import { ContextUsage } from "./context-usage.ts";
 
 export interface SystemContextInput {
@@ -48,6 +48,7 @@ export interface AssistantMessageInput {
 }
 
 export interface ToolResultsInput {
+  readonly codeModeByCallId?: Readonly<Record<string, CodeModeResultMetadata>>;
   readonly executions?: readonly ToolExecutionRecord[];
   readonly orchestratorCallIds?: readonly string[];
   readonly requestId: string;
@@ -181,6 +182,8 @@ export class ConversationHistory {
           message,
           requestId: input.requestId,
           recovered: input.recovered,
+          ...(input.codeModeByCallId && Object.hasOwn(input.codeModeByCallId, message.toolCallId)
+            ? { codeMode: input.codeModeByCallId[message.toolCallId] } : {}),
           ...(input.orchestratorCallIds?.includes(message.toolCallId)
             ? { executions: (input.executions ?? []).filter(record => record.rootToolCallId === message.toolCallId) } : {}),
         },

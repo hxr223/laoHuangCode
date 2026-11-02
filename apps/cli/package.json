@@ -17,16 +17,22 @@
   "files": [
     "dist/bin.js",
     "dist/bin.js.map",
+    "dist/codemode-worker.js",
+    "dist/codemode-worker.js.map",
+    "THIRD_PARTY_NOTICES",
     "README.md",
     "LICENSE"
   ],
   "dependencies": {
+    "quickjs-wasi": "3.6.2",
     "sharp": "0.35.4",
     "@modelcontextprotocol/client": "2.0.0",
     "koffi": "3.2.1",
     "@earendil-works/pi-ai": "1.0.0"
   },
   "devDependencies": {
+    "@laohuang/codemode": "0.0.0",
+    "@laohuang/tool-codemode": "0.0.0",
     "@laohuang/attachment": "0.0.0",
     "@laohuang/attachment-local": "0.0.0",
     "@laohuang/skill": "0.0.0",

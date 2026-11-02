@@ -8,6 +8,12 @@ export function attachmentReferences(entries: readonly SessionEntry[]): Readonly
   const result = new Set<AttachmentId>();
   for (const entry of entries) {
     if (entry.entryType === "code_mode" || entry.entryType === "compaction" || entry.entryType === "image_offload" || entry.entryType === "context_reset") continue;
+    if (entry.entryType === "tool_result") {
+      for (const block of entry.payload.codeMode?.internalAttachments ?? []) {
+        assertAttachmentContent(block);
+        result.add(block.ref.id);
+      }
+    }
     if (!("message" in entry.payload) || !entry.payload.message || typeof entry.payload.message !== "object") throw new Error("Incomplete session message during attachment scan");
     const message = entry.payload.message;
     if (!("attachments" in message)) continue;

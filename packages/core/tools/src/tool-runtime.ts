@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { CancelToken } from "@laohuang/runtime-protocol";
-import type { AttachmentContent } from "@laohuang/attachment";
+import { CancelToken } from "@laohuang/runtime-protocol";
 import { touchedPathOf } from "./index.ts";
-import type { ToolCall, ToolExecutionContextLike, ToolExecutionMode, ToolRegistryLike, ToolResult, ToolSpec } from "./index.ts";
+import type { ToolCall, ToolChildCallOptions, ToolExecutionContextLike, ToolExecutionMode, ToolRegistryLike, ToolResult, ToolSpec } from "./index.ts";
+import { ExecutionScope } from "./execution-scope.ts";
 
 export interface ToolRuntimeRequest {
   registry?: ToolRegistryLike;
@@ -12,6 +12,8 @@ export interface ToolRuntimeRequest {
   cancelToken: CancelToken | null;
   onToolStart?: ((event: ToolRuntimeToolEvent) => void) | null;
   onToolResult?: ((event: ToolRuntimeToolResultEvent) => void) | null;
+  onToolSettled?: ((event: ToolRuntimeToolResultEvent) => void) | null;
+  createExecutionContext?: ToolExecutionContextFactory;
 }
 
 export interface ToolRuntimeToolEvent {
@@ -35,14 +37,21 @@ export interface ToolBatchResult {
   readonly touchedPaths: readonly string[];
 }
 
+export interface ToolExecutionScope {
+  readonly result: Promise<ToolBatchResult>;
+  readonly settled: Promise<void>;
+  cancel(reason?: string): void;
+}
+
 export type ToolExecutionContextFactory = (toolCallId: string, cancelToken: CancelToken | null) => ToolExecutionContextLike;
 export type ToolArgumentValidator = (tool: ToolSpec, toolCall: ToolCall, args: Record<string, unknown>) => Record<string, unknown>;
 
-/** One batch owns the lifetime, validation and scheduler of all its descendants. */
+/** Batches own their descendants; physical leaf scheduling spans batches. */
 export class ToolRuntime {
   private readonly tools: ToolRegistryLike;
   private readonly createExecutionContext: ToolExecutionContextFactory;
   private readonly validateArguments: ToolArgumentValidator;
+  private readonly scheduler = new ToolScheduler();
 
   constructor(tools: ToolRegistryLike, options: {
     validateToolArguments: ToolArgumentValidator;
@@ -58,15 +67,25 @@ export class ToolRuntime {
     }));
   }
 
-  async execute(request: ToolRuntimeRequest): Promise<ToolBatchResult> {
+  execute(request: ToolRuntimeRequest): Promise<ToolBatchResult> {
+    return this.start(request).result;
+  }
+
+  start(request: ToolRuntimeRequest): ToolExecutionScope {
+    const scope = new ExecutionScope(request.cancelToken);
+    const result = this.executeBatch(request, scope);
+    void result.then(() => scope.close(), () => scope.close());
+    return { result, settled: scope.settled, cancel: reason => { scope.token.cancel(reason); } };
+  }
+
+  private async executeBatch(request: ToolRuntimeRequest, scope: ExecutionScope): Promise<ToolBatchResult> {
     const registry = request.registry ?? this.tools.snapshot?.() ?? this.tools;
     const callable = request.callableTools;
-    const scheduler = new ToolScheduler();
     const touchedPaths = new Set<string>();
-    const cancelled = (): ToolResult => ({ ok: false, status: "cancelled", error: request.cancelToken?.reason || "cancelled" });
+    const createContext = request.createExecutionContext ?? this.createExecutionContext;
 
     const run = async (toolCall: ToolCall, surface: ToolRegistryLike, index: number, batchSize: number,
-      rootToolCallId: string, parentToolCallId?: string): Promise<ToolResult> => {
+      rootToolCallId: string, parentToolCallId?: string, token = scope.token): Promise<ToolResult> => {
       const started = performance.now();
       let args: Record<string, unknown> = {};
       let invalid: ToolResult | undefined;
@@ -83,12 +102,17 @@ export class ToolRuntime {
       const event: ToolRuntimeToolEvent = { toolCall, args, index, batchSize, rootToolCallId, orchestrator: spec?.executionRole === "orchestrator",
         ...(parentToolCallId ? { parentToolCallId } : {}) };
       request.onToolStart?.(event);
-      const attachments: AttachmentContent[] = [];
+      const children = new Set<CancelToken>();
+      let open = true;
+      let managedCancellation = false;
+      const close = () => {
+        open = false;
+        for (const child of children) child.cancel("Parent tool execution has ended.");
+      };
       const execute = async (): Promise<ToolResult> => {
-        if (request.cancelToken?.isCancelled()) return cancelled();
-        const base = this.createExecutionContext(toolCall.id, request.cancelToken);
-        const children: Promise<ToolResult>[] = [];
-        let open = true;
+        if (token.isCancelled()) return cancelled(token);
+        const base = createContext(toolCall.id, token);
+        let childCount = 0;
         const context: ToolExecutionContextLike = Object.assign(Object.create(base) as ToolExecutionContextLike, {
           toolCallId: toolCall.id,
           ...(parentToolCallId ? { parentToolCallId } : {}),
@@ -102,15 +126,25 @@ export class ToolRuntime {
         });
         if (spec?.executionRole === "orchestrator" && callable) {
           Object.assign(context, {
+            manageCancellation: () => { managedCancellation = true; },
             callableTools: callable.definitions,
-            executeTool: (name: string, childArgs: Record<string, unknown>): Promise<ToolResult> => {
+            executeTool: (name: string, childArgs: Record<string, unknown>, options?: ToolChildCallOptions): Promise<ToolResult> => {
               if (!open) return Promise.resolve({ ok: false, status: "scope_closed", error: "Parent tool execution has ended." });
-              if (request.cancelToken?.isCancelled()) return Promise.resolve(cancelled());
+              if (token.isCancelled()) return Promise.resolve(cancelled(token));
               let encoded: string;
               try { encoded = JSON.stringify(childArgs); }
               catch { return Promise.resolve({ ok: false, error: "Tool arguments must be JSON serializable." }); }
-              const child = run({ id: randomUUID(), name, arguments: encoded }, callable, children.length + 1, 1, rootToolCallId, toolCall.id);
-              children.push(child);
+              const childToken = new CancelToken();
+              children.add(childToken);
+              const unlinkParent = token.register(reason => childToken.cancel(reason));
+              const abort = () => childToken.cancel(errorMessage(options?.signal?.reason ?? "cancelled"));
+              options?.signal?.addEventListener("abort", abort, { once: true });
+              if (options?.signal?.aborted) abort();
+              const child = run({ id: randomUUID(), name, arguments: encoded }, callable, ++childCount, 1, rootToolCallId, toolCall.id, childToken).finally(() => {
+                children.delete(childToken);
+                unlinkParent();
+                options?.signal?.removeEventListener("abort", abort);
+              });
               return child;
             },
           });
@@ -118,19 +152,27 @@ export class ToolRuntime {
         let result: ToolResult;
         try { result = await surface.execute(toolCall.name, args, context); }
         catch (error) { result = { ok: false, error: errorMessage(error) }; }
-        finally {
-          open = false;
-          // Unawaited children belong to this scope, including on parent failure.
-          const completed = await Promise.all(children);
-          for (const child of completed) attachments.push(...child.attachmentContent ?? []);
-        }
+        finally { close(); }
         return result;
       };
       const exclusive = request.executionMode === "sequential" || surface.executionMode(toolCall.name) === "sequential" || toolCall.name === "write" || toolCall.name === "edit";
-      let result = invalid ?? await (spec?.executionRole === "orchestrator" ? execute() : scheduler.run(exclusive, execute));
-      const touched = touchedPathOf(result);
-      if (result.ok && touched) touchedPaths.add(touched);
-      if (attachments.length) result = { ...result, attachmentContent: [...result.attachmentContent ?? [], ...attachments] };
+      const actual = scope.track((invalid ? Promise.resolve(invalid) : spec?.executionRole === "orchestrator" ? execute() : this.scheduler.run(exclusive, execute, token)).then(result => {
+        const touched = touchedPathOf(result);
+        if (result.ok && touched) touchedPaths.add(touched);
+        request.onToolSettled?.({ ...event, result, durationMs: performance.now() - started });
+        return result;
+      }));
+      let result: ToolResult;
+      if (parentToolCallId || spec?.executionRole === "orchestrator") {
+        let unlink: (() => void) | undefined;
+        const cancellation = new Promise<ToolResult>(resolve => {
+          unlink = token.register(reason => {
+            if (!managedCancellation) resolve({ ok: false, status: "cancelled", error: reason });
+          });
+        });
+        try { result = await Promise.race([actual, cancellation]); }
+        finally { unlink?.(); close(); }
+      } else result = await actual;
       request.onToolResult?.({ ...event, result, durationMs: performance.now() - started });
       return result;
     };
@@ -154,17 +196,27 @@ class ToolScheduler {
   private running = 0;
   private exclusive = false;
 
-  run(exclusive: boolean, execute: () => Promise<ToolResult>): Promise<ToolResult> {
+  run(exclusive: boolean, execute: () => Promise<ToolResult>, token: CancelToken): Promise<ToolResult> {
     return new Promise((resolve, reject) => {
-      this.queue.push({ exclusive, start: () => {
+      const entry = { exclusive, start: () => {
+        unlink();
         this.running++;
         this.exclusive = exclusive;
-        void execute().then(resolve, reject).finally(() => {
+        const release = () => {
           this.running--;
           if (exclusive) this.exclusive = false;
           this.drain();
-        });
-      } });
+        };
+        void execute().then(result => { release(); resolve(result); }, error => { release(); reject(error); });
+      } };
+      this.queue.push(entry);
+      const unlink = token.register(() => {
+        const index = this.queue.indexOf(entry);
+        if (index < 0) return;
+        this.queue.splice(index, 1);
+        resolve(cancelled(token));
+        this.drain();
+      });
       this.drain();
     });
   }
@@ -181,4 +233,8 @@ class ToolScheduler {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function cancelled(token: CancelToken): ToolResult {
+  return { ok: false, status: "cancelled", error: token.reason || "cancelled" };
 }

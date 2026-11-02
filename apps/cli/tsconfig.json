@@ -7,6 +7,8 @@
   },
   "include": ["src"],
   "references": [
+    { "path": "../../packages/core/codemode" },
+    { "path": "../../packages/core/tool-codemode" },
     { "path": "../../packages/attachment/attachment" },
     { "path": "../../packages/attachment/attachment-local" },
     { "path": "../../packages/skill/skill" },

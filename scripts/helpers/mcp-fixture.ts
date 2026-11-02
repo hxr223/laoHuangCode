@@ -1,12 +1,14 @@
 import { createServer, type ServerResponse } from "node:http";
-import type { DiscoverResult } from "@modelcontextprotocol/client";
-import type { McpServerConfig } from "../../packages/core/mcp/src/types.ts";
+import type { DiscoverResult, Tool } from "@modelcontextprotocol/client";
+import type { McpServerConfig, McpToolResult } from "../../packages/core/mcp/src/types.ts";
 
 export async function startMcpFixture(options: {
   protocol: "legacy" | "modern"; transport: "http" | "sse";
   rejectStatus?: number; hangList?: boolean; requireBearer?: string;
   oauth?: { issuer: string; token(): string };
   listChanged?: boolean; pages?: number; callDelayMs?: number; dropCall?: boolean; dropFirstBatch?: number;
+  outputSchema?: Tool["outputSchema"];
+  callResult?: McpToolResult;
 }) {
   const requests: { method: string; params?: Record<string, unknown> }[] = [];
   const streams = new Set<ServerResponse>();
@@ -61,7 +63,8 @@ export async function startMcpFixture(options: {
       case "initialize": result = { protocolVersion: "2025-11-25", capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} }, serverInfo: { name: "fixture", version: "1" } }; break;
       case "tools/list":
         if (options.hangList) return;
-        result = { tools: toolNames.map(name => ({ name: options.pages ? `${name}_${Number(message.params?.cursor ?? 0)}` : name, description: "echo", inputSchema: { type: "object", properties: {} } })),
+        result = { tools: toolNames.map(name => ({ name: options.pages ? `${name}_${Number(message.params?.cursor ?? 0)}` : name, description: "echo", inputSchema: { type: "object", properties: {} },
+          ...(options.outputSchema !== undefined ? { outputSchema: options.outputSchema } : {}) })),
           ...(options.pages && Number(message.params?.cursor ?? 0) + 1 < options.pages ? { nextCursor: String(Number(message.params?.cursor ?? 0) + 1) } : {}) };
         break;
       case "tools/call":
@@ -76,7 +79,7 @@ export async function startMcpFixture(options: {
           }
           return;
         }
-        result = { content: [{ type: "text", text: JSON.stringify(message.params.arguments) }] }; break;
+        result = options.callResult ?? { content: [{ type: "text", text: JSON.stringify(message.params.arguments) }] }; break;
       case "resources/list": result = { resources: [{ uri: "fixture://text", name: "text" }] }; break;
       case "resources/templates/list": result = { resourceTemplates: [] }; break;
       case "resources/read": result = { contents: [{ uri: "fixture://text", text: "resource" }] }; break;

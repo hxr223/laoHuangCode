@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { adaptMcpResult } from "../packages/core/mcp/src/output.ts";
 import { mcpToolName } from "../packages/core/mcp/src/tool-adapter.ts";
+import * as toolApi from "@laohuang/tools";
 
 test("normalized remote names do not alias", () => {
   assert.notEqual(mcpToolName("a-b", "read"), mcpToolName("a_b", "read"));
@@ -27,6 +28,20 @@ test("serialized byte limit preserves complete structured and media output in fi
     const attachments = result.attachments as { path: string }[];
     assert.equal(await readFile(attachments[0]!.path, "utf8"), "image");
     assert.equal(dirname(attachments[0]!.path), dirname(result.path!));
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("scripts retain full structured results outside the bounded model preview", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mcp-script-output-"));
+  try {
+    const structuredContent = { rows: ["x".repeat(60000)] };
+    const result = await adaptMcpResult({ content: [{ type: "text", text: "all rows" }],
+      structuredContent, _meta: { secret: "PRIVATE_PROTOCOL_META" } }, { artifactRoot: root });
+    assert.deepEqual(toolApi.scriptOutputOf(result)?.structuredContent, structuredContent);
+    assert.ok(Buffer.byteLength(JSON.stringify(result)) <= 51200);
+    assert.equal(Object.getOwnPropertyDescriptor(result, toolApi.TOOL_SCRIPT_OUTPUT)?.enumerable, false);
+    assert.ok(!JSON.stringify(result).includes("PRIVATE_PROTOCOL_META"));
+    assert.ok(!JSON.stringify(toolApi.scriptOutputOf(result)).includes("PRIVATE_PROTOCOL_META"));
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

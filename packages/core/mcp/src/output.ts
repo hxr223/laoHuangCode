@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { ToolResult } from "@laohuang/tools";
+import { withToolScriptOutput, type ToolResult, type ToolScriptOutput } from "@laohuang/tools";
 import type { McpToolResult } from "./types.ts";
 
 /** Limit the actual model payload, including JSON escaping and metadata. */
@@ -48,8 +48,10 @@ export async function adaptMcpResult(result: McpToolResult, options: { artifactR
   if ("structuredContent" in result && result.structuredContent !== undefined) content.push(JSON.stringify(result.structuredContent));
   const ok = !("isError" in result && result.isError === true);
   const preview: ToolResult = { ok, status: ok ? "completed" : "failed", content: content.join("\n") };
+  const scriptOutput: ToolScriptOutput = { text: preview.content,
+    ...("structuredContent" in result ? { structuredContent: result.structuredContent } : {}) };
   const oversized = Buffer.byteLength(JSON.stringify(preview)) > limit;
-  if (!oversized && media.length === 0) return preview;
+  if (!oversized && media.length === 0) return withToolScriptOutput(preview, scriptOutput);
   try {
     const directory = join(options.artifactRoot, randomUUID());
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -63,10 +65,11 @@ export async function adaptMcpResult(result: McpToolResult, options: { artifactR
       await writeFile(path, decoded, { mode: 0o600, flag: "wx" });
       attachments.push({ path, mimeType: item.mimeType });
     }
-    return bounded({ ...preview, path, attachments, truncated: oversized,
-      note: "Full business result: read result.json. For a long single line, use bash to read byte ranges. Media attachments are files, not native model input." }, limit);
+    return withToolScriptOutput(bounded({ ...preview, path, attachments, truncated: oversized,
+      note: "Full business result: read result.json. For a long single line, use bash to read byte ranges. Media attachments are files, not native model input." }, limit),
+    { ...scriptOutput, text: [scriptOutput.text, ...attachments.map(attachment => `[${attachment.mimeType} attachment: ${attachment.path}]`)].join("\n") });
   } catch {
-    return bounded({ ...preview, ok: false, status: "output_storage_failed", remoteCompleted: true,
-      error: "Remote operation completed but its full output could not be saved. Do not replay the operation." }, limit);
+    return withToolScriptOutput(bounded({ ...preview, ok: false, status: "output_storage_failed", remoteCompleted: true,
+      error: "Remote operation completed but its full output could not be saved. Do not replay the operation." }, limit), scriptOutput);
   }
 }

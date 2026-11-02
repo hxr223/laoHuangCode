@@ -30,12 +30,10 @@ export class SessionRecorder {
   }
 
   recordEvent(event: AnyEventEnvelope): readonly SessionRecord[] {
+    const journal = this.journal();
+    if (!journal || journal.closed || journal.header.sessionId !== event.session_id) return [];
     const records: SessionRecord[] = [];
     for (const record of this.recordsFor(event)) {
-      const journal = this.journal();
-      if (journal === null) {
-        continue;
-      }
       records.push(journal.appendRecord(record));
     }
     return records;

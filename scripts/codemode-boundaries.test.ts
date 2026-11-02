@@ -51,7 +51,7 @@ test("only blocks direct tools and search even after loading/restoring; on retai
   assert.equal(restored.prepare(registry).callableTools.definitions.length, 0);
 });
 
-test("nested calls validate, serialize exclusive leaves, drain unawaited work, and close their capability", { timeout: 2000 }, async () => {
+test("nested calls validate, serialize awaited exclusive leaves, and close their capability", { timeout: 2000 }, async () => {
   const order: string[] = [];
   let captured: ToolExecutionContextLike | undefined;
   const registry = new ToolRegistry([
@@ -59,8 +59,7 @@ test("nested calls validate, serialize exclusive leaves, drain unawaited work, a
       captured = context;
       const invalid = await context.executeTool!("write", { count: "wrong" });
       assert.equal(invalid.ok, false);
-      void context.executeTool!("write", { count: "2" });
-      void context.executeTool!("read", {});
+      await Promise.all([context.executeTool!("write", { count: "2" }), context.executeTool!("read", {})]);
       return { ok: true, content: "summary" };
     }),
     tool("write", async args => {
@@ -95,9 +94,10 @@ test("parent cancellation reaches running children and prevents queued leaf exec
       return { ok: false, status: "cancelled" };
     }),
     tool("write", async (_, ctx) => {
-      assert.equal(ctx.signal, token.signal);
+      assert.equal(ctx.signal?.aborted, false);
       await new Promise(resolve => setTimeout(resolve, 5));
       token.cancel("stop nested");
+      assert.equal(ctx.signal?.aborted, true);
       return { ok: false, status: "cancelled" };
     }),
     tool("read", () => { secondRan = true; return { ok: true }; }),
@@ -107,6 +107,97 @@ test("parent cancellation reaches running children and prevents queued leaf exec
     registry: selected.directTools, callableTools: selected.callableTools, toolCalls: [{ id: "p", name: "codemode", arguments: "{}" }], executionMode: "parallel", cancelToken: token,
   });
   assert.equal(secondRan, false);
+});
+
+test("one nested call can be cancelled without cancelling its sibling or parent", async () => {
+  const token = new CancelToken();
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let childSignal: AbortSignal | undefined;
+  const registry = new ToolRegistry([
+    orchestrator(async (_, context) => {
+      const controller = new AbortController();
+      const child = context.executeTool!("slow", {}, { signal: controller.signal });
+      const sibling = context.executeTool!("fast", {});
+      await started.promise;
+      controller.abort("stop this child");
+      const result = await Promise.race([child, new Promise<null>(resolve => setImmediate(() => resolve(null)))]);
+      release.resolve();
+      assert.equal(result?.status, "cancelled");
+      assert.equal(result?.error, "stop this child");
+      assert.equal(childSignal?.aborted, true);
+      assert.equal(context.isCancelled(), false);
+      assert.equal(token.isCancelled(), false);
+      assert.equal((await sibling).ok, true);
+      return { ok: true, content: "parent continued" };
+    }),
+    tool("slow", async (_, context) => {
+      childSignal = context.signal;
+      started.resolve();
+      await release.promise;
+      return { ok: true };
+    }),
+    tool("fast", () => ({ ok: true })),
+  ]);
+  const selected = new ToolSelection().prepare(registry, "only");
+  try {
+    const result = await new ToolRuntime(registry, { validateToolArguments: validatePiToolArguments }).execute({
+      registry: selected.directTools, callableTools: selected.callableTools,
+      toolCalls: [{ id: "parent", name: "codemode", arguments: "{}" }], executionMode: "parallel", cancelToken: token,
+    });
+    assert.equal(result.results[0]?.ok, true, result.results[0]?.error);
+  } finally { release.resolve(); }
+});
+
+test("parent return cancels unfinished work but its scope tracks actual cleanup", async () => {
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  let context: ToolExecutionContextLike | undefined;
+  let settled = false;
+  let nextReadStarted = false;
+  const finished: string[] = [];
+  const actualFinished: string[] = [];
+  const registry = new ToolRegistry([
+    orchestrator(async (_, ctx) => {
+      void ctx.executeTool!("write", {});
+      await started.promise;
+      return { ok: true, content: "parent result" };
+    }),
+    tool("write", async (_, ctx) => {
+      context = ctx;
+      started.resolve();
+      await release.promise;
+      return { ok: true, content: "late private result" };
+    }),
+    tool("read", () => { nextReadStarted = true; return { ok: true }; }),
+  ]);
+  const selected = new ToolSelection().prepare(registry, "only");
+  const runtime = new ToolRuntime(registry, { validateToolArguments: validatePiToolArguments });
+  try {
+    const scope = runtime.start({
+      registry: selected.directTools, callableTools: selected.callableTools,
+      toolCalls: [{ id: "parent", name: "codemode", arguments: "{}" }], executionMode: "parallel", cancelToken: null,
+      onToolResult: event => finished.push(`${event.toolCall.name}:${event.result.status ?? "completed"}`),
+      onToolSettled: event => actualFinished.push(event.toolCall.name),
+    });
+    void scope.settled.then(() => { settled = true; });
+    const result = await Promise.race([scope.result, new Promise<null>(resolve => setImmediate(() => resolve(null)))]);
+    assert.equal(result?.results[0]?.content, "parent result");
+    assert.equal(context?.signal?.aborted, true);
+    assert.equal(settled, false);
+    assert.ok(finished.includes("write:cancelled"));
+    assert.ok(!actualFinished.includes("write"));
+    const nextBatch = runtime.execute({ toolCalls: [{ id: "next", name: "read", arguments: "{}" }],
+      executionMode: "parallel", cancelToken: null });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(nextReadStarted, false, "a new batch cannot bypass a physical write still running");
+    release.resolve();
+    await scope.settled;
+    assert.equal((await nextBatch).results[0]?.ok, true);
+    assert.equal(settled, true);
+    assert.equal(actualFinished.filter(name => name === "write").length, 1);
+    assert.equal(finished.filter(name => name.startsWith("write:")).length, 1);
+  } finally { release.resolve(); }
 });
 
 test("a model-step mode snapshot survives switching during the model request", async () => {
@@ -224,7 +315,7 @@ test("nested dynamic tool revocation cannot execute an obsolete binding", async 
   assert.equal(result.results[0]?.status, "tool_unavailable");
 });
 
-test("nested attachments are lifted to the root result while raw text stays inside the script", async () => {
+test("nested attachments stay inside the script unless the parent explicitly selects them", async () => {
   const attachment = { type: "file" as const, ref: { id: `sha256:${"a".repeat(64)}` as const, name: "report.txt", bytes: 3 } };
   const registry = new ToolRegistry([
     orchestrator(async (_, ctx) => { await ctx.executeTool!("read", {}); return { ok: true, content: "summary" }; }),
@@ -235,7 +326,7 @@ test("nested attachments are lifted to the root result while raw text stays insi
     registry: selected.directTools, callableTools: selected.callableTools, toolCalls: [{ id: "p", name: "codemode", arguments: "{}" }], executionMode: "parallel", cancelToken: null,
   });
   assert.equal(result.results[0]?.content, "summary");
-  assert.deepEqual(result.results[0]?.attachmentContent, [attachment]);
+  assert.equal(result.results[0]?.attachmentContent, undefined);
 });
 
 test("nested touched paths discover descendant project instructions before the next model step", async () => {
@@ -255,4 +346,29 @@ test("nested touched paths discover descendant project instructions before the n
     assert.ok(requests[1]?.messages.some(message => message.role === "user" && message.content.includes("nested fixture invariant")));
     assert.ok(!JSON.stringify(requests[1]?.messages).includes("PRIVATE"));
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("late successful child paths are discovered at the next safe point of their own session", async () => {
+  const root = mkdtempSync(join(tmpdir(), "codemode-late-instructions-"));
+  const started = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  try {
+    mkdirSync(join(root, "sub"));
+    writeFileSync(join(root, "sub", "AGENTS.md"), "Preserve the late instruction invariant.");
+    const requests: ModelRequest[] = [];
+    const agent = new CodingAgent({ projectRoot: root, startupCwd: root, provider: "test", model: "test", codeMode: "only",
+      tools: new ToolRegistry([
+        orchestrator(async (_, ctx) => { void ctx.executeTool!("read", {}); await started.promise; return { ok: true }; }),
+        tool("read", async () => { started.resolve(); await release.promise;
+          return withTouchedPath({ ok: true }, join(realpathSync(root), "sub", "file.txt")); }),
+      ]), validateToolArguments: validatePiToolArguments,
+      modelAdapter: { name: "fake", runAttempt: async request => { requests.push(request); return reply(request, requests.length === 1 ? "codemode" : undefined); } },
+    });
+    await agent.run("first");
+    assert.ok(!JSON.stringify(requests[1]?.messages).includes("late instruction invariant"));
+    release.resolve();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await agent.run("second");
+    assert.ok(requests[2]?.messages.some(message => message.role === "user" && message.content.includes("late instruction invariant")));
+  } finally { release.resolve(); rmSync(root, { recursive: true, force: true }); }
 });

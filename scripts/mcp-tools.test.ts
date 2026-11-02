@@ -48,6 +48,16 @@ test("pagination is complete, filtering uses remote names, and deny rules win", 
   } finally { await service.close(); await fixture.close(); }
 });
 
+test("MCP output declarations are preserved in the script-callable tool catalog", async () => {
+  const outputSchema = { type: "object" as const, properties: { count: { type: "number" } } };
+  const fixture = await startMcpFixture({ protocol: "modern", transport: "http", outputSchema });
+  const { registry, service } = runtime(fixture.config);
+  try {
+    await service.start();
+    assert.deepEqual(registry.snapshot().definitions[0]?.outputSchema, outputSchema);
+  } finally { await service.close(); await fixture.close(); }
+});
+
 test("unbounded pagination fails without publishing a partial catalog", async () => {
   const fixture = await startMcpFixture({ protocol: "modern", transport: "http", pages: 70 });
   const { registry, service } = runtime(fixture.config);

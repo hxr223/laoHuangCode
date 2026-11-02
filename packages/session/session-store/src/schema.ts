@@ -8,8 +8,9 @@ import type {
   ReasoningEffort,
 } from "@laohuang/llm";
 import { assertAttachmentContent } from "@laohuang/attachment";
-import { isCodeMode, type CodeMode, type ToolExecutionRecord, type ToolSelectionSnapshot } from "@laohuang/tools";
+import { isCodeMode, type CodeMode, type CodeModeResultMetadata, type ToolExecutionRecord, type ToolSelectionSnapshot } from "@laohuang/tools";
 import { normalizeSessionTitle } from "./session-metadata.ts";
+import { assertCodeModeMetadata } from "./codemode-store.ts";
 
 export type SessionOrigin = "new" | "fork" | "clone" | "import";
 
@@ -83,6 +84,7 @@ export interface AssistantMessagePayload {
 }
 
 export interface ToolResultPayload {
+  readonly codeMode?: CodeModeResultMetadata;
   readonly executions?: readonly ToolExecutionRecord[];
   readonly message: ToolResultModelMessage;
   readonly requestId: string;
@@ -362,6 +364,10 @@ export function parseSessionItem(
     }
     const entryPayload = objectOf(input["payload"], "entry payload");
     if (entryType === "code_mode" && !isCodeMode(entryPayload.mode)) throw new SessionSchemaError("invalid code mode");
+    if (entryType === "tool_result" && entryPayload.codeMode !== undefined) {
+      const message = objectOf(entryPayload.message, "tool result message");
+      assertCodeModeMetadata(entryPayload.codeMode, message.isError !== true && entryPayload.recovered !== true);
+    }
     if (entryType === "tool_result" && entryPayload.executions !== undefined) {
       if (!Array.isArray(entryPayload.executions)) throw new SessionSchemaError("invalid tool executions");
       for (const raw of entryPayload.executions) {
@@ -461,6 +467,7 @@ function assertStoredTool(value: unknown, activationOptional: boolean): void {
     throw new SessionSchemaError("invalid tool spec");
   }
   objectOf(spec["parameters"], "tool parameters");
+  if (spec.outputSchema !== undefined && typeof spec.outputSchema !== "boolean") objectOf(spec.outputSchema, "tool output schema");
   if (spec.exposure !== undefined && !["direct", "deferred", "codemode", "model-only", "hidden"].includes(String(spec.exposure))) throw new SessionSchemaError("invalid exposure");
   if (spec.executionRole !== undefined && spec.executionRole !== "orchestrator") throw new SessionSchemaError("invalid execution role");
   if (spec["catalog"] !== undefined) {
