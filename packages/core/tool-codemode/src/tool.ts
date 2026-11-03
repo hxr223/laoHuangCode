@@ -30,7 +30,8 @@ export function createCodeModeTool(options: CodeModeToolOptions): ManagedCodeMod
   let closed = false;
   return {
     spec: { name: "codemode", description: "Execute JavaScript in an isolated QuickJS Worker. Call available host tools with await tools.name({...}). " +
-      "Discover tools with await searchTools(query, limit?) or inspect ALL_TOOLS. Keep intermediate results in variables; use text(), image(), console or return to select model output. store()/load() retain small session state. " +
+      "Discover tools with await searchTools(query, limit?) or inspect ALL_TOOLS. searchTools returns TypeScript declaration text, not an array: output it with text(await searchTools(query)), read the declarations, then call the discovered tools in a subsequent script. ALL_TOOLS is an array of names and descriptions. Keep intermediate results in variables; use text(), image(), console or return to select model output. store()/load() retain small session state. " +
+      "Tool calls reject on failure. Results are strings unless a tool's discovered declaration specifies a structured value. read returns raw file text: parse JSON with JSON.parse(await tools.read({path})), not result.content. read_image returns an image reference object that image() accepts. " +
       "An optional first line // @options: {\"timeout_ms\":30000,\"max_output_tokens\":10000} sets script options. Default total timeout is unlimited.",
       parameters: { type: "object", properties: { code: { type: "string", description: "JavaScript source with top-level await and return." } }, required: ["code"], additionalProperties: false },
       promptGuidelines: [], exposure: "model-only", executionRole: "orchestrator" },

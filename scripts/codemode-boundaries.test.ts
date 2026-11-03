@@ -296,8 +296,45 @@ test("live TUI keeps nested stream output under its parent and invalidates the g
   assert.match(render(), /12ms/);
   update("tool.finished", "parent", { status: "completed", result: { ok: true, content: "summary" } });
   store.setToolOutputExpanded(false);
-  assert.match(render(), /summary/);
+  assert.ok(!render().includes("summary"));
+  assert.match(render(), /completed/);
   assert.ok(!render().includes("streaming output"));
+});
+
+test("orchestrator output stays collapsed during streaming and after completion, failure or cancellation", () => {
+  for (const status of ["completed", "failed", "cancelled"] as const) {
+    const store = new TranscriptStore();
+    const update = (kind: string, correlationId: string, payload: Record<string, unknown>, text = "", stream = "") =>
+      store.apply({ kind, correlationId, payload, text, stream });
+    update("tool.started", "parent", { name: "codemode", arguments: {}, orchestrator: true });
+    const transcript = new Transcript({ blocks: store.blocks() });
+    const render = () => transcript.render({ width: 80, theme: DEFAULT_DARK_THEME }).lines.map(line => line.spans.map(span => span.text).join("")).join("\n");
+    const output = "ROOT_EXPLICIT_OUTPUT\n".repeat(80);
+    update("tool.output_delta", "parent", {}, output, "stdout");
+    assert.match(render(), /Running/);
+    assert.ok(!render().includes("ROOT_EXPLICIT_OUTPUT"));
+    update("tool.started", "child", { name: "bash", arguments: { command: "pwd" }, parentToolCallId: "parent" });
+    update("tool.output_delta", "child", {}, "CHILD_OUTPUT", "stdout");
+    assert.match(render(), /1 tool calls/);
+    assert.ok(!render().includes("CHILD_OUTPUT"));
+    store.setToolOutputExpanded(true);
+    assert.match(render(), /ROOT_EXPLICIT_OUTPUT/);
+    assert.match(render(), /CHILD_OUTPUT/);
+    update("tool.finished", "child", { status: "completed", result: { ok: true } });
+    update("tool.finished", "parent", { status, duration_ms: 51,
+      result: { ok: status === "completed", content: output, ...(status === "completed" ? {} : { error: "ROOT_ERROR_SUMMARY\n" + "ROOT_ERROR_DETAIL\n".repeat(80) }) } });
+    assert.match(render(), /ROOT_EXPLICIT_OUTPUT/);
+    if (status !== "completed") assert.match(render(), /ROOT_ERROR_DETAIL/);
+    store.setToolOutputExpanded(false);
+    assert.match(render(), new RegExp(status));
+    assert.match(render(), /51ms/);
+    assert.match(render(), /1 tool calls/);
+    assert.ok(!render().includes("ROOT_EXPLICIT_OUTPUT"));
+    assert.ok(!render().includes("ROOT_ERROR_DETAIL"));
+    if (status !== "completed") assert.match(render(), /ROOT_ERROR_SUMMARY/);
+    assert.ok(!render().includes("CHILD_OUTPUT"));
+    assert.ok(render().split("\n").length < 10);
+  }
 });
 
 test("nested dynamic tool revocation cannot execute an obsolete binding", async () => {
