@@ -19,6 +19,7 @@ import type {
   UserMessageEntry,
   InstructionFileRecord,
 } from "@laohuang/session-store";
+import type { CodeMode, CodeModeResultMetadata, ToolExecutionRecord } from "@laohuang/tools";
 import { ContextUsage } from "./context-usage.ts";
 
 export interface SystemContextInput {
@@ -47,6 +48,9 @@ export interface AssistantMessageInput {
 }
 
 export interface ToolResultsInput {
+  readonly codeModeByCallId?: Readonly<Record<string, CodeModeResultMetadata>>;
+  readonly executions?: readonly ToolExecutionRecord[];
+  readonly orchestratorCallIds?: readonly string[];
   readonly requestId: string;
   readonly messages: readonly ToolResultModelMessage[];
   readonly recovered: boolean;
@@ -178,6 +182,10 @@ export class ConversationHistory {
           message,
           requestId: input.requestId,
           recovered: input.recovered,
+          ...(input.codeModeByCallId && Object.hasOwn(input.codeModeByCallId, message.toolCallId)
+            ? { codeMode: input.codeModeByCallId[message.toolCallId] } : {}),
+          ...(input.orchestratorCallIds?.includes(message.toolCallId)
+            ? { executions: (input.executions ?? []).filter(record => record.rootToolCallId === message.toolCallId) } : {}),
         },
       }) as ToolResultEntry,
     );
@@ -188,6 +196,10 @@ export class ConversationHistory {
       entryType: "reminder",
       payload: input,
     });
+  }
+
+  appendCodeMode(mode: CodeMode): SessionEntry {
+    return this.append({ entryType: "code_mode", payload: { mode } });
   }
 
   appendToolState(input: { readonly message: SystemModelMessage }): SessionEntry {

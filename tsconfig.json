@@ -10,6 +10,8 @@
     { "path": "./packages/fs/file-watcher" },
     { "path": "./packages/core/runtime-protocol" },
     { "path": "./packages/core/tools" },
+    { "path": "./packages/core/codemode" },
+    { "path": "./packages/core/tool-codemode" },
     { "path": "./packages/core/mcp" },
     { "path": "./packages/session/session-store" },
     { "path": "./packages/session/session-context" },

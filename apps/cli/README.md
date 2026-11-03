@@ -86,6 +86,25 @@ clipboard failures produce an explanatory message.
 tool-call/tool-result E2E was recorded; no providers are checked in as verified
 by default.
 
+## Code Mode
+
+Use `/codemode off|on|only` for the current session and `/codemode default off|on|only`
+for new sessions. Default is off. On keeps direct calls and JavaScript composition;
+only disables ordinary direct calls and `tool_search`. Changes apply to the next model request.
+Scripts use `await searchTools(query)`, `await tools.name({...})`, `text`, `console`,
+`image`, `store`/`load`, and top-level return. Intermediate results stay private;
+only explicit output and a successful return reach the model. State commits on success
+or `exit()` and survives branch restore; failures do not commit state or roll back tool effects.
+
+An optional first line `// @options: {"timeout_ms":30000,"max_output_tokens":10000}`
+sets a total deadline and approximate text budget. Default deadline is unlimited.
+Two shared Workers serve FIFO waiters, with a 60 second queue limit. QuickJS heap is
+limited to 256 MiB, output to 16777216 UTF-16 characters or 100000 items, and store
+to 262144 JSON characters per value / 1048576 including keys overall. The default
+model text budget is 10000 tokens at four characters each; full selected text is
+saved under `codemode-artifacts/<sessionId>` beside config when preview is truncated.
+Only selected images are exposed. QuickJS isolates scripts; host tools retain user permissions.
+
 ## MCP
 
 MCP is built in. Put a version 1 `mcp.json` beside your model `config.json`, or

@@ -8,6 +8,7 @@ import {
   toReplayEnvelope,
 } from "../packages/llm/llm-pi-ai/src/index.ts";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
+import { codeModeInstructions } from "@laohuang/tools";
 
 function request(overrides: Partial<ModelRequest> = {}): ModelRequest {
   return {
@@ -82,6 +83,19 @@ test("toPiContext rejects duplicate system messages as protocol errors", () => {
       })),
     (error: unknown) => error instanceof ModelError && error.kind === "protocol",
   );
+});
+
+test("toPiContext combines the current tool mode with the base system prompt", () => {
+  for (const mode of ["off", "on", "only"] as const) {
+    const context = toPiContext(request({ messages: [
+      { role: "system", content: "base system" },
+      { role: "system", content: codeModeInstructions(mode), toolMode: mode },
+      { role: "user", content: "perform the task" },
+    ] }));
+    assert.equal(context.systemPrompt, `base system\n\n${codeModeInstructions(mode)}`);
+    assert.equal(context.messages.length, 1);
+    assert.equal(context.messages[0]?.role, "user");
+  }
 });
 
 test("replay envelopes restore same-route pi assistant metadata", () => {

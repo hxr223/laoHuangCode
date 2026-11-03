@@ -10,17 +10,45 @@ export interface ToolSpec {
   readonly name: string;
   readonly description: string;
   readonly parameters: Record<string, unknown>;
+  readonly outputSchema?: Record<string, unknown> | boolean;
   readonly promptGuidelines: readonly string[];
+  readonly exposure?: "direct" | "deferred" | "codemode" | "model-only" | "hidden";
+  /** Orchestrators delegate work; they never hold a leaf execution slot. */
+  readonly executionRole?: "orchestrator";
   /** Local discovery metadata, never serialized as a provider tool definition. */
   readonly catalog?: {
     readonly source: string;
     readonly originalName: string;
     readonly binding: string;
-    readonly exposure: "direct" | "deferred";
   };
 }
 
 export type ToolExecutionMode = "parallel" | "sequential";
+export type CodeMode = "off" | "on" | "only";
+
+export function isCodeMode(value: unknown): value is CodeMode {
+  return value === "off" || value === "on" || value === "only";
+}
+
+export function codeModeInstructions(mode: CodeMode): string {
+  if (mode === "off") return "Code Mode is off. Use the declared tools directly. When tool_search is available, use it to load deferred tools before calling them.";
+  return (mode === "only"
+    ? "Code Mode is the only route to ordinary tools. Do not call ordinary tools or tool_search directly."
+    : "Code Mode is on. You may call declared tools directly or compose calls in Code Mode. Use tool_search to load deferred tools for direct calls.") +
+    " Discover script-callable tools with searchTools inside Code Mode, then call them through tools. Tool usage guidelines still apply inside scripts. Internal results stay in the script; explicitly output the information needed for your next model step.";
+}
+
+/** Redacted execution metadata; never part of a provider tool result. */
+export interface ToolExecutionRecord {
+  readonly toolCallId: string;
+  readonly parentToolCallId: string;
+  readonly rootToolCallId: string;
+  readonly name: string;
+  readonly arguments: Record<string, unknown>;
+  readonly status: string;
+  readonly durationMs: number;
+  readonly error?: string;
+}
 
 /**
  * Internal side channel: the resolved absolute path touched by a successful
@@ -28,6 +56,21 @@ export type ToolExecutionMode = "parallel" | "sequential";
  * model-visible history.
  */
 export const TOUCHED_PATH: unique symbol = Symbol("laohuang.touchedPath");
+
+/** Full host-side data for script consumers, excluded from model/log JSON. */
+export const TOOL_SCRIPT_OUTPUT: unique symbol = Symbol("laohuang.toolScriptOutput");
+
+export interface ToolScriptOutput {
+  readonly text?: string;
+  readonly structuredContent?: unknown;
+}
+
+export const CODEMODE_RESULT_METADATA: unique symbol = Symbol("laohuang.codeModeResultMetadata");
+
+export interface CodeModeResultMetadata {
+  readonly storeWrites?: { readonly set: Readonly<Record<string, unknown>>; readonly delete: readonly string[] };
+  readonly internalAttachments?: readonly AttachmentContent[];
+}
 
 /** Plain-object result returned to the model for every tool call. */
 export interface ToolResult {
@@ -38,7 +81,27 @@ export interface ToolResult {
   path?: string;
   error?: string;
   [TOUCHED_PATH]?: string;
+  [TOOL_SCRIPT_OUTPUT]?: ToolScriptOutput;
+  [CODEMODE_RESULT_METADATA]?: CodeModeResultMetadata;
   [key: string]: unknown;
+}
+
+export function scriptOutputOf(result: ToolResult): ToolScriptOutput | undefined {
+  return result[TOOL_SCRIPT_OUTPUT];
+}
+
+export function withToolScriptOutput(result: ToolResult, output: ToolScriptOutput): ToolResult {
+  Object.defineProperty(result, TOOL_SCRIPT_OUTPUT, { value: output, enumerable: false, configurable: true });
+  return result;
+}
+
+export function codeModeMetadataOf(result: ToolResult): CodeModeResultMetadata | undefined {
+  return result[CODEMODE_RESULT_METADATA];
+}
+
+export function withCodeModeMetadata(result: ToolResult, metadata: CodeModeResultMetadata): ToolResult {
+  Object.defineProperty(result, CODEMODE_RESULT_METADATA, { value: metadata, enumerable: false, configurable: true });
+  return result;
 }
 
 /** The resolved path a successful file tool touched, if recorded. */
@@ -56,7 +119,19 @@ export function withTouchedPath(result: ToolResult, target: string): ToolResult 
   return result;
 }
 
+export interface ToolChildCallOptions {
+  readonly signal?: AbortSignal;
+}
+
 export interface ToolExecutionContextLike {
+  readonly sessionId?: string | null;
+  readonly taskId?: string | null;
+  readonly toolCallId?: string | null;
+  readonly parentToolCallId?: string;
+  readonly callableTools?: readonly ToolSpec[];
+  executeTool?(name: string, args: Record<string, unknown>, options?: ToolChildCallOptions): Promise<ToolResult>;
+  /** A managed orchestrator promises prompt logical completion on abort, without awaiting physical child cleanup. */
+  manageCancellation?(): void;
   isCancelled(): boolean;
   readonly signal?: AbortSignal;
   readonly cancellationReason: string;
@@ -250,7 +325,10 @@ export class ToolRegistry implements ToolRegistryLike {
       name: spec.name,
       description: spec.description,
       parameters: spec.parameters,
+      ...(spec.outputSchema !== undefined ? { outputSchema: spec.outputSchema } : {}),
       promptGuidelines: [...spec.promptGuidelines],
+      ...(spec.exposure ? { exposure: spec.exposure } : {}),
+      ...(spec.executionRole ? { executionRole: spec.executionRole } : {}),
       ...(spec.catalog ? { catalog: spec.catalog } : {}),
     }));
   }
@@ -341,4 +419,5 @@ function errorMessage(error: unknown): string {
 
 export * from "./tool-runtime.ts";
 export * from "./search/catalog.ts";
+export { Bm25Index } from "./search/bm25.ts";
 export * from "./search/selection-state.ts";

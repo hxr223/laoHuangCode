@@ -2,7 +2,7 @@ import { open } from "node:fs/promises";
 import { basename } from "node:path";
 import { assertImageView, AttachmentError, type AttachmentStore, type ImageRef } from "@laohuang/attachment";
 import { resolveLocalPath, type LocalPathOptions } from "@laohuang/local-paths";
-import { cancelledResult, withTouchedPath, type ToolAdapterDefinition } from "@laohuang/tools";
+import { cancelledResult, withTouchedPath, withToolScriptOutput, type ToolAdapterDefinition } from "@laohuang/tools";
 
 export function createReadImageTool(options: {
   readonly store: AttachmentStore;
@@ -14,6 +14,10 @@ export function createReadImageTool(options: {
   return {
     spec: {
       name: "read_image",
+      outputSchema: { type: "object", properties: {
+        type: { const: "image" }, attachment_id: { type: "string" },
+        view: { type: "object", description: "Opaque image view; pass this result directly to image()." },
+      }, required: ["type", "attachment_id"], additionalProperties: false },
       description: "View a PNG, JPEG, WebP or GIF image. Use path to read a local image file. " +
         "Use attachment_id only to re-read an image attachment reference already returned in the current session; do not guess IDs. " +
         "Provide exactly one of path or attachment_id. Optional crop coordinates use the oriented original pixels. " +
@@ -79,7 +83,8 @@ export function createReadImageTool(options: {
         }
         if (view.region && (view.region.x + view.region.width > ref.width || view.region.y + view.region.height > ref.height)) throw new AttachmentError("LIMIT_EXCEEDED", "Crop is outside the oriented image");
         if (execution.isCancelled()) return cancelledResult(execution);
-        const result = { ok: true, content: `Image ${ref.id}, oriented original ${ref.width}x${ref.height}.`, attachmentContent: [{ type: "image" as const, ref, view }] };
+        const result = withToolScriptOutput({ ok: true, content: `Image ${ref.id}, oriented original ${ref.width}x${ref.height}.`, attachmentContent: [{ type: "image" as const, ref, view }] },
+          { structuredContent: { type: "image", attachment_id: ref.id, view } });
         return target ? withTouchedPath(result, target) : result;
       } finally { release(); }
     },

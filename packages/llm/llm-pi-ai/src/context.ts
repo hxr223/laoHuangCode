@@ -19,19 +19,23 @@ function toolsOf(request: ModelRequest): PiTool[] | undefined {
 export function toPiContext(request: ModelRequest, attachments?: ReadonlyMap<ModelMessage, readonly (TextContent | ImageContent)[]>): PiContext {
   const systems = request.messages.filter(
     (message): message is Extract<ModelMessage, { role: "system" }> =>
-      message.role === "system" && message.toolDefinitions === undefined,
+      message.role === "system" && message.toolDefinitions === undefined && message.toolMode === undefined,
   );
   if (systems.length > 1) {
     throw new ModelError("model history contains more than one system message", {
       kind: "protocol",
     });
   }
+  const mode = request.messages.filter((message): message is Extract<ModelMessage, { role: "system" }> =>
+    message.role === "system" && message.toolMode !== undefined);
+  if (mode.length > 1) throw new ModelError("model history contains more than one tool mode", { kind: "protocol" });
+  const systemPrompt = [...systems, ...mode].map(message => message.content).join("\n\n");
   const messages = request.messages
     .filter((message) => message.role !== "system")
     .map((message) => toPiMessage(message, request.provider, request.model, attachments?.get(message)));
   const tools = toolsOf(request);
   return {
-    ...(systems[0] === undefined ? {} : { systemPrompt: systems[0].content }),
+    ...(systems.length || mode.length ? { systemPrompt } : {}),
     messages,
     ...(tools === undefined ? {} : { tools }),
   };

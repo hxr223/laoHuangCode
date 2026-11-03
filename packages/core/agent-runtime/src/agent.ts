@@ -33,6 +33,7 @@ import {
 } from "@laohuang/llm";
 import type {
   ToolExecutionContextLike,
+  CodeMode,
   ToolArgumentValidator,
   ToolExecutionMode,
   ToolRegistryLike,
@@ -55,7 +56,7 @@ import {
 import { RepeatToolPolicy } from "./core/repeat-tool-policy.ts";
 import { HistoryCommitter } from "./core/history-committer.ts";
 import { ModelRuntime } from "@laohuang/llm";
-import { ToolRuntime, ToolSelection } from "@laohuang/tools";
+import { ToolRuntime, ToolSelection, isCodeMode, touchedPathOf } from "@laohuang/tools";
 import type {
   AgentContextGovernor,
 } from "./core/agent-step-runner.ts";
@@ -115,6 +116,7 @@ export interface RunOptions {
 }
 
 export interface CodingAgentOptions {
+  codeMode?: CodeMode;
   resources?: AgentStepRunnerOptions["resources"];
   modelAdapter: ModelAdapter;
   model: string;
@@ -168,6 +170,7 @@ const RUNTIME_EVENT_KINDS: Record<string, EventKind> = {
 };
 
 export class CodingAgent {
+  private requestedCodeMode: CodeMode;
   model: string;
   provider: string;
   baseUrl: string | null;
@@ -198,14 +201,17 @@ export class CodingAgent {
   private readonly prepareTools: CodingAgentOptions["prepareTools"];
   private readonly resources: CodingAgentOptions["resources"];
   private readonly onToolStateWarning: CodingAgentOptions["onToolStateWarning"];
+  private readonly settledPaths = new Map<string | null, Set<string>>();
 
   constructor(options: CodingAgentOptions) {
+    this.requestedCodeMode = options.codeMode ?? "off";
     this.repeatToolReminderThresholds = normalizeReminderThresholds(
       options.repeatToolReminderThresholds ?? [3, 5, 8],
     );
     this.model = options.model;
     this.selection = options.toolSelection ?? new ToolSelection();
     this.tools = options.tools;
+    this.setCodeMode(this.requestedCodeMode);
     this.onToolEvent = options.onToolEvent ?? null;
     this.onAgentEvent = options.onAgentEvent ?? null;
     this.cliName = options.cliName ?? null;
@@ -223,8 +229,6 @@ export class CodingAgent {
     this.toolExecution = options.toolExecution ?? "parallel";
     this.toolRuntime = new ToolRuntime(this.tools, {
       validateToolArguments: options.validateToolArguments,
-      createExecutionContext: (toolCallId, cancelToken) =>
-        makeToolContext(this.activeContext, toolCallId, cancelToken),
     });
     // Canonicalize so instruction scopes line up with the registry's
     // realpath-resolved touched paths even when the cwd contains symlinks.
@@ -247,6 +251,19 @@ export class CodingAgent {
 
   getReasoningEffort(): ReasoningEffort {
     return this.reasoningEffort;
+  }
+
+  getCodeMode(): CodeMode {
+    return this.requestedCodeMode;
+  }
+
+  /** Each model step captures this value before constructing its tool views. */
+  setCodeMode(mode: CodeMode): void {
+    if (!isCodeMode(mode)) throw new Error("Invalid Code Mode");
+    if (mode !== "off" && !this.tools.definitions.some(spec => spec.executionRole === "orchestrator" && spec.exposure === "model-only")) {
+      throw new Error("Code Mode requires a registered orchestration tool");
+    }
+    this.requestedCodeMode = mode;
   }
 
   setReasoningEffort(effort: ReasoningEffort): void {
@@ -286,6 +303,7 @@ export class CodingAgent {
     }
     this.activeContext = context;
     this.turn += 1;
+    const sessionId = context?.sessionId ?? null;
     try {
       const runner = new AgentStepRunner({
         selection: this.selection,
@@ -294,7 +312,22 @@ export class CodingAgent {
         baseUrl: this.baseUrl,
         modelRuntime: this.modelRuntime,
         toolRuntime: this.toolRuntime,
+        createToolContext: (id, token) => makeToolContext(context, id, token),
+        onToolSettled: event => {
+          const touched = touchedPathOf(event.result);
+          if (!event.result.ok || !touched) return;
+          let paths = this.settledPaths.get(sessionId);
+          if (!paths) this.settledPaths.set(sessionId, paths = new Set());
+          paths.add(touched);
+        },
+        flushTouchedPaths: () => {
+          const paths = this.settledPaths.get(sessionId);
+          if (!paths?.size) return;
+          this.settledPaths.delete(sessionId);
+          this.discoverForTouchedPaths([...paths]);
+        },
         getTools: () => this.tools.snapshot?.() ?? this.tools,
+        getCodeMode: () => this.requestedCodeMode,
         prepareTools: this.prepareTools,
         resources: this.resources,
         toolExecution: this.toolExecution,
@@ -472,7 +505,7 @@ export class CodingAgent {
     // supplies lifecycle events for the three synchronous file tools.
     const isToolEvent = eventType === "tool_start" || eventType === "tool_result";
     const isRepeatWarning = eventType === "agent_repeat_warning";
-    if (isToolEvent && payload["name"] === "bash") {
+    if (isToolEvent && payload["name"] === "bash" && !payload["parentToolCallId"]) {
       return;
     }
     const source = isToolEvent
@@ -522,7 +555,7 @@ function makeToolContext(
     cancelToken,
     signal: cancelToken?.signal,
     isCancelled: () => isCancelled(cancelToken),
-    cancellationReason: cancelToken?.reason || "cancelled",
+    get cancellationReason() { return cancelToken?.reason || "cancelled"; },
     publish: (kind: string, payload: Record<string, unknown>) => {
       if (typeof context?.publish === "function") {
         return context.publish(kind as EventKind, {

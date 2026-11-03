@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
-import { EventBus, EventKind, EventSource } from "../packages/core/runtime-protocol/src/index.ts";
+import { EventBus, EventFactory, EventKind, EventSource } from "../packages/core/runtime-protocol/src/index.ts";
 import { createSessionJournal, readSessionFile } from "../packages/session/session-store/src/index.ts";
 import { SessionRecorder } from "../packages/session/session-runtime/src/index.ts";
 
@@ -58,3 +58,25 @@ function makeTempRoot(): string {
   mkdirSync(root, { recursive: true, mode: 0o700 });
   return root;
 }
+
+test("session recorder discards late events instead of writing into another or closed session", async () => {
+  const root = makeTempRoot();
+  const makeJournal = () => createSessionJournal({ sessionsRoot: root, projectRoot: root, initialCwd: root,
+    appVersion: "test", provider: "test", model: "test" });
+  const first = makeJournal();
+  const second = makeJournal();
+  let current = second;
+  const recorder = new SessionRecorder({ eventBus: new EventBus(), journal: () => current });
+  const event = new EventFactory().create(EventKind.ToolFinished, { source: EventSource.Tool,
+    session_id: first.header.sessionId, task_id: "old-task", correlation_id: "old-tool", payload: { name: "read", status: "completed" } });
+  try {
+    assert.deepEqual(recorder.recordEvent(event), []);
+    current = first;
+    first.close();
+    assert.deepEqual(recorder.recordEvent(event), []);
+    second.close();
+    assert.equal(readSessionFile(second.path).items.length, 0);
+  } finally {
+    await recorder.close(); first.close(); second.close(); rmSync(root, { recursive: true, force: true });
+  }
+});

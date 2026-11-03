@@ -92,7 +92,9 @@ npm run smoke:standalone
 
 `build:standalone` 在当前目标系统原生构建，生成 `.build/standalone` 中的归档、
 每个归档的 `.sha256` 和 `version.txt`。它校验官方 Node 下载，并加载 Koffi 和 MCP
-客户端，检查生产依赖与当前架构的原生依赖确实可用。
+客户端，检查生产依赖与当前架构的原生依赖确实可用。npm 与独立包验收都从已安装
+目录启动 `dist/codemode-worker.js`，解析 QuickJS WASM 3.6.2，并执行本地假工具；
+Worker、source map 和 `THIRD_PARTY_NOTICES` 随包分发，不依赖源码目录。
 Node 版本固定在 `scripts/build-standalone.mjs` 和 standalone workflow 中，升级时同时更新。
 
 `smoke:standalone` 使用临时 HOME、隔离 PATH 和本地下载源，验证通过命令名启动、

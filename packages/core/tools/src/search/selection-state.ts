@@ -1,4 +1,4 @@
-import type { ToolRegistryLike, ToolSpec } from "../index.ts";
+import type { CodeMode, ToolRegistryLike, ToolSpec } from "../index.ts";
 import {
   canonicalToolJson,
   toolSearchText,
@@ -44,10 +44,10 @@ export class ToolSelection {
     };
   }
 
-  prepare(registry: ToolRegistryLike) {
-    const all = registry.definitions.filter(spec => spec.name !== SEARCH_TOOL_NAME);
-    const deferred = all.filter(spec => spec.catalog?.exposure === "deferred");
-    const mode = all.length >= TOOL_SEARCH_THRESHOLD ? "deferred" : "full";
+  prepare(registry: ToolRegistryLike, codeMode: CodeMode = "off") {
+    const all = registry.definitions.filter(spec => spec.name !== SEARCH_TOOL_NAME && spec.exposure !== "hidden");
+    const deferred = all.filter(spec => spec.exposure === "deferred");
+    const mode = all.filter(spec => spec.executionRole !== "orchestrator" && spec.exposure !== "codemode").length >= TOOL_SEARCH_THRESHOLD ? "deferred" : "full";
     const versions = new Map(all.map(spec => [spec.name, toolVersion(spec)]));
     const catalog: ToolCatalogState = {
       mode,
@@ -67,7 +67,7 @@ export class ToolSelection {
         missing.push(name);
         continue;
       }
-      const baseline = mode === "full" || spec.catalog?.exposure !== "deferred";
+      const baseline = spec.exposure !== "codemode" && (mode === "full" || spec.exposure !== "deferred");
       const version = versions.get(name)!;
       if (version !== active.version) {
         toolsRemoved.push({ name, version: active.version });
@@ -75,7 +75,7 @@ export class ToolSelection {
           const updated = {
             spec,
             version,
-            activation: spec.catalog?.exposure === "deferred" && active.activation === "search"
+            activation: spec.exposure === "deferred" && active.activation === "search"
               ? "search" as const
               : "baseline" as const,
           };
@@ -91,7 +91,7 @@ export class ToolSelection {
       }
     }
     for (const spec of all) {
-      const baseline = mode === "full" || spec.catalog?.exposure !== "deferred";
+      const baseline = spec.exposure !== "codemode" && (mode === "full" || spec.exposure !== "deferred");
       if (!baseline || desired.has(spec.name)) continue;
       const added = { spec, version: versions.get(spec.name)!, activation: "baseline" as const };
       desired.set(spec.name, added);
@@ -109,7 +109,9 @@ export class ToolSelection {
       const before = this.catalog?.mode === "deferred" && mode === "deferred" ? this.catalog.tools : {};
       const added = Object.keys(catalog.tools).filter(name => before[name] !== catalog.tools[name]);
       const removed = Object.keys(before).filter(name => before[name] !== catalog.tools[name]);
-      const sections = ["<system-reminder>", mode === "deferred" ? "Use tool_search to search and load tool definitions before calling deferred tools." : "All currently available tool definitions are now directly available."];
+      const sections = ["<system-reminder>", codeMode === "only"
+        ? "Tool catalog updated. Discover and call ordinary tools inside Code Mode; tool_search and direct ordinary tool calls are unavailable."
+        : mode === "deferred" ? "Use tool_search to search and load tool definitions before calling deferred tools." : "All currently available ordinary tool definitions are now directly available."];
       if (removed.length) sections.push("<tools_removed>", ...removed, "</tools_removed>");
       if (added.length) sections.push("<tools_added>", ...added, "</tools_added>");
       sections.push("</system-reminder>");
@@ -124,17 +126,20 @@ export class ToolSelection {
     }
     const pending = new Map<string, ActiveTool>();
     const definitions = [
-      ...all.filter(spec => desired.has(spec.name)),
-      ...(mode === "deferred" ? [SEARCH_TOOL_SPEC] : []),
+      ...all.filter(spec => desired.has(spec.name) && spec.exposure !== "codemode" &&
+        (spec.executionRole === "orchestrator" ? codeMode !== "off" : codeMode !== "only" || spec.exposure === "model-only")),
+      ...(mode === "deferred" && codeMode !== "only" ? [SEARCH_TOOL_SPEC] : []),
     ];
     const visible = new Set(definitions.map(spec => spec.name));
     const index = this.index;
-    const view: ToolRegistryLike = {
+    const directTools: ToolRegistryLike = {
       definitions, orderedSpecs: definitions,
       executionMode: name => name === SEARCH_TOOL_NAME ? "sequential" : registry.executionMode(name),
       execute: async (name, args, context) => {
         if (context?.isCancelled()) return { ok: false, status: "cancelled", error: context.cancellationReason };
-        if (!visible.has(name)) return { ok: false, status: "tool_not_loaded", error: "Tool is unavailable or not loaded. Use tool_search with its name to load the current definition." };
+        if (!visible.has(name)) return { ok: false, status: "tool_not_loaded", error: codeMode === "only"
+          ? "Direct tool call is unavailable in only mode. Use Code Mode."
+          : "Tool is unavailable or not loaded. Use tool_search with its name to load the current definition." };
         if (name !== SEARCH_TOOL_NAME) return registry.execute(name, args, context);
         const query = args.query, limit = args.limit ?? 8;
         if (typeof query !== "string" || !query.trim() || query.length > 4096 || typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 20 || Object.keys(args).some(key => key !== "query" && key !== "limit")) {
@@ -157,7 +162,16 @@ export class ToolSelection {
         return { ok: true, matches, ...(matches.length ? {} : { content: "No matching tools. Try an exact name, source, or different keywords." }) };
       },
     };
-    return { view, announcement, mode, update, missing, pending: () => [...pending.values()] };
+    const callableDefinitions = codeMode === "off" ? [] : all.filter(spec => spec.exposure !== "model-only" && spec.executionRole !== "orchestrator");
+    const callableNames = new Set(callableDefinitions.map(spec => spec.name));
+    const callableTools: ToolRegistryLike = {
+      definitions: callableDefinitions, orderedSpecs: callableDefinitions,
+      executionMode: name => registry.executionMode(name),
+      execute: (name, args, context) => callableNames.has(name)
+        ? registry.execute(name, args, context)
+        : { ok: false, status: "tool_unavailable", error: "Tool is not callable from Code Mode." },
+    };
+    return { declaredTools: definitions, directTools, callableTools, announcement, mode, update, missing, pending: () => [...pending.values()] };
   }
 }
 

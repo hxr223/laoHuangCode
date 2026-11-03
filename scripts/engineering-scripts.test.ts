@@ -92,8 +92,10 @@ test("package-smoke packs, installs, and runs the published binary shape", () =>
     writeExecutable(
       join(binDir, "npm"),
       `
-const { chmodSync, mkdirSync, writeFileSync } = require("node:fs");
-const { join } = require("node:path");
+const { chmodSync, cpSync, mkdirSync, writeFileSync } = require("node:fs");
+const { dirname, join } = require("node:path");
+const { createRequire } = require("node:module");
+const project = ${JSON.stringify(PROJECT_ROOT)};
 const args = process.argv.slice(2);
 const command = args.join(" ");
 if (command === "run build") {
@@ -111,6 +113,13 @@ if (args[0] === "install") {
   writeFileSync(cliPath, "#!/usr/bin/env node\\nconsole.log('${version}')\\n", "utf8");
   chmodSync(cliPath, 0o755);
   mkdirSync(join(process.cwd(), "node_modules", "laohuang"), { recursive: true });
+  const app = join(process.cwd(), "node_modules", "laohuang");
+  mkdirSync(join(app, "dist"));
+  for (const file of ["package.json", "THIRD_PARTY_NOTICES", "dist/codemode-worker.js"]) {
+    cpSync(join(project, "apps/cli", file), join(app, file));
+  }
+  const wasm = createRequire(join(project, "packages/core/codemode/package.json")).resolve("quickjs-wasi/quickjs.wasm");
+  cpSync(dirname(wasm), join(process.cwd(), "node_modules", "quickjs-wasi"), { recursive: true });
   const sdkDir = join(process.cwd(), "node_modules", "@modelcontextprotocol", "client");
   mkdirSync(sdkDir, { recursive: true });
   writeFileSync(join(sdkDir, "package.json"), JSON.stringify({ type: "module", exports: { ".": "./index.js", "./stdio": "./stdio.js" } }));

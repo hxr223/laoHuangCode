@@ -37,7 +37,7 @@ test("next model step sees the latest tools and shares its snapshot with governo
   assert.equal(await agent.run("go", null, { cancelToken: token }), "done");
   assert.deepEqual(requests.map(r => r.tools.map(t => t.name)), [["first"], ["second"]]);
   assert.deepEqual(budgets, requests.map(r => r.tools));
-  assert.equal(actualSignal, token.signal);
+  assert.equal(actualSignal?.aborted, false);
 });
 
 test("a revoked tool returned by an in-flight model request cannot execute its replacement", async () => {

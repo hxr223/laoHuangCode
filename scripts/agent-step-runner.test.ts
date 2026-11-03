@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 
 import { AgentCancelled } from "../packages/core/agent-runtime/src/index.ts";
-import type { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
+import { CancelToken } from "../packages/core/runtime-protocol/src/index.ts";
 import type {
   ModelAdapter,
   ModelInfo,
@@ -21,15 +21,6 @@ import { HistoryCommitter, type ConversationHistoryLike } from "../packages/core
 import { RepeatToolPolicy } from "../packages/core/agent-runtime/src/core/repeat-tool-policy.ts";
 import { ModelError, ModelRuntime } from "@laohuang/llm";
 import { ToolRuntime, type ToolResult } from "../packages/core/tools/src/index.ts";
-
-class TestCancelToken {
-  cancelled = false;
-  reason: string | null = null;
-
-  isCancelled(): boolean {
-    return this.cancelled;
-  }
-}
 
 class StubAdapter implements ModelAdapter {
   readonly name = "stub";
@@ -99,7 +90,7 @@ function createRunner(options: {
   emit?: (eventType: string, payload: Record<string, unknown>) => void;
   conversationHistory?: ConversationHistoryLike;
 }): AgentStepRunner {
-  const token = new TestCancelToken() as unknown as CancelToken;
+  const token = new CancelToken();
   const context = options.context ?? null;
   const committer = new HistoryCommitter({
     messages: options.messages,

@@ -136,18 +136,24 @@ export interface AgentRepeatWarningPayload extends EventPayloadBase {
   content: string;
 }
 
-export interface ToolStartedPayload extends EventPayloadBase {
+export interface ToolCallPayload extends EventPayloadBase {
+  toolCallId?: string;
+  parentToolCallId?: string;
+  rootToolCallId?: string;
+}
+
+export interface ToolStartedPayload extends ToolCallPayload {
   name: string;
   arguments: Record<string, unknown>;
 }
 
-export interface ToolOutputDeltaPayload extends EventPayloadBase {
+export interface ToolOutputDeltaPayload extends ToolCallPayload {
   stream: string;
   text: string;
   coalesced_from_sequence?: number;
 }
 
-export interface ToolOutputSnapshotPayload extends EventPayloadBase {
+export interface ToolOutputSnapshotPayload extends ToolCallPayload {
   stream: string;
   text: string;
   stream_sequence?: number;
@@ -155,7 +161,7 @@ export interface ToolOutputSnapshotPayload extends EventPayloadBase {
   start_mid_line?: boolean;
 }
 
-export interface ToolFinishedPayload extends EventPayloadBase {
+export interface ToolFinishedPayload extends ToolCallPayload {
   status: string;
 }
 
@@ -534,7 +540,7 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
     spec(EventKind.ToolStarted, {
       sources: [EventSource.Tool],
       required_payload: ["name", "arguments"],
-      payload_types: { name: "string", arguments: "object" },
+      payload_types: { name: "string", arguments: "object", toolCallId: "string", parentToolCallId: "string", rootToolCallId: "string" },
       require_task_id: true,
       require_correlation_id: true,
       max_payload_chars: 100_000,
@@ -542,7 +548,7 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
     spec(EventKind.ToolOutputDelta, {
       sources: [EventSource.Tool],
       required_payload: ["stream", "text"],
-      payload_types: { stream: "string", text: "string" },
+      payload_types: { stream: "string", text: "string", toolCallId: "string", parentToolCallId: "string", rootToolCallId: "string" },
       require_task_id: true,
       require_correlation_id: true,
       max_payload_chars: null,
@@ -550,7 +556,7 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
     spec(EventKind.ToolOutputSnapshot, {
       sources: [EventSource.Tool],
       required_payload: ["stream", "text"],
-      payload_types: { stream: "string", text: "string", stream_sequence: "integer" },
+      payload_types: { stream: "string", text: "string", stream_sequence: "integer", toolCallId: "string", parentToolCallId: "string", rootToolCallId: "string" },
       require_task_id: true,
       require_correlation_id: true,
       // Producers own output budgets; JSON escaping must not reject valid previews.
@@ -559,7 +565,7 @@ export const EVENT_SPECS: ReadonlyMap<EventKind, EventSpec> = new Map(
     spec(EventKind.ToolFinished, {
       sources: [EventSource.Tool],
       required_payload: ["status"],
-      payload_types: { status: "string" },
+      payload_types: { status: "string", toolCallId: "string", parentToolCallId: "string", rootToolCallId: "string" },
       require_task_id: true,
       require_correlation_id: true,
       max_payload_chars: null,
@@ -698,6 +704,10 @@ function projectValue(value: unknown): unknown {
   return value;
 }
 
+export function redactEventPayload(payload: Record<string, unknown>): Record<string, unknown> {
+  return projectValue(payload) as Record<string, unknown>;
+}
+
 export interface ProjectedEvent {
   event_id: string;
   kind: EventKind;
@@ -732,6 +742,16 @@ export class EventProjector {
       throw new Error(`unknown event audience: ${audience}`);
     }
     const payload = { ...event.payload };
+    if (audience === "log" && typeof payload["parentToolCallId"] === "string" && event.kind === EventKind.ToolFinished) {
+      // Child output belongs to the script. Persist diagnostics, never raw data.
+      const result = payload["result"];
+      payload["result"] = result && typeof result === "object" && !Array.isArray(result)
+        ? { ok: (result as Record<string, unknown>)["ok"], error: (result as Record<string, unknown>)["error"] }
+        : undefined;
+      delete payload["stdout"];
+      delete payload["stderr"];
+      delete payload["content"];
+    }
     if (event.kind === EventKind.ToolOutputSnapshot && payload["start_mid_line"] === true && typeof payload["text"] === "string") {
       payload["text"] = omitPartialOutputLine(payload["text"]);
     } else if (event.kind === EventKind.ToolFinished) {

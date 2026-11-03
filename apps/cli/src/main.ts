@@ -36,6 +36,8 @@ import { createMcpRuntime, type McpRuntime } from "./create-mcp-runtime.ts";
 import { createMcpCommand } from "./mcp-commands.ts";
 import { createSkillRuntime, type SkillRuntime } from "./create-skill-runtime.ts";
 import { createAttachmentRuntime } from "./create-attachment-runtime.ts";
+import { createCodeModeRuntime, type CodeModeRuntime } from "./create-codemode-runtime.ts";
+import { createCodeModeCommand } from "./codemode-commands.ts";
 import { defaultInputFn, defaultSecretInputFn, errorMessage, runPlainSessionRepl, runSessionRepl, runTerminalUi, supportsTerminalUI, type CommandHandler, type InputFn, type OutputFn } from "./repl.ts";
 import { resolveNpmInstallation } from "./update-installation.ts";
 import { runUpdate, updateDiagnostic } from "./update.ts";
@@ -444,6 +446,7 @@ export async function main(
     reasoningEffort: "high",
   });
   let mcpRuntime: McpRuntime | undefined;
+  let codeModeRuntime: CodeModeRuntime | undefined;
   let skillRuntime: SkillRuntime | undefined;
   let skillDraft: string | undefined;
   // 保存已成功创建的资源，确保初始化中途失败时也能进入统一清理流程。
@@ -487,17 +490,12 @@ export async function main(
         if (runtimeForCleanup) runtimeForCleanup.publishNotice(message);
         else outputFn(message);
       } });
+    codeModeRuntime = createCodeModeRuntime({ configPath, attachments: attachmentRuntime.store, sessionController });
     const toolRegistry = new ToolRegistry([
+      codeModeRuntime.tool,
       createReadImageTool({ store: attachmentRuntime.store, projectRoot,
         pathOptions: { env: environ, shellPath: () => resolveBashPath({ shellPath, env: environ }) },
-        resolveReference: id => {
-          // 从当前会话历史解析图片引用，使恢复会话中的附件仍可被读取。
-          for (const entry of sessionController.history?.entries() ?? []) {
-            if (!("message" in entry.payload) || !("attachments" in entry.payload.message)) continue;
-            for (const block of entry.payload.message.attachments ?? []) if (block.type === "image" && block.ref.id === id) return block.ref;
-          }
-          return undefined;
-        },
+        resolveReference: id => codeModeRuntime?.resolveReference(id),
       }),
       skillRuntime.session.tool,
       ...createFileToolDefinitions({ projectRoot, pathOptions: {
@@ -510,6 +508,7 @@ export async function main(
     let commandDispatcher: CommandHandler | undefined;
     let runtimeInitialized = false;
     const composedRuntime = createSessionRuntime({
+      getDefaultCodeMode: () => manager.getCodeMode(),
       attachments: attachmentRuntime.store,
       modelAdapter: modelPlatform.adapter,
       catalog: modelPlatform.catalog,
@@ -656,6 +655,9 @@ export async function main(
     });
 
     commands.registry.register(createMcpCommand(mcpRuntime, commandPresenter));
+    commands.registry.register(createCodeModeCommand({ getMode: () => agent.getCodeMode(), setMode: mode => composedRuntime.setCodeMode(mode),
+      getDefaultMode: () => manager.getCodeMode(), setDefaultMode: mode => manager.setCodeMode(mode),
+      notice: text => commandPresenter.notice({ text, tone: "info" }) }));
     await skillRuntime.attachCommands(commands.registry);
     // 将运行时事件投影为终端事件，交给 TUI 或纯文本输出器显示。
     const projector = new EventProjector();
@@ -746,7 +748,10 @@ export async function main(
     try { if (runtimeForCleanup && runtimeForCleanup.state !== SessionState.Stopped) await runtimeForCleanup.close({ wait: true, timeoutMs: 10_000 }); }
     finally {
       for (const unsubscribe of unsubscribers) unsubscribe();
-      try { await mcpRuntime?.close(); }
+      try {
+        try { await codeModeRuntime?.close(); }
+        finally { await mcpRuntime?.close(); }
+      }
       finally {
         try { await skillRuntime?.close(); }
         finally {

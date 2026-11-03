@@ -108,7 +108,8 @@ test("session schema validates tool deltas and compaction tool snapshots", () =>
     description: "search remote data",
     parameters: { type: "object" },
     promptGuidelines: [],
-    catalog: { source: "mcp:test", originalName: "search", binding: "stable", exposure: "deferred" },
+    exposure: "deferred",
+    catalog: { source: "mcp:test", originalName: "search", binding: "stable" },
   };
   const active = { version: "v1", activation: "search", spec };
   const delta = {
@@ -145,6 +146,16 @@ test("project keys include basename and canonical root hash", () => {
   assert.match(left, /^project-[a-f0-9]{12}$/);
   assert.match(right, /^project-[a-f0-9]{12}$/);
   assert.notEqual(left, right);
+});
+
+test("stored tool output declarations accept JSON schemas and reject invalid roots", () => {
+  const entry = (outputSchema: unknown) => ({ ...userEntry(1), entryType: "tool_definitions", payload: {
+    message: { role: "system", content: "", toolDefinitions: [{ version: "v1", spec: {
+      name: "read", description: "read", parameters: { type: "object" }, promptGuidelines: [], outputSchema,
+    } }] },
+  } });
+  for (const schema of [{ type: "string" }, {}, true, false]) assert.deepEqual(parseSessionItem(entry(schema)), entry(schema));
+  for (const schema of [null, [], "string", 1]) assert.throws(() => parseSessionItem(entry(schema)), /output schema/);
 });
 
 test("journal creates private directories and files, appends seq, and closes lock", () => {

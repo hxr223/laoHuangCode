@@ -71,6 +71,8 @@ Agent 提供 `read`、`write`、`edit`、`bash` 和 `skill` 工具，支持流�
 - `/login`：配置供应商凭据。
 - `/providers`：查看供应商及其配置、验证状态。
 - `/cancel`：取消当前任务。
+- `/codemode off|on|only`：切换当前会话的工具调用模式；`/codemode` 查看当前和默认值。
+- `/codemode default off|on|only`：设置新会话的默认模式，恢复会话保留自己的模式。
 - `/name MCP 接入设计`：保存当前会话名称；`/name` 查看名称。
 - `/copy`：复制最近一条已完成助手回复的正文，保留 Markdown。
 - `/skill:review 参数`：显式加载 Skill，名称支持补全。
@@ -87,6 +89,37 @@ Agent 提供 `read`、`write`、`edit`、`bash` 和 `skill` 工具，支持流�
 `/copy` 不复制思考过程、工具结果或尚在流式生成的片段；生成中会复制上一条
 已记录回复。SSH 会话通过 OSC 52 向当前终端发送复制请求；这只能确认请求已发送，
 实际写入取决于终端设置。没有可用剪贴板后端时会说明原因。
+
+### Code Mode
+
+默认 `off`，沿用直接工具与 `tool_search`。`on` 同时允许直接调用和 JavaScript
+编排；`only` 关闭普通直接调用及 `tool_search`，所有普通工具经 `codemode` 调用。
+切换在下一次模型请求生效，当前执行批次使用自己的工具快照。
+
+模型向 `codemode` 传入 JavaScript。脚本用 `await searchTools(query)` 查找工具，
+通过 `await tools.name({...})` 调用；中间结果留在脚本内。`text()`、`console`、
+`image()` 和成功的非 undefined 返回值决定模型收到的内容。`store(key,value)` /
+`load(key)` 保存当前会话分支的小型 JSON 状态，`store(key,undefined)` 删除；只有
+成功或 `exit()` 提交状态，取消、超时、失败不提交，外部工具副作用不会回滚。
+
+默认执行不限总时长，可在脚本第一行设置：
+
+```js
+// @options: {"timeout_ms":30000,"max_output_tokens":10000}
+const toolsFound = await searchTools('read');
+text(toolsFound);
+return 'done';
+```
+
+超时包含排队、加载、计算和等待工具。CLI 共享 2 个 Worker，FIFO 排队最多 60 秒；
+取消会停止脚本并通知内部工具，忽略取消的宿主工具仍可能继续收尾。
+每个 QuickJS 实例最多 256 MiB；输出硬限 16777216 UTF-16 字符或 100000 项，
+store 单值最多 262144 JSON 字符，含键总量最多 1048576 字符。
+模型文本默认最多约 10000 tokens（按 4 字符估算）；超量时截断预览，尝试将完整
+显式文本保存到配置文件旁 `codemode-artifacts/<sessionId>/`，落盘失败保留预览。
+内部图片需用 `image()` 显式选出；图片引用只允许当前会话授权的附件。
+
+QuickJS 隔离生成的脚本；宿主文件和 Bash 工具仍以当前用户权限执行。
 
 ### 粘贴截图
 

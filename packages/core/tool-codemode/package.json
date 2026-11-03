@@ -1,0 +1,9 @@
+{
+  "name": "@laohuang/tool-codemode",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "dependencies": { "@laohuang/codemode": "0.0.0", "@laohuang/tools": "0.0.0", "@laohuang/attachment": "0.0.0" }
+}

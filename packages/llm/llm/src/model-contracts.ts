@@ -1,6 +1,6 @@
 import type { CancelToken } from "@laohuang/runtime-protocol";
 import type { AttachmentContent } from "@laohuang/attachment";
-import type { LoadedTool, ToolCatalogState, ToolCall, ToolReference, ToolSpec } from "@laohuang/tools";
+import type { CodeMode, LoadedTool, ToolCatalogState, ToolCall, ToolReference, ToolSpec } from "@laohuang/tools";
 
 /** Raised when a streamed model response is incomplete or invalid. */
 export class ModelStreamError extends Error {
@@ -39,6 +39,7 @@ export class StaleModelRequest extends ModelStreamCancelled {
 export type AttemptState = "provisional" | "validated" | "aborted";
 
 export interface SystemModelMessage {
+  readonly toolMode?: CodeMode;
   readonly role: "system";
   readonly content: string;
   readonly toolDefinitions?: readonly LoadedTool[];

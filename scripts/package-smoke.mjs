@@ -66,6 +66,7 @@ function main() {
       throw new Error(`installed package did not create ${binName} binary`);
     }
     const versionOutput = run(binPath, ["--version"], { cwd: installDir });
+    run(process.execPath, [join(repositoryRoot, "scripts", "codemode-package-probe.mjs"), join(installDir, "node_modules", "laohuang")], { cwd: installDir });
     run(process.execPath, ["--input-type=module", "-e", "import { Client } from '@modelcontextprotocol/client'; import { StdioClientTransport } from '@modelcontextprotocol/client/stdio'; if (!Client || !StdioClientTransport) process.exit(1);"], { cwd: join(installDir, "node_modules", "laohuang") });
     if (!versionOutput.includes(manifest.version)) {
       throw new Error(`expected ${binName} --version to include ${manifest.version}, got ${versionOutput}`);

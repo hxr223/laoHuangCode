@@ -12,7 +12,7 @@ import { ModelError, type ModelAdapter, type ModelCatalog, type ModelRequest, ty
 import { PiAiAdapter, prepareRequestImages, toPiContext } from "@laohuang/llm-pi-ai";
 import type { Api, Model, Models, AssistantMessageEvent, Context } from "@earendil-works/pi-ai";
 import { createReadImageTool } from "@laohuang/tool-fs";
-import { NOOP_TOOL_CONTEXT, ToolRegistry } from "@laohuang/tools";
+import { NOOP_TOOL_CONTEXT, ToolRegistry, scriptOutputOf } from "@laohuang/tools";
 import { HistoryCommitter } from "../packages/core/agent-runtime/src/core/history-committer.ts";
 import { createSessionRuntime } from "../apps/cli/src/create-session-runtime.ts";
 import { SessionController } from "../apps/cli/src/session-controller.ts";
@@ -49,6 +49,15 @@ test("attachment: read_image describes path-first usage and every parameter", as
   assert.match(properties.full_resolution!.description, /request preparation fails instead of silently downscaling/);
 });
 
+test("attachment: read_image exposes an opaque structured image reference to scripts", async t => {
+  const { store, root, ref } = await fixture(t);
+  const tool = createReadImageTool({ store, projectRoot: root, resolveReference: id => id === ref.id ? ref : undefined });
+  const result = await tool.execute({ attachment_id: ref.id }, NOOP_TOOL_CONTEXT);
+  assert.ok(tool.spec.outputSchema);
+  assert.deepEqual(scriptOutputOf(result)?.structuredContent, { type: "image", attachment_id: ref.id, view: {} });
+  assert.ok(!JSON.stringify(result).includes("structuredContent"));
+});
+
 test("attachment: user/tool results persist references, fork/clone retain and global scans fail closed", async t => {
   const { store, ref, sessionsRoot, root, advance } = await fixture(t);
   const manager = new SessionManager({ sessionsRoot, appVersion: "test", attachments: store });
@@ -75,6 +84,28 @@ test("attachment: user/tool results persist references, fork/clone retain and gl
   assert.deepEqual(store.collectGarbage(() => scanAttachmentReferences(sessionsRoot), true).deleted, []);
   advance(RETENTION_MS);
   assert.deepEqual(store.collectGarbage(() => scanAttachmentReferences(sessionsRoot), true).deleted, [ref.id]);
+});
+
+test("attachment: internal script images remain owned without becoming model images", async t => {
+  const { store, ref, sessionsRoot, root, advance } = await fixture(t);
+  const journal = createSessionJournal({ sessionsRoot, attachments: store, projectRoot: root, initialCwd: root,
+    appVersion: "test", provider: "fake", model: "vision" });
+  t.after(() => journal.close());
+  const history = ConversationHistory.fromReplay(readSessionFile(journal.path), journal);
+  history.appendAssistant({ requestId: "script", finishReason: "tool-calls", message: { role: "assistant", provider: "fake", model: "vision",
+    content: [{ type: "tool-call", call: { id: "script", name: "codemode", arguments: "{}" } }] } });
+  history.appendToolResults({ requestId: "script", recovered: false,
+    messages: [{ role: "tool-result", toolCallId: "script", toolName: "codemode", content: "summary", isError: false }],
+    codeModeByCallId: { script: { internalAttachments: [{ type: "image", ref }] } },
+  });
+  journal.flush();
+  const entries = readSessionFile(journal.path).items.filter(item => item.kind === "entry");
+  const built = new ContextBuilder().build({ entries, currentProvider: "fake", currentModel: "vision" });
+  assert.ok(!JSON.stringify(built.messages).includes(ref.id));
+  assert.ok(!serializeConversation(entries).includes(ref.id));
+  advance(RETENTION_MS * 2);
+  assert.deepEqual(store.collectGarbage(() => scanAttachmentReferences(sessionsRoot), true).deleted, []);
+  assert.equal(scanAttachmentReferences(sessionsRoot).has(ref.id), true);
 });
 
 test("attachment: read_image and tool history preserve media without embedding Base64", async t => {

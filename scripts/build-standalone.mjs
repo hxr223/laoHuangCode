@@ -67,6 +67,7 @@ try {
   chmodSync(join(packageDir, launcher), 0o755);
   const actual = run(node, [join(app, 'node_modules/laohuang/dist/bin.js'), '--version']);
   if (actual !== `laohuang ${version}`) throw new Error(`Unexpected packaged version: ${actual}`);
+  run(node, [join(root, 'scripts/codemode-package-probe.mjs'), join(app, 'node_modules/laohuang')]);
   // Loading the native dependency catches missing platform-specific optional packages.
   run(node, ['--input-type=module', '-e', "import koffi from 'koffi'; import { Client } from '@modelcontextprotocol/client'; if (!koffi || !Client) process.exit(1);"], join(app, 'node_modules/laohuang'));
   const filename = `laohuang-${version}-${platform}-${arch}.${platform === 'win32' ? 'zip' : 'tar.gz'}`;
